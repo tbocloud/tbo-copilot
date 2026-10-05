@@ -2155,7 +2155,7 @@ async fn handle_request(
                 json!({
                     "defaultMode": "agent",
                     "defaultCommandShell": tools::shell::default_shell_id(),
-                    "theme": "dark",
+                    "theme": "plugin:tbo.theme:tbo-dark",
                     "enterToSend": true,
                     "largePasteThreshold": DEFAULT_LARGE_PASTE_THRESHOLD,
                     "contextCompaction": {

@@ -36,6 +36,10 @@ export const BRAND = {
   dataDir: ".tbo-copilot",
   devDataDir: ".tbo-copilot-dev",
   repo: "tbocloud/tbo-copilot",
+  // A new install opens on the TBO Dark theme from the bundled tbo.theme plugin
+  // (scripts/tbo/bundled-plugins.json). Without the plugin the shell falls back
+  // to "system".
+  defaultTheme: "plugin:tbo.theme:tbo-dark",
 };
 
 const LOCALES = ["en", "de", "es", "fr", "ko", "pt-BR", "tr", "zh-CN", "zh-TW"];
@@ -77,6 +81,14 @@ const RULES = [
   // Own data folders, so TBO Copilot never shares a database with PI-Desktop.
   rule("apps/desktop/electron/main/data-paths.ts", 'INSTALLATION_DATA_DIR_NAME = ".pi-desktop";', `INSTALLATION_DATA_DIR_NAME = "${BRAND.dataDir}";`),
   rule("apps/desktop/electron/main/data-paths.ts", 'DEVELOPMENT_DATA_DIR_NAME = ".pi-desktop-dev";', `DEVELOPMENT_DATA_DIR_NAME = "${BRAND.devDataDir}";`),
+
+  // Default settings for a new install.
+  rule(
+    "crates/host-core/src/rpc/mod.rs",
+    /("defaultCommandShell": tools::shell::default_shell_id\(\),\s*"theme": )"dark"/,
+    `$1"${BRAND.defaultTheme}"`,
+    { done: `"theme": "${BRAND.defaultTheme}"` },
+  ),
 
   // Release page link.
   rule(
