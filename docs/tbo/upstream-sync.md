@@ -90,12 +90,32 @@ Check that:
 - a chat with the configured model works;
 - the TBO plugins load.
 
-## 6. Merge and release
+## 6. Check upstream's workflows
+
+```bash
+git diff --stat <previous-tbo-commit> -- .github/workflows/
+gh workflow list -R tbocloud/tbo-copilot --all
+```
+
+- **A new upstream workflow** must not run in this repository unless it is useful here. Disable it:
+  `gh workflow disable <file> -R tbocloud/tbo-copilot`.
+- **Keep `release.yml` disabled.** TBO builds come from `tbo-release.yml`.
+- **If upstream changed its build steps** (`release.yml` "Prepare package inputs" or the
+  `dist:*` scripts), copy the change into `tbo-release.yml`.
+
+## 7. Merge and release
 
 ```bash
 git push -u origin sync/v0.16.2
 gh pr create --base tbo --title "Sync PI-Desktop v0.16.2" --body "Upstream release v0.16.2 merged; branding re-applied; tests pass."
 ```
 
-After review, merge into `tbo`. Build installers from `tbo` (CI) and record the upstream version
-in the release notes.
+After review, merge into `tbo`. Then build the installers by tagging the merge:
+
+```bash
+git checkout tbo && git pull
+git tag tbo-v0.16.2
+git push origin tbo-v0.16.2      # runs tbo-release.yml → GitHub Release with the installers
+```
+
+Record the upstream version in the release notes.

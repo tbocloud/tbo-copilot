@@ -1,0 +1,56 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const workflow = await readFile(
+  new URL("../../../.github/workflows/tbo-release.yml", import.meta.url),
+  "utf8",
+);
+const build = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8"),
+).build;
+
+test("TBO releases come from tbo-v tags; workflow edits and manual runs make test builds", () => {
+  assert.match(workflow, /push:\n\s+tags: \['tbo-v\*'\]/);
+  assert.match(
+    workflow,
+    /pull_request:\n\s+branches: \[tbo\]\n\s+paths:\n\s+- '\.github\/workflows\/tbo-release\.yml'/,
+  );
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(
+    workflow,
+    /release:\n\s+name: Publish GitHub Release\n\s+if: startsWith\(github\.ref, 'refs\/tags\/tbo-v'\)/,
+  );
+});
+
+test("TBO installers build without signing secrets and macOS builds are ad-hoc signed", () => {
+  assert.doesNotMatch(workflow, /secrets\./);
+  assert.match(workflow, /CSC_IDENTITY_AUTO_DISCOVERY: 'false'/);
+  assert.match(
+    workflow,
+    /run dist:mac --\$\{\{ matrix\.arch \}\} -c\.mac\.identity=-/,
+  );
+  // pnpm 12 forwards a literal `--`, after which electron-builder ignores
+  // every option, so the build commands must not use one.
+  assert.doesNotMatch(workflow, /run dist:(mac|win) -- /);
+  assert.match(workflow, /codesign --verify --deep --strict "\$app"/);
+});
+
+test("the workflow checks the branding and expects the configured installer names", () => {
+  assert.match(workflow, /node scripts\/tbo\/apply-branding\.mjs --check/);
+  assert.equal(build.dmg.artifactName, "TBO-Copilot-${version}-${arch}.${ext}");
+  assert.equal(build.mac.artifactName, "TBO-Copilot-${version}-${arch}-mac.${ext}");
+  assert.equal(build.nsis.artifactName, "TBO-Copilot-Setup-${version}.${ext}");
+  assert.equal(build.portable.artifactName, "TBO-Copilot-Portable-${version}.${ext}");
+  assert.equal(build.win.artifactName, "TBO-Copilot-Portable-${version}.${ext}");
+  assert.ok(workflow.includes('"$release"/TBO-Copilot-*-${{ matrix.arch }}.dmg'));
+  assert.ok(workflow.includes('"$release"/TBO-Copilot-*-${{ matrix.arch }}-mac.zip'));
+  assert.ok(workflow.includes('"$release"/TBO-Copilot-Setup-*.exe'));
+  assert.ok(workflow.includes('"$release"/TBO-Copilot-Portable-*.exe'));
+  assert.ok(workflow.includes('"$release"/TBO-Copilot-Portable-*.zip'));
+});
+
+test("Intel macOS builds are opt-in to save macOS runner minutes", () => {
+  assert.match(workflow, /macos_intel:\n(?:\s+.+\n)*?\s+default: false/);
+  assert.match(workflow, /if \[ "\$MACOS_INTEL" = "true" \]; then/);
+});

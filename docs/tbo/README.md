@@ -38,6 +38,7 @@ planning documents (`system-flow.md`, `tbo-copilot-architecture.md`, `plan-b-pi-
 | **Updates are off** unless `TBO_UPDATES=enabled` is set in the environment | `apps/desktop/electron/main/update-policy.ts` (`tboUpdatesEnabled`); tested by `apps/desktop/test/tbo-update-policy.test.mjs` | Normal commit |
 | Upstream update tests run with `TBO_UPDATES=enabled`, so they keep testing upstream's update logic | `apps/desktop/test/update-preference.test.mjs`, `updater-controller.test.mjs` (one line each) | Normal commit |
 | Tests that pin the product name, app ID, installer names and data folders expect the TBO values | 7 files in `apps/desktop/test/` | Branding script (test rules) |
+| TBO release workflow (macOS + Windows installers) and its test | `.github/workflows/tbo-release.yml`, `apps/desktop/test/tbo-release-workflow.test.mjs` | New files (upstream never has them) |
 
 ### Known test issue
 
@@ -81,6 +82,64 @@ into the app, which is not safe. Staff install new versions by hand.
 **Planned (option c):** host installers on a private TBO file server and switch `publish` in
 `apps/desktop/package.json` to electron-builder's `generic` provider pointing at that server. Then
 enable updates with `TBO_UPDATES=enabled`, or by changing `tboUpdatesEnabled`.
+
+## Installers (CI)
+
+`.github/workflows/tbo-release.yml` builds the installers:
+
+| Platform | Files |
+|---|---|
+| macOS Apple Silicon | `TBO-Copilot-<version>-arm64.dmg`, `TBO-Copilot-<version>-arm64-mac.zip` |
+| macOS Intel (opt-in) | `TBO-Copilot-<version>-x64.dmg`, `TBO-Copilot-<version>-x64-mac.zip` |
+| Windows x64 | `TBO-Copilot-Setup-<version>.exe` (installer), `TBO-Copilot-Portable-<version>.exe` and `.zip` |
+
+**How to run it:**
+
+| Trigger | Result |
+|---|---|
+| Push a tag `tbo-v<version>` (e.g. `tbo-v0.16.1`; a rebuild of the same version: `tbo-v0.16.1-2`) | Verify, build, then a **GitHub Release** in this private repository with the installers |
+| Actions → **TBO Release** → Run workflow | Test build; installers kept as workflow artifacts for 14 days |
+| A pull request into `tbo` that changes the workflow | The same test build |
+
+`<version>` must equal `apps/desktop/package.json`'s version; the workflow checks it.
+
+**Intel macOS** is off by default. Tick "Also build macOS Intel" when running it by hand, or set the
+repository variable `TBO_BUILD_MACOS_INTEL=true` to include it in tag builds.
+
+**Cost:** the organisation is on GitHub Free. macOS runner minutes count about 10x and Windows about
+2x against the monthly allowance. Build when needed, not on every push.
+
+### Signing (not set up yet)
+
+The installers are **unsigned**. macOS builds are **ad-hoc signed** (`-c.mac.identity=-`) so they run
+on Apple Silicon.
+
+**Opening them:**
+- **macOS:** right-click the app → Open → Open, once. If macOS says it is damaged:
+  `xattr -dr com.apple.quarantine "/Applications/TBO Copilot.app"`.
+- **Windows:** SmartScreen → More info → Run anyway.
+
+**To sign later:**
+- **macOS:** an Apple Developer ID (Apple Developer Program, TBO's own team). Add `CSC_LINK`,
+  `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` as Actions secrets,
+  and replace `-c.mac.identity=-` with `-c.mac.forceCodeSigning=true -c.mac.notarize=true`.
+  Upstream's `release.yml` shows the full signed lane.
+- **Windows:** a code-signing certificate.
+
+### Upstream workflows in this repository
+
+Upstream's workflow files stay unchanged so merges stay clean, but these are **disabled** in the
+repository's Actions settings:
+
+| Workflow | Why it is disabled |
+|---|---|
+| `release.yml` | Would build on upstream `v*` tags with upstream's Apple team and PI-Desktop names |
+| `linux-package.yml` | TBO does not ship Linux |
+| `mirror-to-cnb.yml` | Mirrors upstream releases to CNB |
+| `docs-check.yml` | Requires a Chinese mirror for every doc, which `docs/tbo/` does not have |
+| `pr-base.yml` | Requires pull requests into `main`; TBO pull requests go into `tbo` |
+
+`ci.yml` stays on: it tests every pull request.
 
 ## Run it locally
 
