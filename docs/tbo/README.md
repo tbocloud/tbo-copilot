@@ -39,6 +39,7 @@ planning documents (`system-flow.md`, `tbo-copilot-architecture.md`, `plan-b-pi-
 | Upstream update tests run with `TBO_UPDATES=enabled`, so they keep testing upstream's update logic | `apps/desktop/test/update-preference.test.mjs`, `updater-controller.test.mjs` (one line each) | Normal commit |
 | Tests that pin the product name, app ID, installer names and data folders expect the TBO values | 7 files in `apps/desktop/test/` | Branding script (test rules) |
 | TBO release workflow (macOS + Windows installers) and its test | `.github/workflows/tbo-release.yml`, `apps/desktop/test/tbo-release-workflow.test.mjs` | New files (upstream never has them) |
+| Shared TBO pull-request checks: Kimi review and task reference | `.github/workflows/ai-review.yml` (copy of `tbocloud/ai-review/caller.yml`), `.github/workflows/task-reference.yml` (same as `tbocloud/helpdesk_client`) | New files (upstream never has them) |
 
 ### Known test issue
 
@@ -53,6 +54,11 @@ rather than patching it here.
 
 `AGENTS.md` and `CLAUDE.md` are upstream's contributor policies (one branch and worktree per task,
 validation, commit format). Follow them for TBO work as well, with `tbo` in the role of `main`.
+
+TBO pull requests also follow the TBO Support rules:
+- branch `feature/TASK-YYYY-NNNNN-short-name`;
+- the PR says `Closes TASK-YYYY-NNNNN` (or `Refs …` when the PR is only part of the task);
+- checks: CI, **AI Review** (Kimi), **Task Reference**, plus one approval.
 
 **Not renamed, on purpose:**
 - package names (`@pi-desktop/*`);
