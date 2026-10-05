@@ -1,0 +1,3 @@
+# The root .gitignore ignores every build/ directory except apps/desktop/build/.
+# These brand images mirror apps/desktop/build/, so keep them tracked here too.
+!build/
