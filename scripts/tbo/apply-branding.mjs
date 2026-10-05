@@ -16,12 +16,17 @@
 // gone but whose `done` text is present is already applied. A rule where neither
 // is present means upstream changed that place: the script reports it so a person
 // can update the rule.
+//
+// Brand images (icons, installer background, renderer marks) live in
+// scripts/tbo/assets/, laid out like the repository, and are copied over
+// upstream's files. scripts/tbo/make-brand-assets.py regenerates them.
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { copyFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const ASSETS = join(ROOT, "scripts", "tbo", "assets");
 
 export const BRAND = {
   name: "TBO Copilot",
@@ -177,6 +182,38 @@ function applyRule(text, r) {
   return { text: next, changed };
 }
 
+// Dot-files (the assets' own .gitignore) are not brand images.
+function assetFiles(dir = ASSETS) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name.startsWith(".")) return [];
+    const path = join(dir, entry.name);
+    return entry.isDirectory() ? assetFiles(path) : [path];
+  });
+}
+
+// Copies each brand image over the upstream file it replaces. A target that no
+// longer exists is reported as stale rather than created: upstream moved or
+// renamed it, and a person decides where the image belongs now.
+function syncAssets(check, unbranded, stale) {
+  let copied = 0;
+  for (const source of assetFiles()) {
+    const target = relative(ASSETS, source);
+    const destination = join(ROOT, target);
+    if (!existsSync(destination)) {
+      stale.push(`${target}: brand image target not found`);
+      continue;
+    }
+    if (readFileSync(source).equals(readFileSync(destination))) continue;
+    if (check) unbranded.push(`${target}: differs from scripts/tbo/assets`);
+    else {
+      copyFileSync(source, destination);
+      copied += 1;
+    }
+  }
+  return copied;
+}
+
 function main() {
   const check = process.argv.includes("--check");
   const files = new Map();
@@ -210,9 +247,11 @@ function main() {
     }
   }
 
+  const copied = syncAssets(check, unbranded, stale);
+
   if (!check) {
     for (const [file, text] of files) writeFileSync(join(ROOT, file), text);
-    console.log(`TBO branding: ${applied} replacement(s) applied.`);
+    console.log(`TBO branding: ${applied} replacement(s) applied, ${copied} brand image(s) copied.`);
   }
   for (const line of stale) console.warn(`  stale rule (upstream changed this place): ${line}`);
   if (check) {

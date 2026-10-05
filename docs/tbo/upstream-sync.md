@@ -63,6 +63,12 @@ grep -rn "PI-Desktop" packages/i18n/src/locales/en apps/desktop/src apps/desktop
 
 Add a rule for each new visible occurrence. Leave comments, internal markers and model prompts alone.
 
+The script also copies the TBO brand images from `scripts/tbo/assets/` over upstream's. If it
+reports **"brand image target not found"**, upstream moved or renamed that image. Move the file
+in `scripts/tbo/assets/` to the new path, then run the script again. If upstream added a **new**
+brand image (look for new files in `apps/desktop/build/` or `apps/desktop/src/assets/brand/`),
+add it to `scripts/tbo/make-brand-assets.py`.
+
 ## 4. Install, build and test
 
 ```bash

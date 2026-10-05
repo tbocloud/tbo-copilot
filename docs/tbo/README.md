@@ -42,6 +42,37 @@ planning documents (`system-flow.md`, `tbo-copilot-architecture.md`, `plan-b-pi-
 | Tests that pin the product name, app ID, installer names and data folders expect the TBO values | 7 files in `apps/desktop/test/` | Branding script (test rules) |
 | TBO release workflow (macOS + Windows installers) and its test | `.github/workflows/tbo-release.yml`, `apps/desktop/test/tbo-release-workflow.test.mjs` | New files (upstream never has them) |
 | Shared TBO pull-request checks: Kimi review and task reference | `.github/workflows/ai-review.yml` (copy of `tbocloud/ai-review/caller.yml`), `.github/workflows/task-reference.yml` (same as `tbocloud/helpdesk_client`) | New files (upstream never has them) |
+| **TBO logo** in the app icons (light and dark), Windows `.ico`, macOS `.icns`, menu bar icon, installer background and in-app logo | `apps/desktop/build/*`, `apps/desktop/src/assets/brand/*` | Branding script copies them from `scripts/tbo/assets/` |
+
+### Brand images
+
+All brand images come from **`scripts/tbo/make-brand-assets.py`**:
+
+- It draws the Team Back Office mark (the folded teal banner with the orange flap) from vector
+  geometry measured on the official logo: teal `#1C7690` / `#145868`, orange `#FB991C`.
+- The official logo is a 191×80 PNG with a white "TEAM BACK OFFICE" wordmark. Its mark is only
+  48 px wide, too small to scale to a 1024 px icon, so it is redrawn rather than scaled.
+- The script writes every image to `scripts/tbo/assets/`, laid out like the repository, and writes
+  the mark as an SVG to `scripts/tbo/brand/tbo-mark.svg`.
+- `apply-branding.mjs` copies the images over upstream's files, and `--check` fails if any differs.
+
+| Image | Used for |
+|---|---|
+| `build/icon_1024.png` (light tile) | Installer master; macOS Dock icon in development |
+| `build/logo_dark.png` (dark tile) | Dark installer master (ADR 0125) |
+| `build/icon.png`, `icon.ico`, `icon.icns` | Package, Windows and macOS app icons; `icon.png` is also the tray icon on Windows and Linux |
+| `build/tray-icon-mac.png` | macOS menu bar (template: black silhouette) |
+| `build/dmg-background.png` (+ `@2x`) | macOS installer window: "TBO Copilot", arrow, "Drag TBO Copilot to Applications to install" |
+| `src/assets/brand/logo-light.png`, `logo-dark.png` | The logo inside the app (192 px, ADR 0125) |
+
+**To change the brand:**
+1. Edit the colours or geometry in `make-brand-assets.py`.
+2. Run `python3 scripts/tbo/make-brand-assets.py` (needs Pillow; on macOS, so `iconutil` and the
+   Helvetica Neue font are available).
+3. Run `node scripts/tbo/apply-branding.mjs`.
+4. Commit `scripts/tbo/assets/` and the copied files together.
+
+The home-screen mascot (`src/assets/home-mascot-*`) is not the PI logo and is kept as is.
 
 ### Known test issue
 
