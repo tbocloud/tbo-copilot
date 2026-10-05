@@ -9,6 +9,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 register(pathToFileURL(join(here, "helpers/ts-import-hooks.mjs")));
 register(pathToFileURL(join(here, "helpers/updater-module-stubs.mjs")));
 
+// TBO Copilot ships with updates off; these tests exercise upstream's updater.
+process.env.TBO_UPDATES ??= "enabled";
+
 const { AppUpdaterController } = await import("../electron/main/updater.ts");
 
 class FakeUpdater extends EventEmitter {

@@ -2,12 +2,21 @@ import type { UpdateMode, UpdatePreference } from "@pi-desktop/shared";
 
 export type WindowsDistribution = "installed" | "zip" | "portable";
 
+/**
+ * TBO Copilot: updates stay off until TBO hosts its own update server
+ * (docs/tbo/README.md). `TBO_UPDATES=enabled` restores upstream behaviour.
+ */
+export function tboUpdatesEnabled(): boolean {
+  return process.env.TBO_UPDATES === "enabled";
+}
+
 export function supportsAutomaticUpdates(
   platform: NodeJS.Platform,
   isPackaged: boolean,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (!isPackaged) return false;
+  if (!tboUpdatesEnabled()) return false;
   if (platform === "win32" || platform === "darwin") return true;
   return platform === "linux" && Boolean(env.APPIMAGE);
 }
@@ -49,7 +58,7 @@ export function resolveUpdateMode(
   distribution?: WindowsDistribution,
   preference?: UpdatePreference,
 ): UpdateMode {
-  if (!isPackaged) return "disabled";
+  if (!isPackaged || !tboUpdatesEnabled()) return "disabled";
   if (!supportsAutomaticUpdates(platform, isPackaged, env)) return "manual";
   const selected =
     preference ??

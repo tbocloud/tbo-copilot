@@ -8,6 +8,9 @@ import { readFile } from "node:fs/promises";
 const here = dirname(fileURLToPath(import.meta.url));
 register(pathToFileURL(join(here, "helpers/ts-import-hooks.mjs")));
 
+// TBO Copilot ships with updates off; these tests exercise upstream's update policy.
+process.env.TBO_UPDATES ??= "enabled";
+
 const [
   policy,
   reminders,

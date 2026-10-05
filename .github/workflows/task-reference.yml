@@ -1,0 +1,52 @@
+name: Task Reference
+
+# Every PR names the TBO Support task it works on, so the task follows the PR
+# (see helpdesk/github_sync.py in tbocloud/helpdesk). Required as the "task-reference" check.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task-reference-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  task-reference:
+    name: task-reference
+    runs-on: ubuntu-latest
+    # skipped jobs count as passed for required checks
+    if: >-
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !contains(github.event.pull_request.labels.*.name, 'no-task')
+    steps:
+      - name: Require a TASK-YYYY-NNNNN reference
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const pattern = /(?<![A-Za-z0-9])TASK-\d{4}-\d{5}(?!\d)/i;
+            const places = [
+              ["title", pr.title || ""],
+              ["description", pr.body || ""],
+              ["branch name", (pr.head && pr.head.ref) || ""],
+            ];
+            for (const [where, text] of places) {
+              const match = text.match(pattern);
+              if (match) {
+                core.info(`Found ${match[0].toUpperCase()} in the PR ${where}.`);
+                return;
+              }
+            }
+            core.setFailed(
+              [
+                "This pull request doesn't name a TBO Support task.",
+                "Add the task number to the PR title, description or branch name, for example:",
+                "  Closes TASK-2026-00012   (merging the PR completes the task)",
+                "  Refs TASK-2026-00012     (the PR is part of the task)",
+                "  branch: feature/TASK-2026-00012-invoice-print",
+                "If this PR really has no task, add the \"no-task\" label.",
+              ].join("\n")
+            );
