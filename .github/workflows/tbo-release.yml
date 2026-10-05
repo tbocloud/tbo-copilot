@@ -187,6 +187,10 @@ jobs:
         env:
           # No Developer ID yet: never pick up a certificate from the runner.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # electron-builder skips all signing in pull-request builds, ad-hoc
+          # included. Ad-hoc signing uses no secrets, so pull-request test
+          # builds sign the same way as tag builds.
+          CSC_FOR_PULL_REQUEST: 'true'
         # identity "-" asks electron-builder for an ad-hoc signature. Without
         # it the app is not signed at all and Apple Silicon reports it as
         # damaged. The entitlements already allow ad-hoc signed libraries.

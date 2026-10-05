@@ -26,6 +26,8 @@ test("TBO releases come from tbo-v tags; workflow edits and manual runs make tes
 test("TBO installers build without signing secrets and macOS builds are ad-hoc signed", () => {
   assert.doesNotMatch(workflow, /secrets\./);
   assert.match(workflow, /CSC_IDENTITY_AUTO_DISCOVERY: 'false'/);
+  // Without this, pull-request test builds are not signed at all.
+  assert.match(workflow, /CSC_FOR_PULL_REQUEST: 'true'/);
   assert.match(
     workflow,
     /run dist:mac --\$\{\{ matrix\.arch \}\} -c\.mac\.identity=-/,
