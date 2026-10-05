@@ -115,8 +115,10 @@ The installers are **unsigned**. macOS builds are **ad-hoc signed** (`-c.mac.ide
 on Apple Silicon.
 
 **Opening them:**
-- **macOS:** right-click the app → Open → Open, once. If macOS says it is damaged:
-  `xattr -dr com.apple.quarantine "/Applications/TBO Copilot.app"`.
+- **macOS 15 or later:** open the app once (macOS blocks it), then System Settings →
+  Privacy & Security → **Open Anyway** next to TBO Copilot.
+- **Older macOS:** right-click the app → Open → Open, once.
+- **Any macOS:** `xattr -dr com.apple.quarantine "/Applications/TBO Copilot.app"` removes the block.
 - **Windows:** SmartScreen → More info → Run anyway.
 
 **To sign later:**

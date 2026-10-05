@@ -266,8 +266,10 @@ jobs:
             TBO Copilot ${{ github.ref_name }}, built from commit ${{ github.sha }}.
 
             These installers are **not signed yet**:
-            - **macOS:** open the DMG and drag TBO Copilot to Applications. The first time, right-click the app → Open → Open.
-              If macOS says the app is damaged, run `xattr -dr com.apple.quarantine "/Applications/TBO Copilot.app"` once.
+            - **macOS:** open the DMG and drag TBO Copilot to Applications. The first time macOS blocks it:
+              - macOS 15 or later: open it once, then System Settings → Privacy & Security → "Open Anyway" next to TBO Copilot.
+              - Older macOS: right-click the app → Open → Open.
+              - Or run once: `xattr -dr com.apple.quarantine "/Applications/TBO Copilot.app"`
             - **Windows:** run `TBO-Copilot-Setup-*.exe`. If SmartScreen appears, choose More info → Run anyway.
 
             Updates are off in this build: install new versions by hand.
