@@ -3,8 +3,8 @@
   "version": "0.16.1",
   "desktopName": "pi-desktop.desktop",
   "private": true,
-  "description": "PI-Desktop Electron application",
-  "homepage": "https://github.com/vastsa/PI-Desktop",
+  "description": "TBO Copilot Electron application",
+  "homepage": "https://github.com/tbocloud/tbo-copilot",
   "author": {
     "name": "vastsa",
     "email": "hhxk666@gmail.com"
@@ -80,16 +80,16 @@
     "zustand": "^5.0.15"
   },
   "build": {
-    "appId": "net.aiuo.pi-desktop",
-    "productName": "PI-Desktop",
+    "appId": "com.teambackoffice.copilot",
+    "productName": "TBO Copilot",
     "directories": {
       "output": "release"
     },
     "publish": [
       {
         "provider": "github",
-        "owner": "vastsa",
-        "repo": "PI-Desktop"
+        "owner": "tbocloud",
+        "repo": "tbo-copilot"
       }
     ],
     "extraMetadata": {
@@ -142,7 +142,7 @@
       }
     ],
     "mac": {
-      "artifactName": "PI-Desktop-${version}-${arch}-mac.${ext}",
+      "artifactName": "TBO-Copilot-${version}-${arch}-mac.${ext}",
       "target": [
         {
           "target": "dmg"
@@ -158,8 +158,8 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
-        "NSLocalNetworkUsageDescription": "PI-Desktop needs local network access so agents can reach OpenAI-compatible providers, Ollama, and other AI endpoints running on your LAN. / PI-Desktop 需要本地网络访问权限，以便助手请求同一局域网中的 OpenAI 兼容服务、Ollama 等本地 AI 端点。",
-        "NSMicrophoneUsageDescription": "PI-Desktop uses the microphone for Live voice calls and authorized plugin audio access. / PI-Desktop 使用麦克风进行实时语音通话，以及你已授权的插件音频访问。",
+        "NSLocalNetworkUsageDescription": "TBO Copilot needs local network access so agents can reach OpenAI-compatible providers, Ollama, and other AI endpoints running on your LAN. / TBO Copilot 需要本地网络访问权限，以便助手请求同一局域网中的 OpenAI 兼容服务、Ollama 等本地 AI 端点。",
+        "NSMicrophoneUsageDescription": "TBO Copilot uses the microphone for Live voice calls and authorized plugin audio access. / TBO Copilot 使用麦克风进行实时语音通话，以及你已授权的插件音频访问。",
         "NSBonjourServices": [
           "_http._tcp",
           "_https._tcp"
@@ -177,7 +177,7 @@
       ]
     },
     "dmg": {
-      "artifactName": "PI-Desktop-${version}-${arch}.${ext}",
+      "artifactName": "TBO-Copilot-${version}-${arch}.${ext}",
       "background": "build/dmg-background.png",
       "icon": "build/icon.icns",
       "window": {
@@ -200,8 +200,8 @@
       ]
     },
     "win": {
-      "executableName": "PI-Desktop",
-      "artifactName": "PI-Desktop-Portable-${version}.${ext}",
+      "executableName": "TBO Copilot",
+      "artifactName": "TBO-Copilot-Portable-${version}.${ext}",
       "target": [
         {
           "target": "nsis",
@@ -237,28 +237,28 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "shortcutName": "PI-Desktop",
-      "artifactName": "PI-Desktop-Setup-${version}.${ext}"
+      "shortcutName": "TBO Copilot",
+      "artifactName": "TBO-Copilot-Setup-${version}.${ext}"
     },
     "portable": {
-      "artifactName": "PI-Desktop-Portable-${version}.${ext}"
+      "artifactName": "TBO-Copilot-Portable-${version}.${ext}"
     },
     "deb": {
-      "packageName": "pi-desktop",
-      "artifactName": "pi-desktop_${version}_${arch}.${ext}"
+      "packageName": "tbo-copilot",
+      "artifactName": "tbo-copilot_${version}_${arch}.${ext}"
     },
     "rpm": {
-      "packageName": "pi-desktop",
-      "artifactName": "pi-desktop-${version}-${arch}.${ext}",
+      "packageName": "tbo-copilot",
+      "artifactName": "tbo-copilot-${version}-${arch}.${ext}",
       "fpm": [
         "--rpm-rpmbuild-define",
         "_build_id_links none"
       ]
     },
     "linux": {
-      "executableName": "pi-desktop",
+      "executableName": "tbo-copilot",
       "syncDesktopName": true,
-      "artifactName": "PI-Desktop-${version}-linux-${arch}.${ext}",
+      "artifactName": "TBO-Copilot-${version}-linux-${arch}.${ext}",
       "target": [
         {
           "target": "AppImage"

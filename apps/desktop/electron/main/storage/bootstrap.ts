@@ -30,7 +30,7 @@ export async function prepareStorage(defaultData: string, overridden: boolean): 
       : readStoragePreferences(file, defaults);
     if (!overridden && preferences.roots.data !== defaults.data
       && (!existsSync(preferences.roots.data) || !existsSync(preferences.roots.browser))) {
-      throw new Error("The selected storage directory is unavailable. Reconnect its drive before starting PI-Desktop.");
+      throw new Error("The selected storage directory is unavailable. Reconnect its drive before starting TBO Copilot.");
     }
   } catch (error) {
     await app.whenReady();

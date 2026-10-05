@@ -211,8 +211,8 @@ test("the Linux package config lets the workflow choose the architecture", () =>
     /-linux-\$\{arch\}\.\$\{ext\}$/,
     "the AppImage name carries its architecture",
   );
-  assert.equal(build.deb.artifactName, "pi-desktop_${version}_${arch}.${ext}");
-  assert.equal(build.rpm.artifactName, "pi-desktop-${version}-${arch}.${ext}");
+  assert.equal(build.deb.artifactName, "tbo-copilot_${version}_${arch}.${ext}");
+  assert.equal(build.rpm.artifactName, "tbo-copilot-${version}-${arch}.${ext}");
 });
 
 test("release matrix packages both native macOS architectures", () => {
@@ -230,12 +230,12 @@ test("release matrix packages both native macOS architectures", () => {
   );
   assert.equal(
     JSON.parse(desktopPackageSource).build.mac.artifactName,
-    "PI-Desktop-${version}-${arch}-mac.${ext}",
+    "TBO-Copilot-${version}-${arch}-mac.${ext}",
     "macOS ZIP names include the target architecture",
   );
   assert.equal(
     JSON.parse(desktopPackageSource).build.dmg.artifactName,
-    "PI-Desktop-${version}-${arch}.${ext}",
+    "TBO-Copilot-${version}-${arch}.${ext}",
     "macOS DMG names include the target architecture",
   );
   assert.match(
