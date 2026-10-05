@@ -52,7 +52,7 @@ test("the workflow checks the branding and expects the configured installer name
   assert.ok(workflow.includes('"$release"/TBO-Copilot-Portable-*.zip'));
 });
 
-test("Intel macOS builds are opt-in to save macOS runner minutes", () => {
+test("Intel macOS builds are opt-in", () => {
   assert.match(workflow, /macos_intel:\n(?:\s+.+\n)*?\s+default: false/);
   assert.match(workflow, /if \[ "\$MACOS_INTEL" = "true" \]; then/);
 });

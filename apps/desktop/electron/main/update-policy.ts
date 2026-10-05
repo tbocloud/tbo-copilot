@@ -3,8 +3,7 @@ import type { UpdateMode, UpdatePreference } from "@pi-desktop/shared";
 export type WindowsDistribution = "installed" | "zip" | "portable";
 
 /**
- * TBO Copilot: updates stay off until TBO hosts its own update server, because
- * a private GitHub repository cannot serve updates without a token in the app
+ * TBO Copilot: updates stay off until TBO hosts its own update server
  * (docs/tbo/README.md). `TBO_UPDATES=enabled` restores upstream behaviour.
  */
 export function tboUpdatesEnabled(): boolean {

@@ -6,8 +6,8 @@
 # Triggers:
 #   - Tag `tbo-v<version>` (e.g. tbo-v0.16.1), where <version> is the version in
 #     apps/desktop/package.json. A rebuild of the same version uses a suffix:
-#     tbo-v0.16.1-2. Tag builds publish a GitHub Release in this (private)
-#     repository with the installers attached.
+#     tbo-v0.16.1-2. Tag builds publish a GitHub Release in this repository
+#     with the installers attached.
 #   - Actions → TBO Release → Run workflow: a test build. Installers are kept as
 #     workflow artifacts for 14 days; no release is created.
 #   - A pull request into `tbo` that changes this workflow: the same test build,
@@ -21,8 +21,8 @@
 # Actions settings: it signs with upstream's Apple team and expects PI-Desktop
 # artifact names. Its file stays unchanged so upstream merges stay clean.
 #
-# This repository is on GitHub Free: macOS runner minutes count about 10x and
-# Windows about 2x against the monthly allowance, so Intel macOS is opt-in.
+# GitHub-hosted runners are free for this public repository. Intel macOS is
+# opt-in to keep builds short.
 
 name: TBO Release
 
@@ -36,7 +36,7 @@ on:
   workflow_dispatch:
     inputs:
       macos_intel:
-        description: 'Also build macOS Intel (x64). Uses extra macOS minutes.'
+        description: 'Also build macOS Intel (x64).'
         required: false
         default: false
         type: boolean

@@ -10,7 +10,7 @@ planning documents (`system-flow.md`, `tbo-copilot-architecture.md`, `plan-b-pi-
 
 | Remote | URL | Purpose |
 |---|---|---|
-| `origin` | `https://github.com/tbocloud/tbo-copilot` (private) | TBO Copilot |
+| `origin` | `https://github.com/tbocloud/tbo-copilot` (public fork of `vastsa/PI-Desktop`) | TBO Copilot |
 | `upstream` | `https://github.com/vastsa/PI-Desktop` | The original project |
 
 | Branch | Contents |
@@ -25,7 +25,9 @@ planning documents (`system-flow.md`, `tbo-copilot-architecture.md`, `plan-b-pi-
    Plugins use only the plugin API, so they can stay private under the LGPL.
 3. **List every core change in this file.**
 4. **Keep `LICENSE` and all copyright notices.** Changes to PI-Desktop's own files stay LGPL-3.0.
-   If an installer is ever given to anyone outside TBO, offer them the source of the LGPL parts.
+   This repository is public, so the source of every installer built from it is available.
+5. **Never put secrets in this repository.** It is public: keys go in Actions secrets, and TBO-only
+   logic goes in the private plugins repository.
 
 ## TBO changes to the core
 
@@ -82,8 +84,10 @@ A **stale rule** means upstream changed or moved that text: update the rule in t
 
 ## Updates
 
-**Status: off.** A private GitHub repository cannot serve updates to the app without a token built
-into the app, which is not safe. Staff install new versions by hand.
+**Status: off.** Staff install new versions by hand.
+
+This repository is public, so its GitHub Releases could serve updates without a token in the app.
+TBO has chosen to keep updates off for now.
 
 **Planned (option c):** host installers on a private TBO file server and switch `publish` in
 `apps/desktop/package.json` to electron-builder's `generic` provider pointing at that server. Then
@@ -103,7 +107,7 @@ enable updates with `TBO_UPDATES=enabled`, or by changing `tboUpdatesEnabled`.
 
 | Trigger | Result |
 |---|---|
-| Push a tag `tbo-v<version>` (e.g. `tbo-v0.16.1`; a rebuild of the same version: `tbo-v0.16.1-2`) | Verify, build, then a **GitHub Release** in this private repository with the installers |
+| Push a tag `tbo-v<version>` (e.g. `tbo-v0.16.1`; a rebuild of the same version: `tbo-v0.16.1-2`) | Verify, build, then a **GitHub Release** in this repository with the installers (public: anyone can download them) |
 | Actions → **TBO Release** → Run workflow | Test build; installers kept as workflow artifacts for 14 days |
 | A pull request into `tbo` that changes the workflow | The same test build |
 
@@ -112,8 +116,8 @@ enable updates with `TBO_UPDATES=enabled`, or by changing `tboUpdatesEnabled`.
 **Intel macOS** is off by default. Tick "Also build macOS Intel" when running it by hand, or set the
 repository variable `TBO_BUILD_MACOS_INTEL=true` to include it in tag builds.
 
-**Cost:** the organisation is on GitHub Free. macOS runner minutes count about 10x and Windows about
-2x against the monthly allowance. Build when needed, not on every push.
+**Cost:** none. GitHub-hosted runners are free for public repositories. A full build takes about
+35 minutes.
 
 ### Signing (not set up yet)
 
