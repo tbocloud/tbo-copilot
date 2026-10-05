@@ -43,6 +43,8 @@ planning documents (`system-flow.md`, `tbo-copilot-architecture.md`, `plan-b-pi-
 | TBO release workflow (macOS + Windows installers) and its test | `.github/workflows/tbo-release.yml`, `apps/desktop/test/tbo-release-workflow.test.mjs` | New files (upstream never has them) |
 | Shared TBO pull-request checks: Kimi review and task reference | `.github/workflows/ai-review.yml` (copy of `tbocloud/ai-review/caller.yml`), `.github/workflows/task-reference.yml` (same as `tbocloud/helpdesk_client`) | New files (upstream never has them) |
 | **TBO logo** in the app icons (light and dark), Windows `.ico`, macOS `.icns`, menu bar icon, installer background and in-app logo | `apps/desktop/build/*`, `apps/desktop/src/assets/brand/*` | Branding script copies them from `scripts/tbo/assets/` |
+| **Default theme TBO Dark** for a new install (`plugin:tbo.theme:tbo-dark`); without the plugin the shell falls back to System | `crates/host-core/src/rpc/mod.rs` (`settings.get` defaults) | Branding script |
+| **Bundled private TBO plugins** (`tbo.theme`), copied in at build time | `scripts/tbo/bundled-plugins.json`, `scripts/tbo/fetch-plugins.mjs`, `.gitignore`, `tbo-release.yml` | New files; one `.gitignore` block |
 
 ### Brand images
 
@@ -123,6 +125,45 @@ TBO has chosen to keep updates off for now.
 **Planned (option c):** host installers on a private TBO file server and switch `publish` in
 `apps/desktop/package.json` to electron-builder's `generic` provider pointing at that server. Then
 enable updates with `TBO_UPDATES=enabled`, or by changing `tboUpdatesEnabled`.
+
+## Bundled TBO plugins
+
+TBO plugins live in the private repository
+[`tbocloud/tbo-copilot-plugins`](https://github.com/tbocloud/tbo-copilot-plugins). The installers
+ship the ones listed in `scripts/tbo/bundled-plugins.json` (today: `tbo.theme`, the TBO colours):
+
+```json
+{ "repository": "tbocloud/tbo-copilot-plugins", "ref": "main", "plugins": ["tbo.theme"] }
+```
+
+- **At build time** `tbo-release.yml` checks out that repository at `ref` with a read-only deploy key,
+  and `scripts/tbo/fetch-plugins.mjs` copies each listed folder into
+  `apps/desktop/resources/plugins/`. The host registers everything there as a bundled plugin, enabled
+  by default. A later step checks the plugins are inside the packaged app.
+- **Releases (`tbo-v*` tags) fail without the key**, so a release never ships without the theme.
+  Manual and pull-request test builds only warn, and then open on the System theme.
+- Only ids starting with `tbo.` are accepted, so a TBO plugin can never replace one of upstream's
+  bundled plugins (`pi.browser`, `pi.file-manager`). The copied folders are ignored by git.
+- `ref` is `main`, so a release ships the plugins as they are on `main` when it is built; the build log
+  records the commit. Pin `ref` to a tag or commit to freeze them.
+
+**Locally** (for `pnpm dev`, or to package by hand):
+
+```bash
+node scripts/tbo/fetch-plugins.mjs                          # clones with your git credentials
+node scripts/tbo/fetch-plugins.mjs --source ../tbo-copilot-plugins   # or from a local checkout
+```
+
+### Setting up the deploy key (repository admin, once)
+
+```bash
+ssh-keygen -t ed25519 -N "" -C "tbo-copilot release" -f tbo-plugins-deploy-key
+gh repo deploy-key add tbo-plugins-deploy-key.pub -R tbocloud/tbo-copilot-plugins --title "tbo-copilot release (read-only)"
+gh secret set TBO_PLUGINS_DEPLOY_KEY -R tbocloud/tbo-copilot < tbo-plugins-deploy-key
+rm tbo-plugins-deploy-key tbo-plugins-deploy-key.pub
+```
+
+The key can only read `tbo-copilot-plugins`. Pull requests from forks never receive it.
 
 ## Installers (CI)
 

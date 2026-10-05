@@ -129,6 +129,10 @@ jobs:
       matrix: ${{ fromJSON(needs.verify.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      # The TBO plugins (scripts/tbo/bundled-plugins.json) live in a private
+      # repository; a read-only deploy key on it fetches them.
+      HAS_TBO_PLUGINS_KEY: ${{ secrets.TBO_PLUGINS_DEPLOY_KEY != '' }}
     defaults:
       run:
         shell: bash
@@ -171,6 +175,39 @@ jobs:
 
           wait "$host_build_pid"
           trap - EXIT
+
+      - name: Read the TBO plugins to bundle
+        id: tbo_plugins
+        run: |
+          set -euo pipefail
+          node -e '
+            const config = require("./scripts/tbo/bundled-plugins.json");
+            console.log(`repository=${config.repository}`);
+            console.log(`ref=${config.ref}`);
+          ' >> "$GITHUB_OUTPUT"
+
+      - name: Check out the TBO plugins
+        if: env.HAS_TBO_PLUGINS_KEY == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.tbo_plugins.outputs.repository }}
+          ref: ${{ steps.tbo_plugins.outputs.ref }}
+          ssh-key: ${{ secrets.TBO_PLUGINS_DEPLOY_KEY }}
+          persist-credentials: false
+          path: .tbo-plugins
+
+      - name: Bundle the TBO plugins
+        # Releases must ship the TBO theme; test builds may go without it.
+        run: |
+          set -euo pipefail
+          if [ "$HAS_TBO_PLUGINS_KEY" = "true" ]; then
+            node scripts/tbo/fetch-plugins.mjs --source .tbo-plugins
+          elif [[ "$GITHUB_REF" == refs/tags/tbo-v* ]]; then
+            echo "::error::The TBO_PLUGINS_DEPLOY_KEY secret is not set, so this release would ship without the TBO plugins. See docs/tbo/README.md."
+            exit 1
+          else
+            echo "::warning::TBO_PLUGINS_DEPLOY_KEY is not set: this test build has no TBO plugins and opens on the System theme."
+          fi
 
       # Arguments go straight after the script name, without `--`: pnpm 12
       # passes a literal `--` through to the script, and electron-builder then
@@ -228,6 +265,25 @@ jobs:
           codesign --verify --deep --strict "$app"
           codesign -dv "$app" 2>&1 | grep -E "Identifier|Signature" || true
 
+      - name: Check the bundled TBO plugins
+        if: env.HAS_TBO_PLUGINS_KEY == 'true'
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.platform }}" = "macos" ]; then
+            app="$(find apps/desktop/release -maxdepth 2 -name 'TBO Copilot.app' -type d | head -1)"
+            resources="$app/Contents/Resources"
+          else
+            resources=apps/desktop/release/win-unpacked/resources
+          fi
+          for id in $(node -p 'require("./scripts/tbo/bundled-plugins.json").plugins.join(" ")'); do
+            if [ ! -f "$resources/plugins/$id/manifest.json" ]; then
+              echo "::error::$id is missing from the packaged app ($resources/plugins)."
+              ls -la "$resources/plugins" || true
+              exit 1
+            fi
+            echo "bundled: $id"
+          done
+
       - name: Upload installers
         uses: actions/upload-artifact@v7
         with:
@@ -271,5 +327,7 @@ jobs:
               - Older macOS: right-click the app → Open → Open.
               - Or run once: `xattr -dr com.apple.quarantine "/Applications/TBO Copilot.app"`
             - **Windows:** run `TBO-Copilot-Setup-*.exe`. If SmartScreen appears, choose More info → Run anyway.
+
+            TBO Copilot opens on the **TBO Dark** theme. Settings → General → Theme also has **TBO Light**.
 
             Updates are off in this build: install new versions by hand.

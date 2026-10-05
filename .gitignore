@@ -61,3 +61,6 @@ electron.vite.config.*.mjs
 
 .playwright-cli
 worktrees
+# TBO Copilot: private plugins copied in at build time (scripts/tbo/fetch-plugins.mjs)
+apps/desktop/resources/plugins/tbo.*/
+.tbo-plugins/

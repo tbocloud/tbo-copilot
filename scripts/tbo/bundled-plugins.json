@@ -1,0 +1,5 @@
+{
+  "repository": "tbocloud/tbo-copilot-plugins",
+  "ref": "main",
+  "plugins": ["tbo.theme"]
+}
