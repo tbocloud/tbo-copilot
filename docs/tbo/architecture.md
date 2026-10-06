@@ -190,7 +190,7 @@ Connects to each customer's ERPNext site through `helpdesk_client`'s MCP server 
 
 | Read | Change | Approval |
 |---|---|---|
-| Allowed doctypes and records (masked samples, never bulk exports); metadata; customizations; error logs; reports; installed apps and deployed code (commit per app) | **Staging/UAT:** configuration and data fixes for allow-listed doctypes. **Production:** only the approved change set, applied by the deploy step | **Required** for every production write. The previous version of each changed document is saved first, for rollback. |
+| Allowed doctypes and records (masked samples, never bulk exports); metadata; customizations; error logs; reports; installed apps and deployed code (commit per app) | **Staging/UAT:** configuration and data fixes for allow-listed doctypes. **Production:** only the approved change set, applied by the deploy step. Submitted accounting and stock documents are never edited directly: they are corrected through cancel and amend or adjusting entries (§8.1) | **Required** for every production write. The previous version of each changed document is saved first, for rollback. |
 
 ### 7.3 Customer Chat
 
@@ -222,8 +222,9 @@ Frappe and ERPNext development, debugging and fixes in customers' custom apps.
 
 ```
 1. Issue arrives          customer's ERP support button, chat, or email      people: none
-2. Triage                 type, priority, SLA, fix brief (TBO Support)       people: none
-3. Investigate and fix    backend agent: reproduce, find the cause, fix      people: none
+2. Triage                 a FIRST GUESS: type, priority, SLA, fix brief      people: none
+3. Investigate and fix    backend agent: find the ROOT CAUSE (§8.1), which   people: none
+                          decides the path; reproduce, fix
                           in a sandbox (Frappe Dev, Customer ERP read)
 4. Automatic checks       tests · bench migrate · AI review (Kimi) ·         people: none
                           risk rules · deploy to the customer's UAT and
@@ -233,6 +234,44 @@ Frappe and ERPNext development, debugging and fixes in customers' custom apps.
                           automatic verification; automatic rollback on failure
 7. Close                  customer told "Resolved", can confirm or reopen    people: none
 ```
+
+### 8.1 The root cause decides the path
+
+Triage gives a **first guess** at the ticket type. The agent investigates **before** it chooses a fix, and the **root cause it finds** decides the path. The fix brief already asks the agent to decide whether the cause is in Frappe/ERPNext, a custom app, configuration or data.
+
+**Ticket types and their one approval:**
+
+| Type | What the agent does | Changes code? | The one approval |
+|---|---|---|---|
+| **Question** | Drafts the answer from the knowledge base and the customer's configuration | No | 1 support agent reviews the reply |
+| **Data problem** | Finds the cause read-only over MCP and prepares the exact correction | No | 1 developer approves the correction |
+| **Customization** | Estimates scope, hours and date; the customer agrees; builds on staging | Settings or code | Customer agreement on scope and date (a quote, not a technical approval) + 1 developer |
+| **Bug** | Reproduces in a sandbox, fixes, adds a regression test, checks on UAT, deploys | Yes | 1 approver from the rota |
+
+**How the cause is found:**
+- **Document history:** Frappe's Version log shows whether a **person** entered the value or the **system** calculated it.
+- **Reproduce:** the same inputs in the sandbox bench give the same wrong result.
+- **Scope:** one record, or many records across users?
+- **Evidence:** error logs, session replay, and recent changes to the custom app (commits since the last good state).
+
+**What happens for each cause:**
+
+| Root cause found | What the agent does | The one approval covers |
+|---|---|---|
+| **Bug** | The bug path | The code fix |
+| **Bug that has damaged data** (looks like a data problem) | 1. Fixes the code first. 2. Finds **every** affected record, not only the reported one. 3. Corrects the data **after** the fix is live, so it is not damaged again. | **Both together**, in one summary card: the fix, and "N records corrected, old values saved" |
+| **Customer entry mistake** | 1. Explains what happened, in plain words and without blame. 2. Shows how to correct it the **ERP way** (cancel and amend for submitted documents). 3. Prepares the correction only if the customer cannot do it. 4. Suggests prevention: a guide or KB article, or a validation rule. | The correction, only if the agent prepares it. A validation rule is a **customization**: offered, and the customer decides |
+| **Wrong setting** | Changes the setting on staging or UAT, checks it, then applies it to production | The setting change |
+| **Frappe/ERPNext core issue** | A workaround in the customer's custom app where possible; otherwise a person decides (for example, report it upstream) | The workaround |
+| **Unclear or mixed** | Does **not** guess: hands the ticket to a person with everything it found | — |
+
+**Rules:**
+1. The **root cause** decides the path, not the triage label.
+2. A bug that damaged data: **fix the code first, then correct all affected data**, in one approval.
+3. **Never edit submitted accounting or stock documents directly.** Correct them through cancel and amend or adjusting entries, so the customer's books and audit trail stay right. These areas need a senior approver (§8, "When a person takes over").
+4. A customer's own mistake is explained and guided; prevention is offered as a customization, never applied unasked.
+5. When the cause is unclear, a person decides.
+6. The **root cause category** (bug, data damaged by a bug, entry mistake, setting, core issue) is recorded on the ticket. Reports then show where fixes or training are needed.
 
 ### The summary card
 
@@ -262,7 +301,7 @@ Deploys:  galom.erp (production) tonight 22:00 · automatic rollback
 
 ### When a person takes over (exceptions only)
 
-- The AI cannot reproduce or fix the issue, or its confidence is low.
+- The AI cannot reproduce or fix the issue, cannot tell the root cause with confidence (§8.1), or its confidence is low.
 - **Sensitive areas:** accounting, payments, stock valuation, payroll and tax, permissions, database migrations or patches, integrations. The one approver must then be a **senior**: still one person.
 - Tests fail after retries, the budget runs out, or the SLA is at risk.
 - The customer reopens after "Resolved".
@@ -280,7 +319,7 @@ Every change leaves a record **outside the AI**, so these questions can always b
 
 | System | Record |
 |---|---|
-| **TBO Support** (the ticket) | The story: issue, AI summary, the approval (**who and when**), deploy result, customer confirmation. AI actions are credited to the **"TBO AI"** user. |
+| **TBO Support** (the ticket) | The story: issue, **root cause category**, AI summary, the approval (**who and when**), deploy result, customer confirmation. AI actions are credited to the **"TBO AI"** user. |
 | **GitHub** | The exact code change: branch, pull request (with the ticket reference and the approver), CI and AI review results, merge commit. |
 | **Press** | Which version was deployed to which site, when, and the backup taken before. |
 | **Customer's ERPNext** | Frappe's **Version** history on each changed document (who, what, before and after); the change set saved before the deploy. |
