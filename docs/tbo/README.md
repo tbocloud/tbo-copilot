@@ -3,8 +3,8 @@
 TBO Copilot is Team Back Office's AI workbench for engineers. It is our own copy of
 [PI-Desktop](https://github.com/vastsa/PI-Desktop) (LGPL-3.0), kept in sync with upstream releases.
 
-The system design it belongs to is described outside this repository, in the TBO Copilot
-planning documents (`system-flow.md`, `tbo-copilot-architecture.md`, `plan-b-pi-desktop-fork.md`).
+The system it belongs to is described in [architecture.md](architecture.md): the backend, the
+five plugins, the one-approval flow, traceability, sign-in and AI models.
 
 ## Repository layout
 
