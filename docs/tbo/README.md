@@ -240,3 +240,10 @@ CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 pnpm dev
 ## Taking a new PI-Desktop release
 
 See [upstream-sync.md](upstream-sync.md).
+
+## Design documents
+
+- `architecture.md`: the agreed principles and decisions.
+- `system-design.md`: the full system design (approved 8 Oct 2026).
+- `build-plan.md`: the build plan with a status per phase.
+- `phases/`: one plan per phase, approved before building.
