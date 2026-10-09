@@ -1,6 +1,6 @@
 # Phase 1b: Hub MCP server (TASK-2026-00013)
 
-**Status:** approved 9 Oct 2026; built and checked on the pair on 9 Oct 2026; **pushed to the new branch `tbo-copilot-phase-1b`** in both repos (helpdesk 4776b25, helpdesk_client 88f97f0); the desktop app check is yours. See "As built" at the end. **Estimate:** about 8.5 developer-days, three pieces (H4, H5 in helpdesk; C6 in helpdesk_client). **Design reference:** `../system-design.md` §5.1 (Hub MCP server), §5.2 (new MCP tools), §5.3 (the worker's hub token); `../build-plan.md` Phase 1b; the TASK-2026-00013 brief. **Built on:** the `tbo-copilot` branch of each repo, first brought up to date with `main`.
+**Status:** approved 9 Oct 2026; built and checked on the pair on 9 Oct 2026; **pushed to `tbo-copilot`** in both repos (helpdesk f648e2f, which joins the first push's history without a force push; helpdesk_client 88f97f0); the desktop app check is yours. See "As built" at the end. **Estimate:** about 8.5 developer-days, three pieces (H4, H5 in helpdesk; C6 in helpdesk_client). **Design reference:** `../system-design.md` §5.1 (Hub MCP server), §5.2 (new MCP tools), §5.3 (the worker's hub token); `../build-plan.md` Phase 1b; the TASK-2026-00013 brief. **Built on:** the `tbo-copilot` branch of each repo, first brought up to date with `main`.
 
 ## Goal
 
