@@ -45,6 +45,7 @@ five plugins, the one-approval flow, traceability, sign-in and AI models.
 | **TBO logo** in the app icons (light and dark), Windows `.ico`, macOS `.icns`, menu bar icon, installer background and in-app logo | `apps/desktop/build/*`, `apps/desktop/src/assets/brand/*` | Branding script copies them from `scripts/tbo/assets/` |
 | **Default theme TBO Dark** for a new install (`plugin:tbo.theme:tbo-dark`); without the plugin the shell falls back to System | `crates/host-core/src/rpc/mod.rs` (`settings.get` defaults) | Branding script |
 | **Bundled private TBO plugins** (`tbo.theme`), copied in at build time | `scripts/tbo/bundled-plugins.json`, `scripts/tbo/fetch-plugins.mjs`, `.gitignore`, `tbo-release.yml` | New files; one `.gitignore` block |
+| **TBO Copilot worker**: the headless worker that investigates TBO Support tickets read-only (Phase 1c-1); it uses the engine packages as they are, so the core is unchanged. Its files hold no keys, customer data or evaluation answers; at run time it reads a ticket and the customer's code into a folder that it deletes after the run. See `apps/tbo-worker/README.md` | `apps/tbo-worker/`, its entry in `pnpm-lock.yaml` | New app (upstream never has it) |
 
 ### Brand images
 
