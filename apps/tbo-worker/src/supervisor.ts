@@ -3,10 +3,13 @@ import type { LocalToolResult } from "@pi-desktop/host-runtime";
 import type { WorkerConfig } from "./config.js";
 import { preview, type Engine, type TurnObserver, type TurnResult } from "./engine.js";
 import { EventOutbox } from "./events.js";
+import { runFixJob } from "./fix.js";
+import { runFixTool, type FixToolState } from "./fix-tools.js";
 import { HubError, type HubClient, type Job } from "./hub.js";
 import type { Logger } from "./log.js";
 import { RunBudget } from "./policy.js";
 import { NUDGE, finalPrompt, turnPrompt } from "./prompt.js";
+import type { Sandbox } from "./sandbox.js";
 import { runTool, type RunTools } from "./tools.js";
 import { prepareWorkspace, removeWorkspace, workspaceRoot, type Workspace, type WorkspaceOptions } from "./workspace.js";
 
@@ -49,10 +52,14 @@ type RunState = {
 /** Routes the engine's local tool calls to the run that owns the session. */
 export class RunToolRouter {
   readonly sessions = new Map<string, RunTools>();
+  /** A fix job's fix and review sessions. */
+  readonly fixSessions = new Map<string, FixToolState>();
 
   constructor(private readonly hub: HubClient) {}
 
   readonly run = async (sessionId: string, name: string, args: unknown): Promise<LocalToolResult> => {
+    const fix = this.fixSessions.get(sessionId);
+    if (fix) return runFixTool(fix, name, args);
     const tools = this.sessions.get(sessionId);
     if (!tools) return { ok: false, isError: true, content: "This session has no active Copilot run." };
     return runTool(this.hub, tools, name, args);
@@ -88,7 +95,14 @@ export class Worker {
     private readonly engine: Engine,
     private readonly router: RunToolRouter,
     private readonly log: Logger,
+    /** The sandbox runner; with it the worker also takes fix jobs. */
+    private readonly sandbox?: Sandbox,
   ) {}
+
+  /** What the worker tells the hub it can do when claiming. */
+  capabilities(): string {
+    return this.sandbox ? "investigate,fix" : "investigate";
+  }
 
   workspaceOptions(): WorkspaceOptions {
     return {
@@ -113,7 +127,7 @@ export class Worker {
     while (!signal.aborted && !this.stopping) {
       let job: Job | null = null;
       try {
-        job = await this.hub.claimJob(this.cfg.workerId);
+        job = await this.hub.claimJob(this.cfg.workerId, undefined, this.capabilities());
       } catch (error) {
         this.log("warn", "claim failed", { error: String(error) });
       }
@@ -129,7 +143,7 @@ export class Worker {
 
   /** Claims one run (the named one, when given and queued) and investigates it; null when there is none. */
   async runOnce(run?: string): Promise<RunReport | null> {
-    const job = await this.hub.claimJob(this.cfg.workerId, run);
+    const job = await this.hub.claimJob(this.cfg.workerId, run, this.capabilities());
     return job ? this.process(job) : null;
   }
 
@@ -139,6 +153,7 @@ export class Worker {
   }
 
   async process(job: Job): Promise<RunReport> {
+    if (job.context.kind === "fix") return this.processFix(job);
     const ticket = job.context.ticket.name;
     const budget = new RunBudget(this.cfg.limits, Date.now, this.cfg.model);
     const outbox = new EventOutbox((events) => this.hub.postEvents(job.run, job.lease_token, events), { log: this.log });
@@ -256,6 +271,26 @@ export class Worker {
       this.currentSession = undefined;
       if (!this.cfg.keepRuns) await removeWorkspace(workspaceRoot(this.cfg.runsDir, job.run)).catch(() => undefined);
     }
+  }
+
+  /** A fix job (Phase 1c-2): see fix.ts. */
+  private async processFix(job: Job): Promise<RunReport> {
+    if (!this.sandbox) {
+      const reason = "this worker has no sandbox runner, so it cannot fix";
+      await this.hub.submitFailure(job.run, job.lease_token, reason).catch(() => undefined);
+      return { run: job.run, ticket: job.context.ticket.name, outcome: "failed", reason, toolCalls: 0, denied: 0, tokensIn: 0, tokensCached: 0, tokensOut: 0, costUsd: 0, minutes: 0, problems: [] };
+    }
+    return runFixJob(job, {
+      cfg: this.cfg,
+      hub: this.hub,
+      engine: this.engine,
+      router: this.router,
+      sandbox: this.sandbox,
+      log: this.log,
+      model: () => this.ensureModel(),
+      stopping: () => this.stopping,
+      workspaceOptions: () => this.workspaceOptions(),
+    });
   }
 
   private observer(

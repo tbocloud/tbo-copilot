@@ -9,7 +9,7 @@ The worker takes Copilot runs from TBO Support (the `helpdesk` hub) and investig
 
 The hub decides what happens next (Phase 1a router). In shadow mode it notes the diagnosis for the team and the customer hears nothing.
 
-The design and the phase plan are in TBO's design documents (`system-design.md` §5.3, `phases/phase-1c.md`). This app is Phase 1c-1: investigation only. The sandbox copy of the customer site and pull requests come in 1c-2.
+The design and the phase plan are in TBO's design documents (`system-design.md` §5.3, `phases/phase-1c.md`, `phases/phase-1c-2.md`). Phase 1c-1 is the investigation. Phase 1c-2 adds **fix jobs** (below): with a sandbox runner, the worker also writes the fix, tests it on a copy of the customer's site and opens the pull request.
 
 ## How it works
 
@@ -42,6 +42,30 @@ The model gets four tools. The model activates them with one `ToolSearch` call, 
 - The hub sees every tool call, every refusal and the token use as run events.
 
 On the Mac this is a permission policy. The worker VM in Phase 1c-2 adds kernel isolation: containers, a separate user and no network.
+
+## Fix jobs (Phase 1c-2)
+
+A worker started with `TBO_SANDBOX_SOCKET` (the sandbox runner on the worker server) claims fix jobs as well as investigations. The hub queues one when someone asks Copilot to fix a diagnosed bug. For each fix job the worker:
+
+1. Picks the app to fix: one of the site's apps that TBO Support lets Copilot push to, the one the diagnosis names when there are several (`src/fix.ts`, `chooseApp`).
+2. Asks the hub for a GitHub App key for that one repository, valid an hour (`repo_token`). It clones the app with that key onto Copilot's own branch (`copilot/TASK-…-r<run>-a<attempt>`, the only kind accepted), writable, committing as TBO Copilot. Every other clone stays read-only.
+3. Asks the sandbox runner for a copy of the customer's site running the edited app (`src/sandbox.ts`: one JSON request per line over a local socket, a fixed list of operations, no command lines).
+4. Runs a fix session with its own profile:
+   - **tools:** `sandbox` (check one test module, the app's tests, migrate), `my_changes`, `repo_git`, `fix_done`;
+   - **edits:** Edit, Write and MultiEdit are allowed only inside the app being fixed, never its `.git`, never through a symbolic link leading out, never by a delegate (`policy.editsInside`). Everything else is still refused.
+5. **Checks on its own** (`verify`), from the runner's results, never from the model's words:
+   - the model's test fails on the code the site runs (the bug is shown) and passes on the fix;
+   - the copy still migrates;
+   - the app's tests pass;
+   - no new error appears;
+   - nothing secret-shaped is in the change.
+
+   A test that already passes on the unchanged code ends the job: the bug was never shown.
+6. Has a fresh review session read the change. Findings marked must-fix send the fix back for another round, at most three rounds.
+7. Commits, pushes the branch, and opens the pull request with the push key. The pull request says `Closes TASK-…` and carries the results table and the review notes, with the labels `copilot` and `no-auto-merge`.
+8. Reports it to the hub with `submit_change`. The hub then asks for the one approval. Any failure is reported instead, and the hub hands the fix to the developer.
+
+Limits: `TBO_FIX_MAX_TOOL_CALLS` (120), `TBO_FIX_MAX_MINUTES` (60), `TBO_FIX_MAX_TOKENS` (8 million), `TBO_FIX_MAX_ROUNDS` (3), and the hub's dollar cap per fix.
 
 ## Setting it up on a Mac
 

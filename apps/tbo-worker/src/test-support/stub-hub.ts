@@ -65,6 +65,10 @@ export class StubHub {
       this.leases.set(job.run, job.lease_token);
       return this.send(res, 200, { message: job });
     }
+    if (path.endsWith("copilot_worker.repo_token")) {
+      if (!this.leaseOk(String(body.run), String(body.lease_token))) return refused();
+      return this.send(res, 200, { message: { token: "push-key", expires_at: "2026-10-13T03:00:00Z", repository: body.repository } });
+    }
     if (path.endsWith("copilot_worker.heartbeat")) {
       if (!this.leaseOk(String(body.run), String(body.lease_token))) return refused();
       return this.send(res, 200, { message: { ok: true, action: this.heartbeatAction } });
@@ -93,6 +97,10 @@ export class StubHub {
       if (params.name === "customer_erp_read") {
         const tool = String(params.arguments.tool);
         return this.erpReplies[tool] ? text(this.erpReplies[tool]!) : text(`The customer site refused ${tool}`, true);
+      }
+      if (params.name === "submit_change") {
+        this.ended.add(run);
+        return text(`Run ${run}: Copilot's change ${String(params.arguments.repository)}#${String(params.arguments.number)} recorded.`);
       }
       if (params.name === "submit_investigation") {
         this.ended.add(run);

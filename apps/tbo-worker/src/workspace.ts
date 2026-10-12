@@ -343,6 +343,7 @@ export async function prepareWorkspace(job: Job, options: WorkspaceOptions): Pro
   await writeFile(join(contextDir, "triage.json"), JSON.stringify(context.triage ?? {}, null, 1));
   await writeFile(join(contextDir, "site.json"), JSON.stringify(site, null, 1));
   await writeFile(join(contextDir, "previous_runs.json"), JSON.stringify(context.previous_runs ?? [], null, 1));
+  if (context.diagnosis) await writeFile(join(contextDir, "diagnosis.json"), JSON.stringify(context.diagnosis, null, 1));
   await writeFile(join(root, "INDEX.md"), indexMarkdown(context, apps, problems, changing?.app));
   // every clone is read-only but the one a fix job changes
   for (const app of apps) if (app !== changing) await setReadOnly(app.dir);

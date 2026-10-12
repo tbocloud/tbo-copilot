@@ -7,7 +7,8 @@ import { createConnection } from "node:net";
  * the AI never does. Only these operations exist: nothing here takes a
  * command line.
  */
-export type SandboxResult = { ok: boolean; exit_code: number; output: string; ms: number };
+/** `skipped`: nothing to run (an app without tests), which is neither a pass nor a failure. */
+export type SandboxResult = { ok: boolean; exit_code: number; output: string; ms: number; skipped?: boolean };
 
 export type SandboxSpec = {
   run: string;
@@ -21,7 +22,8 @@ export type SandboxSpec = {
 
 export interface Sandbox {
   /** A copy for this run: a cleaned copy of the customer's site, or a fresh site when there is none. */
-  start(spec: SandboxSpec): Promise<{ id: string; note?: string }>;
+  /** `tested_on` says it in words: "a copy of the customer's site", "a fresh ERPNext site". */
+  start(spec: SandboxSpec): Promise<{ id: string; tested_on?: string; note?: string }>;
   migrate(id: string): Promise<SandboxResult>;
   /** One test module (the AI's reproduction), e.g. `demo_app.tests.test_margin`. */
   check(id: string, app: string, module: string): Promise<SandboxResult>;
@@ -75,7 +77,7 @@ export class SocketSandbox implements Sandbox {
     });
   }
 
-  start(spec: SandboxSpec): Promise<{ id: string; note?: string }> {
+  start(spec: SandboxSpec): Promise<{ id: string; tested_on?: string; note?: string }> {
     return this.call("start", { spec });
   }
 
