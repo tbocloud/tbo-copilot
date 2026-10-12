@@ -16,9 +16,30 @@ export type SiteApp = {
   drift_status?: string | null;
 };
 
+/** A fix job's part of the run context (helpdesk.copilot.fixes.fix_context). */
+export type FixContext = {
+  task: string;
+  closes: string;
+  branch: string;
+  attempt: number;
+  max_usd: number;
+  commit_email: string;
+  repositories: string[];
+};
+
+export type Diagnosis = {
+  root_cause_category?: string | null;
+  confidence?: number | null;
+  summary?: string | null;
+  evidence?: unknown;
+  proposal?: Record<string, unknown> | null;
+};
+
 export type RunContext = {
   run: string;
   kind: string;
+  diagnosis?: Diagnosis | null;
+  fix?: FixContext | null;
   shadow?: boolean;
   base_app?: string | null;
   base_commit?: string | null;
@@ -140,13 +161,19 @@ export class HubClient {
     return this.method<string>("frappe.auth.get_logged_user", {}, this.worker);
   }
 
-  async claimJob(workerId: string, run?: string): Promise<Job | null> {
+  /** The next run for this worker: an investigation, or a fix job when it can fix (`capabilities` "investigate,fix"). */
+  async claimJob(workerId: string, run?: string, capabilities = "investigate"): Promise<Job | null> {
     const job = await this.method<Job | Record<string, never>>(
       "helpdesk.api.copilot_worker.claim_job",
-      { worker_id: workerId, free_slots: 1, capabilities: "investigate", ...(run ? { run } : {}) },
+      { worker_id: workerId, free_slots: 1, capabilities, ...(run ? { run } : {}) },
       this.worker,
     );
     return job && "run" in job ? (job as Job) : null;
+  }
+
+  /** A fix job's one-hour key to clone and push one of the site's repositories (the hub's GitHub App). */
+  async repoToken(run: string, leaseToken: string, repository: string): Promise<{ token: string; expires_at: string; repository: string }> {
+    return this.method("helpdesk.api.copilot_worker.repo_token", { run, lease_token: leaseToken, repository }, this.worker);
   }
 
   async heartbeat(run: string, leaseToken: string, stage: string): Promise<{ action: string }> {

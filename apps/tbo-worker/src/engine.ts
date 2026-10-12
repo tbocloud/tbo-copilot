@@ -14,7 +14,17 @@ import type { AgentEventEnvelope, AskToolRequest, MessageUsage, ToolPermissionRe
 
 import type { ModelConfig } from "./config.js";
 import type { Logger } from "./log.js";
-import { PERMISSION_DECISION, answersFor } from "./policy.js";
+import { PERMISSION_DECISION, answersFor, type PermissionDecider } from "./policy.js";
+
+/** What a session's model is told and given: the investigation's, or another stage's (the fix). */
+export type SessionProfile = { tools: PluginToolDef[]; persona: string; rules: string };
+
+export type SessionOptions = {
+  /** A profile from EngineOptions.profiles; the investigation's tools and prompt when absent. */
+  profile?: string;
+  /** Answers this session's permission prompts; every prompt is refused when absent. */
+  decide?: PermissionDecider;
+};
 
 export type EngineOptions = {
   hostCoreBinary: string;
@@ -28,12 +38,15 @@ export type EngineOptions = {
   runTool: (sessionId: string, name: string, args: unknown, signal: AbortSignal) => Promise<LocalToolResult>;
   persona: string;
   rules: string;
+  /** Other stages' tools and prompts, chosen per session (openSession's `profile`). */
+  profiles?: Record<string, SessionProfile>;
 };
 
 export type TurnObserver = {
   onToolStart?(event: { toolCallId: string; toolName: string; args: unknown; delegate?: string }): void;
   onToolEnd?(event: { toolCallId: string; toolName: string; isError: boolean; ms: number; result: string }): void;
   onPermissionDenied?(request: ToolPermissionRequest): void;
+  onPermissionAllowed?(request: ToolPermissionRequest): void;
   onInputAnswered?(request: AskToolRequest): void;
   onUsage?(usage: MessageUsage): void;
   onAssistantText?(text: string): void;
@@ -88,22 +101,29 @@ export class Engine {
     private readonly sidecar: AgentSidecar,
     readonly runtime: RuntimeService,
     private readonly options: EngineOptions,
+    private readonly sessions: Map<string, SessionOptions>,
   ) {}
 
   static async start(options: EngineOptions): Promise<Engine> {
     await mkdir(options.dataDir, { recursive: true, mode: 0o700 });
     await mkdir(options.homeDir, { recursive: true, mode: 0o700 });
     const state: { host: HostProcess | null; sidecar: AgentSidecar | null } = { host: null, sidecar: null };
+    const sessions = new Map<string, SessionOptions>();
+    const profileOf = (sessionId: string): SessionProfile => {
+      const name = sessions.get(sessionId)?.profile;
+      return (name && options.profiles?.[name]) || { tools: options.tools, persona: options.persona, rules: options.rules };
+    };
     const log = options.log;
     const base = createHeadlessLaunchResolver({ getHost: () => state.host, dataDir: options.dataDir, log: (level, message, data) => log(level, message, data) });
     const launch: LaunchResolver = {
       async resolve(sessionId, session, settings, overrides) {
         const resolved = await base.resolve(sessionId, session, settings, overrides);
+        const profile = profileOf(sessionId);
         return {
           ...resolved,
           sidecarParams: {
             ...resolved.sidecarParams,
-            pluginTools: options.tools,
+            pluginTools: profile.tools,
             pluginSkills: [],
             trustedExtensions: [],
             // no delegates: a subagent definition can carry its own permission mode
@@ -113,7 +133,7 @@ export class Engine {
             // a repository's AGENTS.md is data to read, not instructions
             projectInstructions: undefined,
             projectMemory: undefined,
-            customSystemPrompt: { replace: options.persona, append: options.rules },
+            customSystemPrompt: { replace: profile.persona, append: profile.rules },
           },
         };
       },
@@ -143,8 +163,10 @@ export class Engine {
     });
     // no repository instructions; an empty list, because an absent JSON-RPC result stalls each file tool for 2 s
     sidecar.setProjectInstructionResolver(async () => ({ entries: [] }));
-    for (const tool of options.tools) {
-      sidecar.setLocalTool(tool.name, ({ sessionId, args, signal }) => options.runTool(sessionId, tool.name, args, signal));
+    // every profile's tools are registered once; each session is offered only its own profile's
+    const names = new Set([...options.tools, ...Object.values(options.profiles ?? {}).flatMap((profile) => profile.tools)].map((tool) => tool.name));
+    for (const name of names) {
+      sidecar.setLocalTool(name, ({ sessionId, args, signal }) => options.runTool(sessionId, name, args, signal));
     }
     state.sidecar = sidecar;
     runtime.attachSidecar(sidecar);
@@ -157,7 +179,7 @@ export class Engine {
       throw error;
     }
     log("info", "engine ready", { dataDir: options.dataDir });
-    return new Engine(host, sidecar, runtime, options);
+    return new Engine(host, sidecar, runtime, options, sessions);
   }
 
   /** Creates or updates the worker's model provider and makes it the default; permission mode `ask` by default too. */
@@ -187,7 +209,7 @@ export class Engine {
   }
 
   /** A session in agent mode, permission mode `ask`, rooted at the run's folder. */
-  async openSession(projectPath: string, title: string, model: { providerId: string; modelId: string }): Promise<string> {
+  async openSession(projectPath: string, title: string, model: { providerId: string; modelId: string }, options: SessionOptions = {}): Promise<string> {
     await this.host.call("projects.create", { path: projectPath });
     const { session } = await this.host.call<{ session: { id: string } }>("session.create", {
       title,
@@ -197,6 +219,7 @@ export class Engine {
       modelId: model.modelId,
     });
     await this.host.call("session.configure", { id: session.id, mode: "agent", permissionMode: "ask" });
+    this.sessions.set(session.id, options);
     return session.id;
   }
 
@@ -254,10 +277,14 @@ export class Engine {
           });
           return;
         }
-        case "tool_permission_request":
-          await this.host.call("permissions.resolve", { requestId: event.request.requestId, decision: PERMISSION_DECISION });
-          observer.onPermissionDenied?.(event.request);
+        case "tool_permission_request": {
+          const decide = this.sessions.get(envelope.sessionId)?.decide;
+          const decision = decide ? decide(event.request) : PERMISSION_DECISION;
+          await this.host.call("permissions.resolve", { requestId: event.request.requestId, decision });
+          if (decision === PERMISSION_DECISION) observer.onPermissionDenied?.(event.request);
+          else observer.onPermissionAllowed?.(event.request);
           return;
+        }
         case "asktool_request":
           await this.runtime.respondInput({ requestId: event.request.requestId, sessionId: envelope.sessionId, answers: answersFor(event.request) });
           observer.onInputAnswered?.(event.request);
@@ -288,6 +315,7 @@ export class Engine {
 
   /** Forgets the session, its transcript and its scratch folder. */
   async closeSession(sessionId: string, projectPath?: string): Promise<void> {
+    this.sessions.delete(sessionId);
     this.sidecar.clearProjectInstructionRoot(sessionId);
     await this.sidecar.call("agent.disposeSession", { sessionId }).catch(() => undefined);
     await this.host.call("session.delete", { id: sessionId }).catch((error: unknown) => this.options.log("warn", "session not deleted", { sessionId, error: String(error) }));

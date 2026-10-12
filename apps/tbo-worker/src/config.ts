@@ -31,6 +31,15 @@ export type Limits = {
   heartbeatIntervalMs: number;
 };
 
+/** A fix job's limits: it reads, edits and tests, so it gets more room than an investigation. */
+export type FixLimits = {
+  maxToolCalls: number;
+  maxMinutes: number;
+  maxTokens: number;
+  /** Rounds of "change the code, run the check" the model may take before the worker gives up. */
+  maxRounds: number;
+};
+
 export type HubAuth = { apiKey: string; apiSecret: string };
 
 export type WorkerConfig = {
@@ -58,6 +67,11 @@ export type WorkerConfig = {
   repoMap: Record<string, string>;
   /** Tests only: repositories may be local folders. */
   allowLocalRepos?: boolean;
+  /** The sandbox runner's socket on the server; without it the worker only investigates. */
+  sandboxSocket?: string;
+  fixLimits?: FixLimits;
+  /** GitHub's REST API, for opening a fix's pull request (tests point it elsewhere). */
+  githubApi?: string;
 };
 
 export class ConfigError extends Error {}
@@ -209,6 +223,14 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
     },
     keepRuns: env.TBO_KEEP_RUNS === "1",
     repoMap: parseRepoMap(env.TBO_REPOS),
+    ...(env.TBO_SANDBOX_SOCKET?.trim() ? { sandboxSocket: env.TBO_SANDBOX_SOCKET.trim() } : {}),
+    fixLimits: {
+      maxToolCalls: positive(env.TBO_FIX_MAX_TOOL_CALLS, 120, "TBO_FIX_MAX_TOOL_CALLS"),
+      maxMinutes: positive(env.TBO_FIX_MAX_MINUTES, 60, "TBO_FIX_MAX_MINUTES"),
+      maxTokens: positive(env.TBO_FIX_MAX_TOKENS, 8_000_000, "TBO_FIX_MAX_TOKENS"),
+      maxRounds: positive(env.TBO_FIX_MAX_ROUNDS, 3, "TBO_FIX_MAX_ROUNDS"),
+    },
+    githubApi: (env.TBO_GITHUB_API?.trim() || "https://api.github.com").replace(/\/+$/, ""),
   };
 }
 
