@@ -16,7 +16,7 @@ The design and the phase plan are in TBO's design documents (`system-design.md` 
 | Part | File | What it does |
 |---|---|---|
 | Engine | `src/engine.ts` | Starts host-core and the agent sidecar as child processes and drives them in-process through the runtime service, as `apps/pi-host` composes them, without the RACP server |
-| Job loop | `src/supervisor.ts` | Claims runs, heartbeats every 30 s, runs one investigation turn, and sends one reminder if the model ends without a report. With no diagnosis it reports a failure |
+| Job loop | `src/supervisor.ts` | Claims runs, heartbeats every 30 s, runs one investigation turn, and sends one reminder if the model ends without a report. Once the hub has the report it stops the model at once (a closing reply only costs tokens). With no diagnosis it reports a failure |
 | Workspace | `src/workspace.ts` | Keeps a bare mirror per repository and clones each app at the run's base commit, else the deployed commit, else the branch head. Removes the remote, writes `context/` and `INDEX.md`, then makes everything read-only |
 | Tools | `src/tools.ts`, `src/repo-git.ts` | The four tools listed below |
 | Policy | `src/policy.ts`, `src/engine.ts` | Applies the read-only rules listed below, plus budgets on tool calls, tokens and minutes |

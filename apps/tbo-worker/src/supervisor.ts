@@ -193,6 +193,10 @@ export class Worker {
           state.submitted = true;
           state.submission = text.slice(0, 500);
           outbox.close(); // the lease ended with the report: the hub accepts nothing more
+          // nothing more is needed from the model: a closing reply only costs tokens, and a
+          // provider failing at that point would be retried for minutes (as in the evaluation)
+          const id = sessionId;
+          if (id) setImmediate(() => void this.engine.abort(id));
         },
         isSubmitted: () => state.submitted,
       });
