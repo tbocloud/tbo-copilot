@@ -15,6 +15,8 @@ export class StubHub {
   readonly jobs: Job[] = [];
   readonly erpReplies: Record<string, string> = {};
   heartbeatAction = "continue";
+  /** Makes the MCP endpoint answer 200 with this raw body (a broken proxy, an HTML page). */
+  rawMcpReply: string | undefined;
   private server: Server | undefined;
   private leases = new Map<string, string>();
   private ended = new Set<string>();
@@ -75,6 +77,11 @@ export class StubHub {
       if (!this.leaseOk(String(body.run), String(body.lease_token))) return refused();
       this.ended.add(String(body.run));
       return this.send(res, 200, { message: { run: body.run, state: "Failed" } });
+    }
+    if (path.endsWith("copilot_mcp.handle") && this.rawMcpReply !== undefined) {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(this.rawMcpReply);
+      return;
     }
     if (path.endsWith("copilot_mcp.handle")) {
       const [run, token] = String(req.headers["x-copilot-run-token"] ?? "").split(":");

@@ -31,6 +31,18 @@ describe("RunBudget", () => {
     expect(slow.exceeded()).toContain("longer than 10 minutes");
   });
 
+  it("stops at a dollar limit when prices are known", () => {
+    const prices = { modelId: "kimi-k2.6", priceInPerMillion: 1, priceOutPerMillion: 4 };
+    const budget = new RunBudget({ ...limits, maxTokens: 10_000_000, maxUsd: 0.5 }, Date.now, prices);
+    budget.usage({ inputTokens: 300_000, outputTokens: 50_000, totalTokens: 350_000 });
+    expect(budget.exceeded()).toBeUndefined();
+    budget.usage({ inputTokens: 200_000, outputTokens: 10_000, totalTokens: 210_000 });
+    expect(budget.exceeded()).toBe("the investigation cost more than 0.5 USD");
+    const unpriced = new RunBudget({ ...limits, maxTokens: 10_000_000, maxUsd: 0.5 });
+    unpriced.usage({ inputTokens: 9_000_000, outputTokens: 0, totalTokens: 9_000_000 });
+    expect(unpriced.exceeded()).toBeUndefined();
+  });
+
   it("prices the run with the configured rates", () => {
     const budget = new RunBudget(limits);
     budget.usage({ inputTokens: 2_000_000, outputTokens: 1_000_000, totalTokens: 3_000_000 });

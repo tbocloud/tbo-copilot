@@ -180,13 +180,20 @@ export class HubClient {
       { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } },
       { "X-Copilot-Run-Token": runToken, Accept: "application/json, text/event-stream" },
     );
-    const reply = body as { result?: { content?: Array<{ text?: string }>; isError?: boolean }; error?: { message?: string } } | null;
+    const reply = (body && typeof body === "object" ? body : null) as {
+      result?: { content?: Array<{ text?: string }>; isError?: boolean };
+      error?: { message?: string };
+    } | null;
     if (status >= 400 || reply?.error) {
       const message = reply?.error?.message || `the hub refused ${name} (HTTP ${status})`;
       throw new HubError(message, status >= 400 ? status : 400);
     }
-    const text = (reply?.result?.content ?? []).map((block) => block.text ?? "").join("\n");
-    return { text, isError: Boolean(reply?.result?.isError) };
+    // the hub answers with plain JSON-RPC; anything else must never pass for a result (a report that was not stored)
+    if (!reply?.result || typeof reply.result !== "object" || !Array.isArray(reply.result.content)) {
+      throw new HubError(`the hub gave no result for ${name} (HTTP ${status})`, 502);
+    }
+    const text = reply.result.content.map((block) => block.text ?? "").join("\n");
+    return { text, isError: Boolean(reply.result.isError) };
   }
 
   // --- an agent's calls (evaluation) ---------------------------------------

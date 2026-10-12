@@ -169,6 +169,17 @@ describe.skipIf(!ready)("the worker end to end", () => {
     expect(system).not.toContain("rm -rf");
   }, 120_000);
 
+  it("starts no turn when the run is cancelled while its workspace is prepared", async () => {
+    stub.heartbeatAction = "cancel";
+    try {
+      const { report, model } = await runWith([{ text: "This should never be asked." }], { heartbeatIntervalMs: 20 });
+      expect(report.outcome).toBe("cancelled");
+      expect(model.requests).toHaveLength(0);
+    } finally {
+      stub.heartbeatAction = "continue";
+    }
+  }, 120_000);
+
   it("reminds the model once, then fails the run when there is still no report", async () => {
     const { report } = await runWith([{ text: "It is probably a bug." }, { text: "I am not sure." }]);
 
@@ -178,19 +189,43 @@ describe.skipIf(!ready)("the worker end to end", () => {
     expect(failure.body.result).toEqual({ kind: "failure", reason: "the model ended without a diagnosis" });
   }, 120_000);
 
-  it("stops a run that passes its tool-call budget", async () => {
+  it("stops at a limit, then lets the model report what it found", async () => {
+    const before = stub.events().length;
     const { report } = await runWith(
       [
         { tool: { name: "ToolSearch", arguments: { query: TOOL_SEARCH_QUERY } } },
         { tool: { name: "Read", arguments: { path: "INDEX.md" } } },
         { tool: { name: "Read", arguments: { path: "context/ticket.md" } } },
-        { tool: { name: "Read", arguments: { path: "context/site.json" } } },
         { tool: { name: "hub_submit_investigation", arguments: REPORT } },
+        { text: "Reported." },
+      ],
+      { maxToolCalls: 2 },
+    );
+
+    expect(report.outcome).toBe("submitted");
+    const events = stub.events().slice(before);
+    expect(events.find((event) => event.type === "budget")?.payload.reason).toContain("more than 2 tool calls");
+    expect(events.some((event) => event.type === "final_turn")).toBe(true);
+    expect(events.some((event) => event.type === "usage")).toBe(true);
+  }, 120_000);
+
+  it("fails the run when the model keeps working after the last request to report", async () => {
+    const read = (path: string): ModelStep => ({ tool: { name: "Read", arguments: { path } } });
+    const { report } = await runWith(
+      [
+        { tool: { name: "ToolSearch", arguments: { query: TOOL_SEARCH_QUERY } } },
+        read("INDEX.md"),
+        read("context/ticket.md"),
+        read("context/site.json"),
+        read("INDEX.md"),
+        read("context/ticket.md"),
+        read("context/site.json"),
+        read("INDEX.md"),
       ],
       { maxToolCalls: 2 },
     );
 
     expect(report.outcome).toBe("failed");
-    expect(report.reason).toContain("more than 2 tool calls");
+    expect(report.reason).toBe("the investigation used more than 2 tool calls, and no report came after a last request to submit");
   }, 120_000);
 });

@@ -121,7 +121,7 @@ export async function main(argv: string[]): Promise<number> {
         if (!casesFile) throw new Error("eval needs --cases FILE");
         const only = option(args, "--only")?.split(",").map((id) => id.trim());
         const cases = (await loadCases(casesFile)).filter((item) => !only || only.includes(item.id));
-        const results = await runEvaluation(cases, { cfg, hub, worker, log });
+        const results = await runEvaluation(cases, { cfg, hub, worker, log, signal: controller.signal });
         const date = new Date().toISOString().slice(0, 16).replace("T", " ");
         const markdown = reportMarkdown(results, { model: cfg.model.modelId, date });
         const reportFile = option(args, "--report") ?? join(cfg.dir, "eval", `report-${date.replace(/[ :]/g, "-")}.md`);

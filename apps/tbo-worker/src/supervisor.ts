@@ -1,16 +1,20 @@
 import type { LocalToolResult } from "@pi-desktop/host-runtime";
 
 import type { WorkerConfig } from "./config.js";
-import { preview, type Engine, type TurnObserver } from "./engine.js";
+import { preview, type Engine, type TurnObserver, type TurnResult } from "./engine.js";
 import { EventOutbox } from "./events.js";
 import { HubError, type HubClient, type Job } from "./hub.js";
 import type { Logger } from "./log.js";
 import { RunBudget } from "./policy.js";
-import { NUDGE, turnPrompt } from "./prompt.js";
+import { NUDGE, finalPrompt, turnPrompt } from "./prompt.js";
 import { runTool, type RunTools } from "./tools.js";
 import { prepareWorkspace, removeWorkspace, workspaceRoot, type Workspace, type WorkspaceOptions } from "./workspace.js";
 
 export type RunOutcome = "submitted" | "failed" | "cancelled" | "lease_lost" | "stopped";
+
+/** After a limit stops the investigation, the model gets one short turn to report: at most this many tool calls and minutes. */
+export const FINAL_TURN_TOOL_CALLS = 3;
+export const FINAL_TURN_MS = 3 * 60_000;
 
 export type RunReport = {
   run: string;
@@ -34,6 +38,9 @@ type RunState = {
   cancelled: boolean;
   leaseLost: boolean;
   budgetReason: string;
+  /** The last-chance turn after a limit: tool calls in it are counted, not checked against the limits again. */
+  finalTurn: boolean;
+  finalToolCalls: number;
   denied: number;
 };
 
@@ -131,11 +138,22 @@ export class Worker {
 
   async process(job: Job): Promise<RunReport> {
     const ticket = job.context.ticket.name;
-    const budget = new RunBudget(this.cfg.limits);
+    const budget = new RunBudget(this.cfg.limits, Date.now, this.cfg.model);
     const outbox = new EventOutbox((events) => this.hub.postEvents(job.run, job.lease_token, events), { log: this.log });
-    const state: RunState = { stage: "workspace", submitted: false, submission: "", cancelled: false, leaseLost: false, budgetReason: "", denied: 0 };
+    const state: RunState = {
+      stage: "workspace",
+      submitted: false,
+      submission: "",
+      cancelled: false,
+      leaseLost: false,
+      budgetReason: "",
+      finalTurn: false,
+      finalToolCalls: 0,
+      denied: 0,
+    };
     let sessionId: string | undefined;
     let workspace: Workspace | undefined;
+    let watchdog: NodeJS.Timeout | undefined;
     const report = (outcome: RunOutcome, reason?: string): RunReport => ({
       run: job.run,
       ticket,
@@ -177,17 +195,36 @@ export class Worker {
       });
       state.stage = "investigate";
       const observer = this.observer(outbox, budget, state, () => sessionId);
-      let turn = await this.engine.runTurn(sessionId, turnPrompt(job.context, workspace), observer);
-      if (!state.submitted && !state.cancelled && !state.leaseLost && !this.stopping && !state.budgetReason && turn.reason === "completed") {
+      // the time limit holds even while the model thinks without any event
+      watchdog = setInterval(() => {
+        if (!state.finalTurn) observer.check();
+      }, 15_000);
+      const mayGoOn = () => !state.submitted && !state.cancelled && !state.leaseLost && !this.stopping;
+      // a cancel, a lost lease or a stop can arrive while the clones and the session are prepared
+      let turn: TurnResult = { reason: "aborted", text: "" };
+      if (mayGoOn()) turn = await this.engine.runTurn(sessionId, turnPrompt(job.context, workspace), observer);
+      if (mayGoOn() && !state.budgetReason && turn.reason === "completed") {
         outbox.push("reminder", { note: "the turn ended without a report" });
         turn = await this.engine.runTurn(sessionId, NUDGE, observer);
+      }
+      if (mayGoOn() && state.budgetReason) {
+        // a limit stopped the work: one short turn to report what was found, rather than nothing
+        outbox.push("final_turn", { reason: state.budgetReason });
+        state.finalTurn = true;
+        const id = sessionId;
+        const timer = setTimeout(() => void this.engine.abort(id), FINAL_TURN_MS);
+        try {
+          turn = await this.engine.runTurn(sessionId, finalPrompt(state.budgetReason), observer);
+        } finally {
+          clearTimeout(timer);
+        }
       }
       if (state.submitted) return report("submitted");
       if (state.cancelled) return report("cancelled", "the run was cancelled on TBO Support");
       if (state.leaseLost) return report("lease_lost", "the lease ended before a report");
       if (this.stopping) return report("stopped", "the worker was stopped; the lease will expire and the run goes back to the queue");
       const reason =
-        state.budgetReason ||
+        (state.budgetReason && `${state.budgetReason}, and no report came after a last request to submit`) ||
         (turn.reason === "error"
           ? `the model failed (${turn.errorCode ?? "unknown error"})${turn.text ? `: ${turn.text.slice(0, 300)}` : ""}`
           : "the model ended without a diagnosis");
@@ -203,6 +240,7 @@ export class Worker {
       return report("failed", reason);
     } finally {
       clearInterval(heartbeat);
+      if (watchdog) clearInterval(watchdog);
       outbox.close();
       if (sessionId) {
         this.router.sessions.delete(sessionId);
@@ -213,7 +251,12 @@ export class Worker {
     }
   }
 
-  private observer(outbox: EventOutbox, budget: RunBudget, state: RunState, session: () => string | undefined): TurnObserver {
+  private observer(
+    outbox: EventOutbox,
+    budget: RunBudget,
+    state: RunState,
+    session: () => string | undefined,
+  ): TurnObserver & { check: () => void } {
     const check = () => {
       const reason = budget.exceeded();
       const id = session();
@@ -224,10 +267,14 @@ export class Worker {
       }
     };
     return {
+      check,
       onToolStart: ({ toolName, args, delegate }) => {
         budget.toolCall();
         outbox.push("tool_call", { tool: toolName, args: preview(args, 500), ...(delegate ? { delegate } : {}) });
-        check();
+        if (!state.finalTurn) return check();
+        state.finalToolCalls += 1;
+        const id = session();
+        if (state.finalToolCalls > FINAL_TURN_TOOL_CALLS && !state.submitted && id) void this.engine.abort(id);
       },
       onToolEnd: ({ toolName, isError, ms, result }) => {
         outbox.push("tool_result", { tool: toolName, is_error: isError, ms, ...(isError ? { error: result.slice(0, 500) } : {}) });
@@ -241,7 +288,12 @@ export class Worker {
       },
       onUsage: (usage) => {
         budget.usage(usage);
-        check();
+        outbox.push("usage", {
+          tokens_in: usage.inputTokens ?? 0,
+          cached: usage.cacheReadTokens ?? 0,
+          tokens_out: usage.outputTokens ?? 0,
+        });
+        if (!state.finalTurn) check();
       },
       onAssistantText: (text) => {
         outbox.push("assistant", { text: text.slice(0, 1_000) });

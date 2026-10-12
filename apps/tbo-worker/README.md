@@ -59,21 +59,36 @@ TBO_HUB_URL=http://tbo.localhost:8002
 TBO_WORKER_API_KEY=...
 TBO_WORKER_API_SECRET=...
 MOONSHOT_API_KEY=...
-# optional
+
+# Optional. The model:
 TBO_MODEL_BASE_URL=https://api.moonshot.ai/v1
 TBO_MODEL_ID=kimi-k2.6
-TBO_MODEL_PRICE_IN=0.60          # USD per million tokens, for the run's cost
+# USD per million tokens, for each run's cost:
+TBO_MODEL_PRICE_IN=0.60
 TBO_MODEL_PRICE_OUT=2.50
+
+# Optional. The engine, and GitHub (else the logged-in gh token is used):
 TBO_HOST_CORE_BIN=/path/to/pi-desktop-host-core
-GITHUB_TOKEN=...                 # else the logged-in gh token is used
-TBO_HUB_AGENT_API_KEY=...        # eval only: an agent's key
+GITHUB_TOKEN=...
+
+# Evaluation only: an agent's key
+TBO_HUB_AGENT_API_KEY=...
 TBO_HUB_AGENT_API_SECRET=...
+
+# Limits per run
 TBO_MAX_TOOL_CALLS=60
 TBO_MAX_MINUTES=20
-TBO_MAX_TOKENS=600000
-TBO_REPOS=app=owner/repo,...     # repositories for apps the registry does not list
-TBO_KEEP_RUNS=1                  # keep run folders for debugging
+TBO_MAX_TOKENS=4000000
+TBO_MAX_USD=2
+
+# Repositories for apps the registry does not list, and keeping run folders for debugging
+TBO_REPOS=app=owner/repo,app2=owner/repo2
+TBO_KEEP_RUNS=1
 ```
+
+A value may be followed by a comment (`KEY=value   # note`); a `#` inside quotes is kept.
+
+**Limits.** `TBO_MAX_TOKENS` counts the tokens of every model request in the run. Each request sends the whole conversation again, so the count grows quickly; a run of about 40 tool calls can pass 1.5 million. `TBO_MAX_USD` applies only when the prices are set, and 0 switches it off. When a limit is reached, the worker stops the turn and asks the model once to report what it has found. That last turn may make at most 3 tool calls and take at most 3 minutes; without a report then, the run fails with the limit as its reason.
 
 ## Commands
 

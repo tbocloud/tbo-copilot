@@ -29,8 +29,9 @@ export class RunBudget {
   private readonly seenOperations = new Set<string>();
 
   constructor(
-    private readonly limits: Pick<Limits, "maxToolCalls" | "maxMinutes" | "maxTokens">,
+    private readonly limits: Pick<Limits, "maxToolCalls" | "maxMinutes" | "maxTokens"> & Partial<Pick<Limits, "maxUsd">>,
     private readonly now: () => number = Date.now,
+    private readonly prices?: Pick<ModelConfig, "modelId" | "priceInPerMillion" | "priceOutPerMillion">,
   ) {
     this.spend = { toolCalls: 0, tokensIn: 0, tokensOut: 0, startedAt: now() };
   }
@@ -58,6 +59,8 @@ export class RunBudget {
     if (this.spend.toolCalls > this.limits.maxToolCalls) return `the investigation used more than ${this.limits.maxToolCalls} tool calls`;
     if (this.spend.tokensIn + this.spend.tokensOut > this.limits.maxTokens) return `the investigation used more than ${this.limits.maxTokens} tokens`;
     if (this.minutes() > this.limits.maxMinutes) return `the investigation took longer than ${this.limits.maxMinutes} minutes`;
+    const maxUsd = this.limits.maxUsd ?? 0;
+    if (maxUsd > 0 && this.prices && Number(this.cost(this.prices).usd) > maxUsd) return `the investigation cost more than ${maxUsd} USD`;
     return undefined;
   }
 

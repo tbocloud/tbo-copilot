@@ -19,6 +19,14 @@ describe("parseEnvFile", () => {
   it("reads KEY=value lines with comments, export and quotes", () => {
     expect(parseEnvFile('# comment\nexport A=1\nB = "two words"\nC=\'3\'\nnot a line\n')).toEqual({ A: "1", B: "two words", C: "3" });
   });
+
+  it("drops a comment after an unquoted value, but keeps # inside quotes and values", () => {
+    expect(parseEnvFile('PRICE=0.60   # USD per million\nNOTE="a # b"\nURL=https://x.test/#frag\n')).toEqual({
+      PRICE: "0.60",
+      NOTE: "a # b",
+      URL: "https://x.test/#frag",
+    });
+  });
 });
 
 describe("parseRepoMap", () => {
@@ -57,9 +65,14 @@ describe("loadConfig", () => {
     }
   });
 
-  it("refuses a negative limit", () => {
+  it("refuses a limit or interval of 0 or less, but allows 0 for prices and the dollar limit", () => {
     const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
     expect(() => loadConfig({ dir, env: { ...required, TBO_MAX_MINUTES: "-1" } })).toThrow(ConfigError);
+    expect(() => loadConfig({ dir, env: { ...required, TBO_CLAIM_SECONDS: "0" } })).toThrow("above 0");
+    expect(() => loadConfig({ dir, env: { ...required, TBO_HEARTBEAT_SECONDS: "0" } })).toThrow("above 0");
+    const cfg = loadConfig({ dir, env: { ...required, TBO_MODEL_PRICE_IN: "0", TBO_MAX_USD: "0" } });
+    expect(cfg.model.priceInPerMillion).toBe(0);
+    expect(cfg.limits.maxUsd).toBe(0);
   });
 });
 

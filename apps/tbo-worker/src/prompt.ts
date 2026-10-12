@@ -51,19 +51,24 @@ Never put passwords, keys, tokens, or personal data beyond what the finding need
 ## Budget
 Be efficient: at most about 40 tool calls. When the evidence is enough, submit. After submitting, reply with one short sentence and stop.`;
 
-/** The first message of a run. The subject is left out: it is the customer's text and lives in context/ticket.md. */
+/** The first message of a run. The subject and the customer are left out: they can be the customer's text, and live inside the wrapper in context/ticket.md. */
 export function turnPrompt(context: RunContext, workspace: Workspace): string {
   const apps = workspace.apps.length
     ? workspace.apps.map((app) => `apps/${app.app} at ${app.commit.slice(0, 12)} (${app.source.replace("_", " ")})`).join(", ")
     : "no app code (no repository is registered for this customer)";
   return [
-    `Investigate ticket ${context.ticket.name} for ${context.ticket.customer ?? "the customer"}.`,
+    `Investigate ticket ${context.ticket.name}.`,
     `This run's folder holds INDEX.md, the ticket in context/, and ${apps}; all read-only.`,
     workspace.problems.length ? `Preparing the folder had problems: ${workspace.problems.join("; ")}.` : "",
     `Activate your tools with ToolSearch first, then investigate, and finish with hub_submit_investigation.`,
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/** Sent once when a limit stopped the investigation: a last chance to report what was found. */
+export function finalPrompt(reason: string): string {
+  return `Stop investigating: ${reason}. Call hub_submit_investigation now with your best finding from the evidence you already have. If it is not enough, report unclear with a low confidence and the questions that would settle it. Do not call any other tool.`;
 }
 
 /** Sent once when a turn ends without a report. */

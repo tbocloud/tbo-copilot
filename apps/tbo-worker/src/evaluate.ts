@@ -80,10 +80,11 @@ export function score(item: EvalCase, info: RunInfo): { right: boolean; filesFou
  */
 export async function runEvaluation(
   cases: EvalCase[],
-  deps: { cfg: WorkerConfig; hub: HubClient; worker: Worker; log: Logger },
+  deps: { cfg: WorkerConfig; hub: HubClient; worker: Pick<Worker, "runOnce">; log: Logger; signal?: AbortSignal },
 ): Promise<EvalResult[]> {
   const results: EvalResult[] = [];
   for (const item of cases) {
+    if (deps.signal?.aborted) break;
     deps.cfg.repoMap[item.app] = item.repository;
     deps.log("info", "evaluation case", { id: item.id, ticket: item.ticket, app: item.app });
     const empty = { rootCause: null, confidence: null, right: false, filesFound: [], summary: "", toolCalls: 0, tokens: 0, costUsd: 0, minutes: 0 };
@@ -113,6 +114,7 @@ export async function runEvaluation(
         costUsd: report?.costUsd ?? 0,
         minutes: report?.minutes ?? 0,
       });
+      if (report?.outcome === "stopped") break; // the worker was stopped: no more cases
     } catch (error) {
       results.push({ case: item, run: null, outcome: "not_started", reason: String((error as Error).message ?? error), ...empty });
     }

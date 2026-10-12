@@ -21,7 +21,10 @@ export type ModelConfig = {
 export type Limits = {
   maxToolCalls: number;
   maxMinutes: number;
+  /** Tokens summed over every model request; each request resends the conversation, so this grows quickly. */
   maxTokens: number;
+  /** Dollars per run, when the model's prices are set; 0 means no dollar limit. */
+  maxUsd: number;
   claimIntervalMs: number;
   heartbeatIntervalMs: number;
 };
@@ -60,7 +63,7 @@ export class ConfigError extends Error {}
 const DEFAULT_MODEL_BASE_URL = "https://api.moonshot.ai/v1";
 const DEFAULT_MODEL_ID = "kimi-k2.6";
 
-/** `KEY=value` lines; `#` comments, an optional `export ` and quotes are allowed. */
+/** `KEY=value` lines; `#` comments (whole lines, or after an unquoted value), an optional `export ` and quotes are allowed. */
 export function parseEnvFile(text: string): Record<string, string> {
   const values: Record<string, string> = {};
   for (const raw of text.split(/\r?\n/)) {
@@ -71,6 +74,9 @@ export function parseEnvFile(text: string): Record<string, string> {
     let value = match[2]!.trim();
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
+    } else {
+      // an unquoted value ends at a comment: `KEY=value   # note`
+      value = value.replace(/\s+#.*$/, "").trim();
     }
     values[match[1]!] = value;
   }
@@ -108,7 +114,15 @@ export function findSidecar(root = repoRoot()): string | undefined {
 function positive(value: string | undefined, fallback: number, name: string): number {
   if (value === undefined || value === "") return fallback;
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) throw new ConfigError(`${name} must be a positive number`);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new ConfigError(`${name} must be a number above 0`);
+  return parsed;
+}
+
+/** Prices and the dollar limit: 0 means unknown or off. */
+function nonNegative(value: string | undefined, fallback: number, name: string): number {
+  if (value === undefined || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) throw new ConfigError(`${name} must be 0 or more`);
   return parsed;
 }
 
@@ -173,8 +187,8 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
       apiStyle: env.TBO_MODEL_API_STYLE?.trim() || "chat_completions",
       contextWindow: positive(env.TBO_MODEL_CONTEXT_WINDOW, 256_000, "TBO_MODEL_CONTEXT_WINDOW"),
       maxOutputTokens: positive(env.TBO_MODEL_MAX_OUTPUT_TOKENS, 16_000, "TBO_MODEL_MAX_OUTPUT_TOKENS"),
-      priceInPerMillion: positive(env.TBO_MODEL_PRICE_IN, 0, "TBO_MODEL_PRICE_IN"),
-      priceOutPerMillion: positive(env.TBO_MODEL_PRICE_OUT, 0, "TBO_MODEL_PRICE_OUT"),
+      priceInPerMillion: nonNegative(env.TBO_MODEL_PRICE_IN, 0, "TBO_MODEL_PRICE_IN"),
+      priceOutPerMillion: nonNegative(env.TBO_MODEL_PRICE_OUT, 0, "TBO_MODEL_PRICE_OUT"),
     },
     ...(env.GITHUB_TOKEN?.trim() ? { githubToken: env.GITHUB_TOKEN.trim() } : {}),
     hostCoreBinary,
@@ -183,7 +197,8 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
     limits: {
       maxToolCalls: positive(env.TBO_MAX_TOOL_CALLS, 60, "TBO_MAX_TOOL_CALLS"),
       maxMinutes: positive(env.TBO_MAX_MINUTES, 20, "TBO_MAX_MINUTES"),
-      maxTokens: positive(env.TBO_MAX_TOKENS, 600_000, "TBO_MAX_TOKENS"),
+      maxTokens: positive(env.TBO_MAX_TOKENS, 4_000_000, "TBO_MAX_TOKENS"),
+      maxUsd: nonNegative(env.TBO_MAX_USD, 0, "TBO_MAX_USD"),
       claimIntervalMs: positive(env.TBO_CLAIM_SECONDS, 15, "TBO_CLAIM_SECONDS") * 1000,
       heartbeatIntervalMs: positive(env.TBO_HEARTBEAT_SECONDS, 30, "TBO_HEARTBEAT_SECONDS") * 1000,
     },

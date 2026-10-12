@@ -34,6 +34,14 @@ describe("HubClient against a stub hub", () => {
     expect(await hub.callTool("CPR-1:tok", "customer_erp_read", { tool: "get_doc" })).toEqual({ text: "The customer site refused get_doc", isError: true });
   });
 
+  it("never takes a reply without a JSON-RPC result for a result", async () => {
+    for (const raw of ["<html>proxy error</html>", JSON.stringify({ jsonrpc: "2.0", id: 1 })]) {
+      stub.rawMcpReply = raw;
+      await expect(hub.callTool("CPR-1:tok", "submit_investigation", {})).rejects.toThrow("the hub gave no result for submit_investigation");
+    }
+    stub.rawMcpReply = undefined;
+  });
+
   it("reports a lost lease as such", async () => {
     await expect(hub.heartbeat("CPR-1", "wrong", "investigate")).rejects.toMatchObject({ leaseGone: true, message: "This lease is not valid" });
     const error = await hub.callTool("CPR-1:wrong", "get_run_context", {}).catch((e: unknown) => e);

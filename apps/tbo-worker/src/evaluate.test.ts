@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { filesNamed, reportMarkdown, score, type EvalCase, type EvalResult } from "./evaluate.js";
+import type { WorkerConfig } from "./config.js";
+import { filesNamed, reportMarkdown, runEvaluation, score, type EvalCase, type EvalResult } from "./evaluate.js";
+import type { HubClient } from "./hub.js";
+import type { Worker } from "./supervisor.js";
 
 const bug: EvalCase = {
   id: "A6",
@@ -32,6 +35,25 @@ describe("scoring", () => {
     expect(score(custom, { run: "r", root_cause: "question" }).right).toBe(true);
     expect(score(custom, { run: "r", root_cause: "bug" }).right).toBe(false);
     expect(score(custom, { run: "r", root_cause: null }).right).toBe(false);
+  });
+});
+
+describe("runEvaluation", () => {
+  it("stops after a case the worker was stopped in", async () => {
+    const calls: string[] = [];
+    const hub = {
+      getRun: async (ticket: string) => ({ run: null, ticket }),
+      cancelRun: async () => ({ run: null }),
+      startRun: async (ticket: string) => {
+        calls.push(ticket);
+        return { run: `RUN-${ticket}`, state: "Queued" };
+      },
+    } as unknown as HubClient;
+    const worker = { runOnce: async () => ({ outcome: "stopped" }) } as unknown as Pick<Worker, "runOnce">;
+    const cfg = { repoMap: {} } as unknown as WorkerConfig;
+    const results = await runEvaluation([bug, { ...bug, id: "A7", ticket: "0002" }], { cfg, hub, worker, log: () => undefined });
+    expect(calls).toEqual(["0001"]);
+    expect(results.map((r) => r.outcome)).toEqual(["stopped"]);
   });
 });
 
