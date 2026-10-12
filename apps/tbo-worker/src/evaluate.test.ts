@@ -39,6 +39,34 @@ describe("scoring", () => {
 });
 
 describe("runEvaluation", () => {
+  it("starts no run once Ctrl-C has come, and cancels one it just started", async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const hub = {
+      getRun: async () => ({ run: null }),
+      cancelRun: async (ticket: string) => {
+        calls.push(`cancel ${ticket}`);
+        return { run: null };
+      },
+      startRun: async (ticket: string) => {
+        calls.push(`start ${ticket}`);
+        controller.abort(); // Ctrl-C arrives while the run is being started
+        return { run: `RUN-${ticket}`, state: "Queued" };
+      },
+    } as unknown as HubClient;
+    const worker = { runOnce: async () => ({ outcome: "submitted" }) } as unknown as Pick<Worker, "runOnce">;
+    const cfg = { repoMap: {} } as unknown as WorkerConfig;
+    const results = await runEvaluation([bug, { ...bug, id: "A7", ticket: "0002" }], {
+      cfg,
+      hub,
+      worker,
+      log: () => undefined,
+      signal: controller.signal,
+    });
+    expect(calls).toEqual(["start 0001", "cancel 0001"]);
+    expect(results).toEqual([]);
+  });
+
   it("stops after a case the worker was stopped in", async () => {
     const calls: string[] = [];
     const hub = {
@@ -70,12 +98,14 @@ describe("reportMarkdown", () => {
       summary: "The margin | formula divides by the buying price.",
       toolCalls: 12,
       tokens: 40_000,
+      tokensCached: 30_000,
       costUsd: 0.05,
       minutes: 3.5,
     };
     const markdown = reportMarkdown([result], { model: "kimi-k2.6", date: "2026-10-09 12:00" });
     expect(markdown).toContain("| Bugs: root cause right | 1 of 1 |");
     expect(markdown).toContain("| Fix files named (all cases) | 1 of 2 |");
+    expect(markdown).toContain("| Share of tokens served from the provider's cache | 75% |");
     expect(markdown).toContain("| A6 | 0001 | bug | bug | 0.8 | yes | 1 of 2 | 12 | 40000 | 3.5 | submitted |");
     expect(markdown).toContain("The margin / formula");
   });

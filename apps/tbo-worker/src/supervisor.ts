@@ -25,6 +25,8 @@ export type RunReport = {
   toolCalls: number;
   denied: number;
   tokensIn: number;
+  /** The part of tokensIn the provider served from its cache. */
+  tokensCached: number;
   tokensOut: number;
   costUsd: number;
   minutes: number;
@@ -163,6 +165,7 @@ export class Worker {
       toolCalls: budget.spend.toolCalls,
       denied: state.denied,
       tokensIn: budget.spend.tokensIn,
+      tokensCached: budget.spend.tokensCached,
       tokensOut: budget.spend.tokensOut,
       costUsd: Number(budget.cost(this.cfg.model).usd ?? 0),
       minutes: Math.round(budget.minutes() * 10) / 10,

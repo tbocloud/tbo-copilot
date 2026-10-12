@@ -18,7 +18,9 @@ export function answersFor(request: Pick<AskToolRequest, "questions">): string[]
   return request.questions.map(() => [INPUT_ANSWER]);
 }
 
-export type Spend = { toolCalls: number; tokensIn: number; tokensOut: number; startedAt: number };
+/** `tokensIn` counts every input token, `tokensCached` the part the provider served from its cache. */
+export type Spend = { toolCalls: number; tokensIn: number; tokensCached: number; tokensOut: number; startedAt: number };
+type Prices = Pick<ModelConfig, "modelId" | "priceInPerMillion" | "priceOutPerMillion" | "priceCachedPerMillion">;
 
 /**
  * Tool calls, tokens and time for one run. `exceeded()` names the first limit
@@ -31,9 +33,9 @@ export class RunBudget {
   constructor(
     private readonly limits: Pick<Limits, "maxToolCalls" | "maxMinutes" | "maxTokens"> & Partial<Pick<Limits, "maxUsd">>,
     private readonly now: () => number = Date.now,
-    private readonly prices?: Pick<ModelConfig, "modelId" | "priceInPerMillion" | "priceOutPerMillion">,
+    private readonly prices?: Prices,
   ) {
-    this.spend = { toolCalls: 0, tokensIn: 0, tokensOut: 0, startedAt: now() };
+    this.spend = { toolCalls: 0, tokensIn: 0, tokensCached: 0, tokensOut: 0, startedAt: now() };
   }
 
   toolCall(): void {
@@ -47,7 +49,9 @@ export class RunBudget {
       if (this.seenOperations.has(usage.operationId)) return;
       this.seenOperations.add(usage.operationId);
     }
-    this.spend.tokensIn += Math.max(0, usage.inputTokens || 0) + Math.max(0, usage.cacheReadTokens || 0);
+    const cached = Math.max(0, usage.cacheReadTokens || 0);
+    this.spend.tokensIn += Math.max(0, usage.inputTokens || 0) + cached;
+    this.spend.tokensCached += cached;
     this.spend.tokensOut += Math.max(0, usage.outputTokens || 0);
   }
 
@@ -65,10 +69,13 @@ export class RunBudget {
   }
 
   /** What the run cost, for the hub: tokens, dollars at the configured prices, and the model. */
-  cost(model: Pick<ModelConfig, "modelId" | "priceInPerMillion" | "priceOutPerMillion">): Record<string, unknown> {
-    const usd = (this.spend.tokensIn * model.priceInPerMillion + this.spend.tokensOut * model.priceOutPerMillion) / 1_000_000;
+  cost(model: Prices): Record<string, unknown> {
+    const fresh = this.spend.tokensIn - this.spend.tokensCached;
+    const cachedPrice = model.priceCachedPerMillion ?? model.priceInPerMillion;
+    const usd = (fresh * model.priceInPerMillion + this.spend.tokensCached * cachedPrice + this.spend.tokensOut * model.priceOutPerMillion) / 1_000_000;
     return {
       tokens_in: this.spend.tokensIn,
+      tokens_cached: this.spend.tokensCached,
       tokens_out: this.spend.tokensOut,
       tokens: this.spend.tokensIn + this.spend.tokensOut,
       usd: Math.round(usd * 10_000) / 10_000,

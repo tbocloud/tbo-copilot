@@ -31,6 +31,13 @@ describe("RunBudget", () => {
     expect(slow.exceeded()).toContain("longer than 10 minutes");
   });
 
+  it("prices cached input at its own rate", () => {
+    const budget = new RunBudget(limits);
+    budget.usage({ inputTokens: 1_000_000, cacheReadTokens: 4_000_000, outputTokens: 100_000, totalTokens: 5_100_000 });
+    const cost = budget.cost({ modelId: "kimi-k2.6", priceInPerMillion: 0.6, priceCachedPerMillion: 0.15, priceOutPerMillion: 2.5 });
+    expect(cost).toMatchObject({ tokens_in: 5_000_000, tokens_cached: 4_000_000, tokens_out: 100_000, usd: 1.45 });
+  });
+
   it("stops at a dollar limit when prices are known", () => {
     const prices = { modelId: "kimi-k2.6", priceInPerMillion: 1, priceOutPerMillion: 4 };
     const budget = new RunBudget({ ...limits, maxTokens: 10_000_000, maxUsd: 0.5 }, Date.now, prices);
@@ -48,6 +55,7 @@ describe("RunBudget", () => {
     budget.usage({ inputTokens: 2_000_000, outputTokens: 1_000_000, totalTokens: 3_000_000 });
     expect(budget.cost({ modelId: "kimi-k2.6", priceInPerMillion: 0.6, priceOutPerMillion: 2.5 })).toEqual({
       tokens_in: 2_000_000,
+      tokens_cached: 0,
       tokens_out: 1_000_000,
       tokens: 3_000_000,
       usd: 3.7,

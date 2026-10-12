@@ -37,6 +37,8 @@ export type EvalResult = {
   summary: string;
   toolCalls: number;
   tokens: number;
+  /** Of `tokens`, the input the provider served from its cache (cheaper). */
+  tokensCached: number;
   costUsd: number;
   minutes: number;
 };
@@ -87,11 +89,16 @@ export async function runEvaluation(
     if (deps.signal?.aborted) break;
     deps.cfg.repoMap[item.app] = item.repository;
     deps.log("info", "evaluation case", { id: item.id, ticket: item.ticket, app: item.app });
-    const empty = { rootCause: null, confidence: null, right: false, filesFound: [], summary: "", toolCalls: 0, tokens: 0, costUsd: 0, minutes: 0 };
+    const empty = { rootCause: null, confidence: null, right: false, filesFound: [], summary: "", toolCalls: 0, tokens: 0, tokensCached: 0, costUsd: 0, minutes: 0 };
     try {
       const current = await deps.hub.getRun(item.ticket);
       if (current.run && current.can_cancel) await deps.hub.cancelRun(item.ticket);
+      if (deps.signal?.aborted) break; // Ctrl-C while the previous run was being cancelled
       const started = await deps.hub.startRun(item.ticket, item.app, item.base_commit);
+      if (deps.signal?.aborted) {
+        await deps.hub.cancelRun(item.ticket).catch(() => undefined); // leave nothing queued for another worker
+        break;
+      }
       if (!started.run || started.state !== "Queued") {
         results.push({ case: item, run: started.run, outcome: "not_started", reason: `the run is ${started.state ?? "missing"}`, ...empty });
         continue;
@@ -111,6 +118,7 @@ export async function runEvaluation(
         summary: info.summary ?? info.failure_reason ?? "",
         toolCalls: report?.toolCalls ?? 0,
         tokens: (report?.tokensIn ?? 0) + (report?.tokensOut ?? 0),
+        tokensCached: report?.tokensCached ?? 0,
         costUsd: report?.costUsd ?? 0,
         minutes: report?.minutes ?? 0,
       });
@@ -147,6 +155,10 @@ export function reportMarkdown(results: EvalResult[], meta: { model: string; dat
     `| Fix files named (all cases) | ${results.reduce((n, r) => n + r.filesFound.length, 0)} of ${results.reduce((n, r) => n + r.case.fix_files.length, 0)} |`,
     `| Median minutes per diagnosed case | ${median(ran.map((r) => r.minutes))} |`,
     `| Median tokens per diagnosed case | ${median(ran.map((r) => r.tokens))} |`,
+    `| Share of tokens served from the provider's cache | ${(() => {
+      const total = results.reduce((n, r) => n + r.tokens, 0);
+      return total ? `${Math.round((100 * results.reduce((n, r) => n + r.tokensCached, 0)) / total)}%` : "-";
+    })()} |`,
     `| Total cost (USD, at the configured prices) | ${results.reduce((n, r) => n + r.costUsd, 0).toFixed(2)} |`,
     "",
     "| Case | Ticket | Expected | Copilot | Confidence | Right | Fix files named | Tool calls | Tokens | Minutes | Outcome |",

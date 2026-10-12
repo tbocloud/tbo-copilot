@@ -15,6 +15,8 @@ export type ModelConfig = {
   maxOutputTokens: number;
   /** USD per million tokens; 0 when unknown, then the run's cost is 0. */
   priceInPerMillion: number;
+  /** Input tokens the provider served from its cache, usually much cheaper; defaults to the input price. */
+  priceCachedPerMillion?: number;
   priceOutPerMillion: number;
 };
 
@@ -189,6 +191,9 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
       maxOutputTokens: positive(env.TBO_MODEL_MAX_OUTPUT_TOKENS, 16_000, "TBO_MODEL_MAX_OUTPUT_TOKENS"),
       priceInPerMillion: nonNegative(env.TBO_MODEL_PRICE_IN, 0, "TBO_MODEL_PRICE_IN"),
       priceOutPerMillion: nonNegative(env.TBO_MODEL_PRICE_OUT, 0, "TBO_MODEL_PRICE_OUT"),
+      ...(env.TBO_MODEL_PRICE_CACHED?.trim()
+        ? { priceCachedPerMillion: nonNegative(env.TBO_MODEL_PRICE_CACHED, 0, "TBO_MODEL_PRICE_CACHED") }
+        : {}),
     },
     ...(env.GITHUB_TOKEN?.trim() ? { githubToken: env.GITHUB_TOKEN.trim() } : {}),
     hostCoreBinary,

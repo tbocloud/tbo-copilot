@@ -63,8 +63,9 @@ MOONSHOT_API_KEY=...
 # Optional. The model:
 TBO_MODEL_BASE_URL=https://api.moonshot.ai/v1
 TBO_MODEL_ID=kimi-k2.6
-# USD per million tokens, for each run's cost:
+# USD per million tokens, for each run's cost; cached input is input the provider served from its cache:
 TBO_MODEL_PRICE_IN=0.60
+TBO_MODEL_PRICE_CACHED=0.15
 TBO_MODEL_PRICE_OUT=2.50
 
 # Optional. The engine, and GitHub (else the logged-in gh token is used):
