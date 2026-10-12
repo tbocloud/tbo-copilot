@@ -351,6 +351,17 @@ export function networkFailureDiagnostics(
   return { category: network.category, fields: networkDetailFields(network) };
 }
 
+/**
+ * A 429 that says the account itself is out of credit or quota (OpenAI's
+ * `insufficient_quota`, Moonshot's "suspended due to insufficient balance" /
+ * `exceeded_current_quota_error`, "credit balance is too low"). Unlike a rate
+ * limit, re-sending cannot succeed until someone tops the account up, so it is
+ * classified as rate limited but not retriable: the turn fails at once with
+ * the provider's own words instead of backing off for many minutes.
+ */
+const ACCOUNT_EXHAUSTED_PATTERN =
+  /insufficient[ _]?(?:quota|balance|funds|credit)|exceeded[ _]?(?:your[ _])?current[ _]?quota|credit balance is too low/i;
+
 export function classifyAgentError(err: unknown): ClassifiedAgentError {
   const envelope = err !== null && typeof err === "object"
     ? err as Record<string, unknown> : undefined;
@@ -475,7 +486,7 @@ export function classifyAgentError(err: unknown): ClassifiedAgentError {
     if (status === 401 || status === 403) return result("PROVIDER_UNAUTHORIZED", false);
     if (status === 408) return result("TIMEOUT", true);
     if (status === 413) return result("CONTEXT_TOO_LARGE", false);
-    if (status === 429) return result("PROVIDER_RATE_LIMITED", true);
+    if (status === 429) return result("PROVIDER_RATE_LIMITED", !ACCOUNT_EXHAUSTED_PATTERN.test(rawMessage));
     if (status === 404) return result("MODEL_NOT_CONFIGURED", false);
     if (status >= 500) return result("PROVIDER_ERROR", true);
     if (status === 400 || status === 422) {
@@ -488,6 +499,9 @@ export function classifyAgentError(err: unknown): ClassifiedAgentError {
 
   if (/invalid[ _]api[ _]key|api key not valid|unauthorized|authentication|permission denied/i.test(rawMessage)) {
     return result("PROVIDER_UNAUTHORIZED", false);
+  }
+  if (ACCOUNT_EXHAUSTED_PATTERN.test(rawMessage)) {
+    return result("PROVIDER_RATE_LIMITED", false);
   }
   if (/rate.?limit|too many requests|quota|overloaded/i.test(rawMessage)) {
     return result("PROVIDER_RATE_LIMITED", true);
