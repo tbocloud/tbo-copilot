@@ -10,6 +10,18 @@ import { createConnection } from "node:net";
 /** `skipped`: nothing to run (an app without tests), which is neither a pass nor a failure. */
 export type SandboxResult = { ok: boolean; exit_code: number; output: string; ms: number; skipped?: boolean };
 
+/** One record of a correction, as the hub and the customer's site take it (Phase 3). */
+export type ChangeRecord = {
+  action: "update" | "create";
+  doctype: string;
+  name?: string;
+  values: Record<string, unknown>;
+  rows?: Array<{ table: string; name: string; values: Record<string, unknown> }>;
+  add_rows?: Array<{ table: string; values: Record<string, unknown> }>;
+};
+/** What a copy of the site said when the change was tried with its own code: saved, or why not. */
+export type ChangeTrial = { doctype: string; name?: string; ok: boolean; error?: string };
+
 export type SandboxSpec = {
   run: string;
   customer?: string | null;
@@ -31,6 +43,8 @@ export interface Sandbox {
   tests(id: string, app: string): Promise<SandboxResult>;
   /** Error signatures logged on the copy since `since` (ISO time). */
   errorsSince(id: string, since: string): Promise<string[]>;
+  /** A correction tried record by record on the copy, saved with the site's own code: the dry run. */
+  tryChangeSet(id: string, changes: ChangeRecord[]): Promise<ChangeTrial[]>;
   stop(id: string): Promise<void>;
 }
 
@@ -97,6 +111,10 @@ export class SocketSandbox implements Sandbox {
 
   errorsSince(id: string, since: string): Promise<string[]> {
     return this.call("errors_since", { id, since });
+  }
+
+  tryChangeSet(id: string, changes: ChangeRecord[]): Promise<ChangeTrial[]> {
+    return this.call("try_change_set", { id, changes });
   }
 
   stop(id: string): Promise<void> {

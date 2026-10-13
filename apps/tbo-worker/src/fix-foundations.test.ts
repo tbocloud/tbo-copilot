@@ -164,6 +164,21 @@ describe("the sandbox runner's client", () => {
     await expect(sandbox.tests("sbx-1", "Demo App")).rejects.toBeInstanceOf(SandboxError);
   });
 
+  it("tries a correction on the copy with one request, records and all", async () => {
+    const { server, path, seen } = await runner(() => ({
+      ok: true,
+      result: [{ doctype: "Item Price", name: "IP-1", ok: false, error: "the rate must be positive" }],
+    }));
+    try {
+      const changes = [{ action: "update" as const, doctype: "Item Price", name: "IP-1", values: { price_list_rate: -1 } }];
+      const trials = await new SocketSandbox(path, 5_000).tryChangeSet("sbx-1", changes);
+      expect(trials[0]).toMatchObject({ ok: false, error: "the rate must be positive" });
+      expect(seen[0]).toEqual({ op: "try_change_set", id: "sbx-1", changes });
+    } finally {
+      server.close();
+    }
+  });
+
   it("passes on the runner's refusal in its own words", async () => {
     const { server, path } = await runner(() => ({ ok: false, error: "no copy of this customer's site yet" }));
     try {

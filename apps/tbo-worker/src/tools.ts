@@ -6,6 +6,16 @@ import { MAX_OUTPUT_CHARS, REPO_GIT_COMMANDS, runRepoGit } from "./repo-git.js";
 
 /** The four tools a run's model gets. Four, because ToolSearch activates at most four per query. */
 export const RUN_TOOL_NAMES = ["hub_get_run_context", "hub_customer_erp_read", "hub_submit_investigation", "repo_git"] as const;
+
+/** At most this many records per correction: more is a data patch in the customer's app. */
+export const MAX_CHANGE_RECORDS = 1000;
+/** Never corrected by Copilot; the hub and the customer's site refuse them too. */
+export const NEVER_CHANGED = [
+  "User", "Role", "Has Role", "DocPerm", "Custom DocPerm", "User Permission", "Role Profile", "Module Profile",
+  "System Settings", "Email Account", "Email Domain", "OAuth Client", "Social Login Key", "Connected App", "Token Cache",
+  "Server Script", "Client Script", "Scheduled Job Type", "Custom Field", "Property Setter", "DocType", "Workflow",
+  "Print Format", "Bulk Update", "Data Import",
+];
 export type RunToolName = (typeof RUN_TOOL_NAMES)[number];
 export const TOOL_SEARCH_QUERY = RUN_TOOL_NAMES.join(" ");
 
@@ -79,6 +89,39 @@ export const TOOL_DEFINITIONS: PluginToolDef[] = [
         proposal: { type: "object", properties: { action: { type: "string" }, files: { type: "array", items: { type: "string" } }, risk: { type: "string" }, notes: { type: "string" } } },
         customer_message: { type: "string", maxLength: 4000 },
         questions: { type: "array", maxItems: 10, items: { type: "string" } },
+        change_set: {
+          type: "object",
+          description:
+            "Only for wrong_setting, data_damaged_by_bug, or customer_mistake when the context says prepare_correction: every record to correct with its new values. A senior approves it before anything changes.",
+          properties: {
+            summary: { type: "string", maxLength: 2000 },
+            customer_note: { type: "string", maxLength: 2000, description: "What the customer reads once it is applied." },
+            found_by: { type: "string", maxLength: 2000, description: "How the records were found: the doctype and filters." },
+            changes: {
+              type: "array",
+              maxItems: MAX_CHANGE_RECORDS,
+              items: {
+                type: "object",
+                properties: {
+                  action: { type: "string", enum: ["update", "create"] },
+                  doctype: { type: "string" },
+                  name: { type: "string", description: "The record to update; not for create." },
+                  values: { type: "object", description: "Field: new value." },
+                  rows: { type: "array", items: { type: "object" }, description: "Existing table rows to change: {table, name, values}." },
+                  add_rows: { type: "array", items: { type: "object" }, description: "New table rows: {table, values}." },
+                  why: { type: "string", maxLength: 1000 },
+                },
+                required: ["doctype"],
+              },
+            },
+            set_aside: {
+              type: "array",
+              maxItems: 200,
+              items: { type: "object", properties: { doctype: { type: "string" }, name: { type: "string" }, why: { type: "string" } } },
+              description: "Records a person must correct: submitted documents, and anything Copilot may not change.",
+            },
+          },
+        },
       },
       required: ["root_cause_category", "confidence", "summary", "evidence"],
       additionalProperties: false,
@@ -132,6 +175,34 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+/** The correction's shape: what the hub would refuse, said to the model first. */
+export function checkChangeSet(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const set = record(value);
+  if (value !== set) return "change_set must be an object";
+  const changes = set.changes ?? [];
+  if (!Array.isArray(changes)) return "change_set.changes must be a list";
+  if (changes.length > MAX_CHANGE_RECORDS) {
+    return `change_set holds at most ${MAX_CHANGE_RECORDS} records; for more, propose a data patch in the customer's app instead`;
+  }
+  for (const [i, raw] of changes.entries()) {
+    const change = record(raw);
+    const action = change.action ?? "update";
+    if (action !== "update" && action !== "create") return `change ${i + 1}: Copilot updates or creates records, never ${String(action)}`;
+    if (typeof change.doctype !== "string" || !change.doctype) return `change ${i + 1}: doctype is required`;
+    if (NEVER_CHANGED.includes(change.doctype)) return `change ${i + 1}: Copilot never changes ${change.doctype} records`;
+    if (action === "update" && (typeof change.name !== "string" || !change.name)) return `change ${i + 1}: name the record it updates`;
+    const values = change.values ?? {};
+    if (values !== record(values)) return `change ${i + 1}: values must be an object of field: new value`;
+    const rows = change.rows ?? [];
+    const added = change.add_rows ?? [];
+    if (!Array.isArray(rows) || !Array.isArray(added)) return `change ${i + 1}: rows and add_rows must be lists`;
+    if (!Object.keys(values as object).length && !rows.length && !added.length) return `change ${i + 1}: it must change something`;
+  }
+  if (set.set_aside !== undefined && !Array.isArray(set.set_aside)) return "change_set.set_aside must be a list";
+  return undefined;
+}
+
 /** The report's shape, checked here so the model hears what to fix before the hub sees it. */
 export function checkReport(args: Record<string, unknown>): string | undefined {
   if (!CATEGORIES.includes(args.root_cause_category as (typeof CATEGORIES)[number])) {
@@ -141,7 +212,7 @@ export function checkReport(args: Record<string, unknown>): string | undefined {
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) return "confidence must be a number from 0 to 1";
   if (typeof args.summary !== "string" || !args.summary.trim()) return "summary is required";
   if (args.evidence !== undefined && !Array.isArray(args.evidence)) return "evidence must be a list";
-  return undefined;
+  return checkChangeSet(args.change_set);
 }
 
 /** Runs one of the run's tools. Hub refusals reach the model as tool errors, in plain words. */
