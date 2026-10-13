@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Sandbox, SandboxResult, SandboxSpec } from "../sandbox.js";
+import type { ChangeRecord, ChangeTrial, Sandbox, SandboxResult, SandboxSpec } from "../sandbox.js";
 
 /**
  * A sandbox runner that judges the code it is given: `check` passes when the
@@ -44,6 +44,17 @@ export class FakeSandbox implements Sandbox {
 
   async errorsSince(): Promise<string[]> {
     return [];
+  }
+
+  /** Records whose name is in `refusing` fail as a site's validation would; the rest save. */
+  readonly refusing = new Map<string, string>();
+
+  async tryChangeSet(_id: string, changes: ChangeRecord[]): Promise<ChangeTrial[]> {
+    this.calls.push(`try_change_set ${changes.length}`);
+    return changes.map((change) => {
+      const error = this.refusing.get(change.name ?? "");
+      return { doctype: change.doctype, name: change.name, ok: !error, ...(error ? { error } : {}) };
+    });
   }
 
   async stop(id: string): Promise<void> {

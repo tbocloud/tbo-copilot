@@ -61,6 +61,10 @@ export type RunContext = {
   conversation?: Array<{ kind?: string; direction?: string; sender?: string; content?: string; at?: string }>;
   files?: Array<Record<string, unknown>>;
   previous_runs?: Array<Record<string, unknown>>;
+  /** An agent asked for the correction of the customer's own mistake (Phase 3). */
+  prepare_correction?: boolean;
+  /** This ticket's corrections so far: a new look prepares only the records they missed. */
+  corrections?: Array<{ change_set: string; status: string; summary?: string; found_by?: string; applied_at?: string; records?: number }>;
 };
 
 export type WorkerEvent = { seq: number; type: string; payload: Record<string, unknown> };
