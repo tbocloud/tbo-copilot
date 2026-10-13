@@ -121,7 +121,7 @@ export async function verify(
 ): Promise<{ evidence: EvidenceRow[]; failures: string[]; fatal?: string }> {
   const env = gitEnv(state.homeDir);
   await runGit(state.dir, ["add", "--intent-to-add", "--all"], env);
-  const changed = (await runGit(state.dir, ["diff", "--name-only"], env)).split("\n").map((line) => line.trim()).filter(Boolean);
+  const changed = (await runGit(state.dir, ["diff", "--no-ext-diff", "--name-only"], env)).split("\n").map((line) => line.trim()).filter(Boolean);
   const sources = changed.filter((path) => !TEST_PATH.test(path));
   if (!sources.length) return { evidence: [], failures: [], fatal: "the change touches no code, only tests" };
   const module = state.done!.test_module;
@@ -139,11 +139,22 @@ export async function verify(
       fatal: `the bug does not show before the fix: ${module} passes on the code the site runs`,
     };
   }
+  if (before.failure !== "assertion") {
+    // an import error or a crash proves nothing about the bug (a test calling a function only
+    // the fix adds errors too); the runner's test report says which, never the output's words
+    const how = before.failure === "error" ? "errored" : "failed without a test report saying how";
+    return {
+      evidence: [{ check: `the bug shows before the fix (${module})`, result: "fail", detail: `${how}: ${firstLines(before.output)}` }],
+      failures: [
+        `${module} ${how} on the code the site runs instead of failing an assertion: it must run on that code and fail on the wrong result, so it shows the bug`,
+      ],
+    };
+  }
   const after = await state.sandbox.check(state.sandboxId, state.app, module);
   const migrate = await state.sandbox.migrate(state.sandboxId);
   const tests = await state.sandbox.tests(state.sandboxId, state.app);
   const errors = await state.sandbox.errorsSince(state.sandboxId, since);
-  const secret = SECRET.test(await runGit(state.dir, ["diff"], env));
+  const secret = SECRET.test(await runGit(state.dir, ["diff", "--no-ext-diff"], env));
   const evidence: EvidenceRow[] = [
     row(`the bug shows before the fix (${module})`, before, false),
     row(`the check passes after the fix (${module})`, after),
@@ -239,7 +250,7 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
     cfg.model,
   );
   const outbox = new EventOutbox((events) => hub.postEvents(run, job.lease_token, events), { log });
-  const flags = { cancelled: false, leaseLost: false, budgetReason: "", denied: 0 };
+  const flags = { cancelled: false, leaseLost: false, budgetReason: "", denied: 0, stopped: false };
   const sessions: string[] = [];
   let workspace: Workspace | undefined;
   let sandboxId: string | undefined;
@@ -267,6 +278,12 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
     }
     return report("failed", reason);
   };
+  // the worker is shutting down (SIGINT, SIGTERM): end the running turn now, not at its time limit
+  const stopIfAsked = () => {
+    if (!deps.stopping() || flags.stopped) return;
+    flags.stopped = true;
+    for (const id of sessions) engine.abort(id).catch(() => undefined);
+  };
   const heartbeat = setInterval(() => {
     void (async () => {
       try {
@@ -276,11 +293,13 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
         if (error instanceof HubError && error.leaseGone) flags.leaseLost = true;
       }
       if (flags.cancelled || flags.leaseLost) for (const id of sessions) await engine.abort(id);
+      else stopIfAsked();
     })();
   }, cfg.limits.heartbeatIntervalMs);
   const mayGoOn = () => !flags.cancelled && !flags.leaseLost && !deps.stopping();
   const observer: TurnObserver & { check: () => void } = {
     check: () => {
+      stopIfAsked();
       const reason = budget.exceeded();
       if (reason && !flags.budgetReason) {
         flags.budgetReason = reason;

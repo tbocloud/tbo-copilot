@@ -13,6 +13,8 @@ export class FakeSandbox implements Sandbox {
   readonly stopped: string[] = [];
   readonly calls: string[] = [];
   alwaysPasses = false;
+  /** The check errors on the unchanged code (an import error) instead of failing an assertion. */
+  errorsBefore = false;
   private mount = "";
 
   async start(spec: SandboxSpec): Promise<{ id: string; tested_on: string }> {
@@ -29,7 +31,9 @@ export class FakeSandbox implements Sandbox {
     this.calls.push(`check ${module}`);
     const code = readFileSync(join(this.mount, "demo_app", "invoice.py"), "utf8");
     const fixed = this.alwaysPasses || code.includes("(doc.selling - doc.buying) / doc.selling");
-    return this.run(fixed, fixed ? "Ran 1 test\nOK" : "AssertionError: 1.25 != 0.2\nFAILED (failures=1)");
+    if (fixed) return this.run(true, "Ran 1 test\nOK");
+    if (this.errorsBefore) return { ...this.run(false, "ImportError: cannot import name 'margin_rate'\nFAILED (errors=1)"), failure: "error" };
+    return { ...this.run(false, "AssertionError: 1.25 != 0.2\nFAILED (failures=1)"), failure: "assertion" };
   }
 
   async migrate(): Promise<SandboxResult> {

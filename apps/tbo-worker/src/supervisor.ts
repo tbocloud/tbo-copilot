@@ -214,6 +214,7 @@ export class Worker {
           if (id) setImmediate(() => void this.engine.abort(id));
         },
         isSubmitted: () => state.submitted,
+        prepareCorrection: job.context.prepare_correction === true,
       });
       state.stage = "investigate";
       const observer = this.observer(outbox, budget, state, () => sessionId);

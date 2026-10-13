@@ -38,7 +38,8 @@ export function editsInside(root: string, writableDir: string): PermissionDecide
     if (!raw) return "deny";
     const target = resolve(root, raw);
     if (!within(writableDir, target)) return "deny";
-    if (relative(writableDir, target).split(sep)[0] === ".git") return "deny";
+    // any .git folder, at any depth and in any case (macOS file systems ignore case)
+    if (relative(writableDir, target).split(sep).some((part) => part.toLowerCase() === ".git")) return "deny";
     // the nearest existing folder must really be inside, and an existing target must not be a link
     if (existsSync(target) && lstatSync(target).isSymbolicLink()) return "deny";
     let parent = dirname(target);

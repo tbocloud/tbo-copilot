@@ -120,7 +120,8 @@ export function checkModule(app: string, module: unknown): string | undefined {
 
 export function describeRun(what: string, run: SandboxResult): string {
   const tail = run.output.length > 6_000 ? `…${run.output.slice(-6_000)}` : run.output;
-  return `${what}: ${run.ok ? "PASSED" : `FAILED (exit ${run.exit_code})`} in ${Math.round(run.ms / 100) / 10} s\n${tail}`;
+  const failed = run.failure === "assertion" ? "FAILED on an assertion" : run.failure === "error" ? "ERRORED (not an assertion)" : "FAILED";
+  return `${what}: ${run.ok ? "PASSED" : `${failed} (exit ${run.exit_code})`} in ${Math.round(run.ms / 100) / 10} s\n${tail}`;
 }
 
 /** The working tree's changes against the commit the clone started at, new files included. */

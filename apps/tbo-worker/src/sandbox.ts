@@ -7,8 +7,19 @@ import { createConnection } from "node:net";
  * the AI never does. Only these operations exist: nothing here takes a
  * command line.
  */
-/** `skipped`: nothing to run (an app without tests), which is neither a pass nor a failure. */
-export type SandboxResult = { ok: boolean; exit_code: number; output: string; ms: number; skipped?: boolean };
+/**
+ * `skipped`: nothing to run (an app without tests), which is neither a pass nor a failure.
+ * `failure`: why a run did not pass, from the test report (a failed assertion, or an error
+ * before or while the test ran); the runner says it, it is never guessed from the output.
+ */
+export type SandboxResult = {
+  ok: boolean;
+  exit_code: number;
+  output: string;
+  ms: number;
+  skipped?: boolean;
+  failure?: "assertion" | "error";
+};
 
 /** One record of a correction, as the hub and the customer's site take it (Phase 3). */
 export type ChangeRecord = {
@@ -64,6 +75,7 @@ export class SocketSandbox implements Sandbox {
     return new Promise((resolve, reject) => {
       const socket = createConnection(this.socketPath);
       let buffer = "";
+      let settled = false;
       const timer = setTimeout(() => {
         socket.destroy();
         reject(new SandboxError(`the sandbox runner did not answer ${op} in time`));
@@ -74,6 +86,7 @@ export class SocketSandbox implements Sandbox {
         buffer += chunk;
         const end = buffer.indexOf("\n");
         if (end < 0) return;
+        settled = true;
         clearTimeout(timer);
         socket.end();
         try {
@@ -85,8 +98,14 @@ export class SocketSandbox implements Sandbox {
         }
       });
       socket.on("error", (error) => {
+        settled = true;
         clearTimeout(timer);
         reject(new SandboxError(`the sandbox runner cannot be reached: ${error.message}`));
+      });
+      // the runner crashed or hung up before answering: no need to wait out the timeout
+      socket.on("close", () => {
+        clearTimeout(timer);
+        if (!settled) reject(new SandboxError(`the sandbox runner closed the connection without answering ${op}`));
       });
     });
   }

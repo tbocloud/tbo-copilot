@@ -211,6 +211,21 @@ describe.skipIf(!ready)("a fix job end to end", () => {
     expect(stub.callsTo("submit_result").filter((call) => call.body.run === run)).toHaveLength(0);
   }, 180_000);
 
+  it("does not take a check that errors on the code the site runs as the bug shown", async () => {
+    const sandbox = new FakeSandbox();
+    sandbox.errorsBefore = true;
+    const before = stub.calls.length;
+    const { report, branch } = await runFix(fixScript().slice(0, 9), sandbox);
+
+    // the round's own check found it, and the model is sent back to its test (here the
+    // scripted model has nothing more to say); nothing is pushed
+    const events = stub.calls.slice(before).filter((call) => call.path.endsWith("post_events")).flatMap((call) => call.body.events as Array<{ type: string; payload: Record<string, unknown> }>);
+    const verified = events.find((event) => event.type === "verified")!;
+    expect(verified.payload.evidence).toEqual([["the bug shows before the fix (demo_app.tests.test_copilot_margin)", "fail"]]);
+    expect(report.outcome).toBe("failed");
+    expect(() => git("rev-parse", "--verify", `refs/heads/${branch}`)).toThrow();
+  }, 180_000);
+
   it("refuses a fix whose test passes on the code the site runs: the bug was never shown", async () => {
     const sandbox = new FakeSandbox();
     sandbox.alwaysPasses = true;

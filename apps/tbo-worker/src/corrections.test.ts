@@ -37,6 +37,25 @@ describe("a correction in the report (Phase 3)", () => {
   });
 
   it("is optional", () => expect(checkReport(report)).toBeUndefined());
+
+  it("goes only with the causes a correction belongs to", () => {
+    const changeSet = { changes: [setting] };
+    expect(checkReport({ ...report, root_cause_category: "bug", change_set: changeSet })).toContain("leave it out for bug");
+    expect(checkReport({ ...report, root_cause_category: "question", change_set: changeSet })).toContain("leave it out");
+    expect(checkReport({ ...report, root_cause_category: "data_damaged_by_bug", change_set: changeSet })).toBeUndefined();
+  });
+
+  it("corrects a customer's mistake only when an agent asked for it", () => {
+    const mistake = { ...report, root_cause_category: "customer_mistake", change_set: { changes: [setting] } };
+    expect(checkReport(mistake)).toContain("unless an agent asked");
+    expect(checkReport(mistake, true)).toBeUndefined();
+  });
+
+  it("names each record it leaves to a person, at most 200", () => {
+    expect(checkChangeSet({ changes: [], set_aside: [{ doctype: "Sales Invoice", why: "submitted" }] })).toContain("name its doctype and record");
+    const many = Array.from({ length: 201 }, (_, i) => ({ doctype: "Sales Invoice", name: `SINV-${i}` }));
+    expect(checkChangeSet({ changes: [], set_aside: many })).toContain("at most 200");
+  });
 });
 
 describe("the instructions", () => {

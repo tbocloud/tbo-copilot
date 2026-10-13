@@ -49,6 +49,9 @@ describe("editsInside: a fix session edits its app and nothing else", () => {
 
   it("refuses the app's .git, other apps, the run's folder and anything outside", () => {
     expect(decide(request("Write", "apps/demo_app/.git/config"))).toBe("deny");
+    // a .git folder at any depth, in any case (macOS file systems ignore case)
+    expect(decide(request("Write", "apps/demo_app/.GIT/config"))).toBe("deny");
+    expect(decide(request("Write", "apps/demo_app/demo_app/.git/hooks/pre-commit"))).toBe("deny");
     expect(decide(request("Edit", "apps/other_app/x.py"))).toBe("deny");
     expect(decide(request("Write", "INDEX.md"))).toBe("deny");
     expect(decide(request("Write", "apps/demo_app/../../../etc/passwd"))).toBe("deny");
@@ -174,6 +177,19 @@ describe("the sandbox runner's client", () => {
       const trials = await new SocketSandbox(path, 5_000).tryChangeSet("sbx-1", changes);
       expect(trials[0]).toMatchObject({ ok: false, error: "the rate must be positive" });
       expect(seen[0]).toEqual({ op: "try_change_set", id: "sbx-1", changes });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("does not wait out the timeout when the runner hangs up without answering", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "tbo-sbx-")), "runner.sock");
+    const server = createServer((socket) => socket.end());
+    await new Promise<void>((resolve) => server.listen(path, () => resolve()));
+    try {
+      const started = Date.now();
+      await expect(new SocketSandbox(path, 60_000).migrate("sbx-1")).rejects.toThrow("closed the connection without answering migrate");
+      expect(Date.now() - started).toBeLessThan(5_000);
     } finally {
       server.close();
     }

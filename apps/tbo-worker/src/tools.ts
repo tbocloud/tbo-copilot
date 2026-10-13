@@ -9,6 +9,10 @@ export const RUN_TOOL_NAMES = ["hub_get_run_context", "hub_customer_erp_read", "
 
 /** At most this many records per correction: more is a data patch in the customer's app. */
 export const MAX_CHANGE_RECORDS = 1000;
+/** At most this many records left to a person in one report. */
+export const MAX_SET_ASIDE = 200;
+/** The causes a correction belongs to (customer_mistake only when an agent asked for it). */
+export const CORRECTED_CATEGORIES = ["wrong_setting", "data_damaged_by_bug", "customer_mistake"];
 /** Never corrected by Copilot; the hub and the customer's site refuse them too. */
 export const NEVER_CHANGED = [
   "User", "Role", "Has Role", "DocPerm", "Custom DocPerm", "User Permission", "Role Profile", "Module Profile",
@@ -116,8 +120,12 @@ export const TOOL_DEFINITIONS: PluginToolDef[] = [
             },
             set_aside: {
               type: "array",
-              maxItems: 200,
-              items: { type: "object", properties: { doctype: { type: "string" }, name: { type: "string" }, why: { type: "string" } } },
+              maxItems: MAX_SET_ASIDE,
+              items: {
+                type: "object",
+                properties: { doctype: { type: "string" }, name: { type: "string" }, why: { type: "string" } },
+                required: ["doctype", "name"],
+              },
               description: "Records a person must correct: submitted documents, and anything Copilot may not change.",
             },
           },
@@ -164,6 +172,8 @@ export type RunTools = {
   /** The hub accepted the report. */
   submitted: (result: string) => void;
   isSubmitted: () => boolean;
+  /** The run context says an agent asked for the correction of the customer's own mistake. */
+  prepareCorrection?: boolean;
 };
 
 function result(ok: boolean, text: string): LocalToolResult {
@@ -199,12 +209,21 @@ export function checkChangeSet(value: unknown): string | undefined {
     if (!Array.isArray(rows) || !Array.isArray(added)) return `change ${i + 1}: rows and add_rows must be lists`;
     if (!Object.keys(values as object).length && !rows.length && !added.length) return `change ${i + 1}: it must change something`;
   }
-  if (set.set_aside !== undefined && !Array.isArray(set.set_aside)) return "change_set.set_aside must be a list";
+  const aside = set.set_aside ?? [];
+  if (!Array.isArray(aside)) return "change_set.set_aside must be a list";
+  if (aside.length > MAX_SET_ASIDE) return `change_set.set_aside holds at most ${MAX_SET_ASIDE} records`;
+  for (const [i, raw] of aside.entries()) {
+    const item = record(raw);
+    if (typeof item.doctype !== "string" || !item.doctype || typeof item.name !== "string" || !item.name) {
+      return `set_aside ${i + 1}: name its doctype and record`;
+    }
+  }
   return undefined;
 }
 
-/** The report's shape, checked here so the model hears what to fix before the hub sees it. */
-export function checkReport(args: Record<string, unknown>): string | undefined {
+/** The report's shape, checked here so the model hears what to fix before the hub sees it.
+ * `prepareCorrection`: the run context says an agent asked for the correction of a customer's mistake. */
+export function checkReport(args: Record<string, unknown>, prepareCorrection = false): string | undefined {
   if (!CATEGORIES.includes(args.root_cause_category as (typeof CATEGORIES)[number])) {
     return `root_cause_category must be one of: ${CATEGORIES.join(", ")}`;
   }
@@ -212,6 +231,15 @@ export function checkReport(args: Record<string, unknown>): string | undefined {
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) return "confidence must be a number from 0 to 1";
   if (typeof args.summary !== "string" || !args.summary.trim()) return "summary is required";
   if (args.evidence !== undefined && !Array.isArray(args.evidence)) return "evidence must be a list";
+  if (args.change_set !== undefined && args.change_set !== null) {
+    const category = String(args.root_cause_category);
+    if (!CORRECTED_CATEGORIES.includes(category)) {
+      return `a change_set goes only with ${CORRECTED_CATEGORIES.join(", ")}; leave it out for ${category}`;
+    }
+    if (category === "customer_mistake" && !prepareCorrection) {
+      return "a customer's mistake is explained, not corrected, unless an agent asked for the correction (prepare_correction in the run context): leave change_set out";
+    }
+  }
   return checkChangeSet(args.change_set);
 }
 
@@ -234,7 +262,7 @@ export async function runTool(hub: HubClient, tools: RunTools, name: string, inp
       }
       case "hub_submit_investigation": {
         if (tools.isSubmitted()) return result(true, "Already submitted. Reply with one short sentence and stop.");
-        const problem = checkReport(args);
+        const problem = checkReport(args, tools.prepareCorrection === true);
         if (problem) return result(false, `Not submitted: ${problem}. Fix it and call hub_submit_investigation again.`);
         await tools.beforeSubmit();
         const reply = await hub.callTool(tools.runToken, "submit_investigation", { ...args, cost: tools.cost() });
