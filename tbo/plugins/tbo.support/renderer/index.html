@@ -70,7 +70,7 @@
     <div class="status" id="status" role="status"><span class="dot"></span><span id="status-text">Checking your sign-in…</span></div>
 
     <form id="form" autocomplete="off">
-      <p class="help">You need your own TBO Support API key and secret. Only a TBO Support admin (System Manager) can create them: your user → <b>API Access → Generate Keys</b>. Paste them here. The key is checked first, then kept in your computer's secure store (Keychain on macOS).</p>
+      <p class="help">You need your own TBO Support API key and secret. Only a TBO Support admin (System Manager) can create them: your user → <b>API Access → Generate Keys</b>. Paste them here. The key is checked first, then kept in your computer's secure store (Keychain on macOS, or encrypted for your Windows user with DPAPI).</p>
       <label for="key">API key <input id="key" name="key" spellcheck="false" required /></label>
       <label for="secret">API secret <input id="secret" name="secret" type="password" spellcheck="false" required /></label>
       <p class="error" id="error" aria-live="polite"></p>

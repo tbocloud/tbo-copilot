@@ -262,7 +262,7 @@ const ACTIONS = {
   async search_knowledge_base(client, args) {
     const query = queryArg(args);
     const items = await client.method("helpdesk.api.article.search", { query });
-    return { results: compact(Array.isArray(items) ? items : [], { maxString: 400, maxArray: 10 }) };
+    return { note: UNTRUSTED_NOTE, results: asUntrustedJson(Array.isArray(items) ? items : [], { maxString: 400, maxArray: 10 }, 12000) };
   },
 
   async get_article(client, args) {
@@ -271,7 +271,13 @@ const ACTIONS = {
       throw fail("INVALID_ARGUMENT", '"article" must be an article name from search_knowledge_base.');
     }
     const a = await client.method("helpdesk.api.knowledge_base.get_article", { name });
-    return { article: a.name, title: a.title, status: a.status, content: clip(htmlToText(a.content), 20000) };
+    return {
+      note: UNTRUSTED_NOTE,
+      article: a.name,
+      title: untrusted(clip(a.title, 300)),
+      status: a.status,
+      content: untrusted(clip(htmlToText(a.content), 20000)),
+    };
   },
 };
 

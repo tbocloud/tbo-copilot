@@ -35,6 +35,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The tests run code from the pull request; keep the token out of .git/config.
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v6
 

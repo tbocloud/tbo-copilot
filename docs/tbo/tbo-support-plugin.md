@@ -137,7 +137,7 @@ The other route is a small helpdesk PR: a "Connect TBO Copilot" button that gene
 | Platform | Store | How |
 |---|---|---|
 | macOS | Keychain, service `tbo-copilot.tbo-support`, account = site host | `/usr/bin/security -i`, with the command sent on standard input, so the secret never appears in a process list |
-| Windows | DPAPI (encrypted for the Windows user), file `credentials.dpapi` in the plugin's private data folder | PowerShell `ConvertTo-SecureString` / `ConvertFrom-SecureString`, with the secret sent on standard input |
+| Windows | DPAPI (encrypted for the Windows user), file `<host>.credentials.dpapi` in the plugin's private data folder | PowerShell `ConvertTo-SecureString` / `ConvertFrom-SecureString`, with the secret sent on standard input |
 | Other | Not supported in v1 | The app ships for macOS and Windows only |
 
 **Why not plugin settings:** PI-Desktop does not allow secrets in plugin settings yet (D018; its validator rejects `secret: true`), and the host's own secret store is closed to plugins (`docs/spec/07-plugins/04-plugin-security.md`).
@@ -190,7 +190,7 @@ The **site address** is a plugin setting (`siteUrl`, default `https://teams.team
 | Not signed in | "Not signed in to TBO Support. Run 'TBO Support: Sign in' from the command menu." |
 | 401 | "TBO Support did not accept the API key. Sign in again." |
 | 403 / `PermissionError` | "Your TBO Support account may not read this." |
-| 404 / `DoesNotExistError` | "Ticket 1234 was not found." |
+| 404 / `DoesNotExistError` | "Not found in TBO Support." followed by the shortened detail |
 | 417 / 500 with a Frappe message | The Frappe message, shortened |
 | 429 | "TBO Support is rate-limiting requests. Wait a minute and try again." The host never retries for the plugin |
 | Network or timeout | "Could not reach TBO Support (…)." |

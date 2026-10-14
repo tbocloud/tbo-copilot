@@ -240,6 +240,7 @@ To bring in **one specific fix**, for example a security fix, copy that commit b
 
 ```bash
 git remote add pi-desktop https://github.com/vastsa/PI-Desktop.git   # once
+git fetch origin
 git fetch pi-desktop
 git checkout -b feature/TASK-YYYY-NNNNN-pi-desktop-fix origin/tbo
 git cherry-pick -x <commit>

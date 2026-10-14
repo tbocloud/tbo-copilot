@@ -2,7 +2,7 @@
 
 Lets the TBO Copilot agent **read** TBO Support: tickets and their conversation, internal notes, AI triage, fix brief, session replay, possible duplicates, the suggested reply, the estimate, and the knowledge base. It cannot change anything.
 
-Design: [`docs/tbo-support-plugin.md`](../docs/tbo-support-plugin.md).
+Design: [`docs/tbo/tbo-support-plugin.md`](../../../docs/tbo/tbo-support-plugin.md).
 
 ## Use it
 
@@ -20,9 +20,10 @@ You see only what your TBO Support account may see. Every call runs as you.
 ## Develop
 
 ```bash
-node --test "tests/**/*.test.js"                                              # unit tests, from the repo root
-node ../tbo-copilot/packages/plugin-devkit/dist/cli.js check tbo.support      # validate
-node ../tbo-copilot/packages/plugin-devkit/dist/cli.js pack tbo.support       # build dist/tbo.support-<version>.piplug
+# from the repository root; build the pi-plugin CLI once: pnpm --filter '@pi-desktop/plugin-devkit...' build
+node --test "tbo/plugins/tests/**/*.test.js"                              # unit tests
+pnpm pi-plugin check tbo/plugins/tbo.support                              # validate
+pnpm pi-plugin pack tbo/plugins/tbo.support --out tbo/plugins/dist        # build tbo.support-<version>.piplug
 ```
 
 To try changes, load this folder in TBO Copilot: **Plugins → Load development plugin**. Edits reload automatically. Logs: **Settings → Info → Logs**, search for `tbo.support`.

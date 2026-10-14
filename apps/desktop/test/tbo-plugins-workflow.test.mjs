@@ -18,6 +18,8 @@ test("TBO plugin checks run when the plugins, their build script or the plugin C
   }
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /permissions:\n\s+contents: read/);
+  // Pull-request code runs here, so the checkout keeps no token in .git/config.
+  assert.match(workflow, /- uses: actions\/checkout@v7\n\s+with:\n(?:\s+#.*\n)*\s+persist-credentials: false/);
 });
 
 test("the plugins' unit tests run, then every plugin is checked and packed", () => {

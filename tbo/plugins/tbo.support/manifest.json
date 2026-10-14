@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "tbo.support",
   "name": "TBO Support",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Lets the TBO Copilot agent read TBO Support tickets: conversation, AI triage, fix brief, session replay, duplicates and the knowledge base. Read-only.",
   "author": "Team Back Office",
   "main": "main.js",
