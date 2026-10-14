@@ -1,0 +1,81 @@
+name: TBO Plugins
+
+# Tests the TBO plugins in tbo/plugins/: runs their unit tests, then validates
+# and packs every plugin with the pi-plugin CLI (packages/plugin-devkit), the
+# same rules TBO Copilot applies when it installs a plugin. The packed .piplug
+# files are kept as workflow artifacts.
+on:
+  pull_request:
+    branches: [tbo]
+    paths:
+      - 'tbo/plugins/**'
+      - 'scripts/tbo/**'
+      - 'packages/plugin-devkit/**'
+      - '.github/workflows/tbo-plugins.yml'
+  push:
+    branches: [tbo]
+    paths:
+      - 'tbo/plugins/**'
+      - 'scripts/tbo/**'
+      - 'packages/plugin-devkit/**'
+      - '.github/workflows/tbo-plugins.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tbo-plugins-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The tests run code from the pull request; keep the token out of .git/config.
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Run the plugins' unit tests
+        run: node --test "tbo/plugins/tests/**/*.test.js"
+
+      - name: Build the pi-plugin CLI
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --filter '@pi-desktop/plugin-devkit...'
+          pnpm --filter '@pi-desktop/plugin-devkit...' build
+
+      - name: Check and pack every plugin
+        run: |
+          set -euo pipefail
+          cli=packages/plugin-devkit/dist/cli.js
+          found=0
+          for manifest in tbo/plugins/*/manifest.json; do
+            [ -e "$manifest" ] || continue
+            dir="$(dirname "$manifest")"
+            found=$((found + 1))
+            node "$cli" check "$dir"
+            node "$cli" pack "$dir" --out tbo/plugins/dist
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::No plugin folders (tbo/plugins/*/manifest.json) found."
+            exit 1
+          fi
+
+      - name: Upload plugin packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: tbo-plugins
+          path: tbo/plugins/dist/*.piplug
+          if-no-files-found: error
+          retention-days: 30

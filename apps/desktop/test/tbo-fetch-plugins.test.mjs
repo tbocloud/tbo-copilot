@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const { bundlePlugins, readConfig } = await import("../../../scripts/tbo/fetch-plugins.mjs");
 
@@ -16,11 +17,19 @@ function plugin(root, folder, manifest, files = {}) {
   }
 }
 
-test("the shipped config bundles tbo.theme from the private plugins repository", () => {
+test("the shipped config bundles tbo.theme from tbo/plugins in this repository", () => {
   const config = readConfig();
-  assert.equal(config.repository, "tbocloud/tbo-copilot-plugins");
-  assert.ok(config.ref.length > 0);
+  assert.equal(config.source, "tbo/plugins");
   assert.deepEqual(config.plugins, ["tbo.theme"]);
+  const root = mkdtempSync(join(tmpdir(), "tbo-fetch-"));
+  try {
+    const source = fileURLToPath(new URL(`../../../${config.source}`, import.meta.url));
+    const copied = bundlePlugins({ source, dest: root, plugins: config.plugins });
+    assert.match(copied[0], /^tbo\.theme@\d+\.\d+\.\d+/);
+    assert.ok(existsSync(join(root, "tbo.theme", "manifest.json")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("listed plugins are copied whole, replacing an older copy", () => {
@@ -56,7 +65,7 @@ test("a folder whose manifest id differs, or that has no manifest, is refused", 
   }
 });
 
-test("the config only accepts tbo.* plugin ids, so upstream's bundled plugins cannot be replaced", () => {
+test("the config only accepts tbo.* plugin ids and a folder inside the repository", () => {
   const root = mkdtempSync(join(tmpdir(), "tbo-fetch-"));
   try {
     const write = (config) => {
@@ -64,11 +73,14 @@ test("the config only accepts tbo.* plugin ids, so upstream's bundled plugins ca
       writeFileSync(path, JSON.stringify(config));
       return path;
     };
-    const base = { repository: "tbocloud/tbo-copilot-plugins", ref: "main" };
+    const base = { source: "tbo/plugins" };
     assert.throws(() => readConfig(write({ ...base, plugins: ["pi.browser"] })), /must be an id starting with "tbo\."/);
     assert.throws(() => readConfig(write({ ...base, plugins: ["tbo.theme/../x"] })), /must be an id starting with "tbo\."/);
     assert.throws(() => readConfig(write({ ...base, plugins: [] })), /at least one plugin/);
-    assert.throws(() => readConfig(write({ ...base, repository: "not a repo", plugins: ["tbo.theme"] })), /owner\/name/);
+    assert.throws(() => readConfig(write({ source: "../plugins", plugins: ["tbo.theme"] })), /inside the repository/);
+    assert.throws(() => readConfig(write({ source: "/tmp/plugins", plugins: ["tbo.theme"] })), /inside the repository/);
+    assert.throws(() => readConfig(write({ source: "tbo/../../x", plugins: ["tbo.theme"] })), /inside the repository/);
+    assert.throws(() => readConfig(write({ plugins: ["tbo.theme"] })), /inside the repository/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

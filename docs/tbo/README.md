@@ -1,7 +1,8 @@
 # TBO Copilot
 
 TBO Copilot is Team Back Office's AI workbench for engineers. It is our own copy of
-[PI-Desktop](https://github.com/vastsa/PI-Desktop) (LGPL-3.0), kept in sync with upstream releases.
+[PI-Desktop](https://github.com/vastsa/PI-Desktop) (LGPL-3.0), taken on 30 Sep 2026. Since
+14 Oct 2026 it no longer takes PI-Desktop's changes (see [PI-Desktop changes](#pi-desktop-changes)).
 
 The system it belongs to is described in [architecture.md](architecture.md): the backend, the
 five plugins, the one-approval flow, traceability, sign-in and AI models.
@@ -10,24 +11,29 @@ five plugins, the one-approval flow, traceability, sign-in and AI models.
 
 | Remote | URL | Purpose |
 |---|---|---|
-| `origin` | `https://github.com/tbocloud/tbo-copilot` (public fork of `vastsa/PI-Desktop`) | TBO Copilot |
-| `upstream` | `https://github.com/vastsa/PI-Desktop` | The original project |
+| `origin` | `https://github.com/tbocloud/tbo-copilot` (public; not a fork) | TBO Copilot: the desktop app, the Copilot worker and the TBO plugins |
 
 | Branch | Contents |
 |---|---|
-| `main` | An exact copy of `upstream/main`. Never commit TBO changes here. |
-| `tbo` (default) | TBO Copilot: an upstream release plus the TBO changes below |
+| `main` | PI-Desktop as it was at the last sync (30 Sep 2026). Frozen: nothing is added to it. Never commit here. |
+| `tbo` (default) | TBO Copilot: that PI-Desktop copy plus the TBO changes below |
+
+| Folder | Contents |
+|---|---|
+| `tbo/plugins/` | The TBO plugins and their tests (see `tbo/plugins/README.md`) |
+| `apps/tbo-worker/` | The Copilot worker |
+| `scripts/tbo/`, `docs/tbo/` | TBO's build scripts and documents |
 
 ## Rules
 
-1. **Change the core as little as possible.** Every core change makes upstream merges harder.
-2. **Build TBO features as plugins** in the private repository `tbocloud/tbo-copilot-plugins`.
-   Plugins use only the plugin API, so they can stay private under the LGPL.
+1. **Change the core as little as possible.** A small, listed set of changes keeps the app easy to
+   follow, and makes copying a single PI-Desktop fix by hand possible.
+2. **Build TBO features as plugins** in `tbo/plugins/`. Plugins use only the plugin API.
 3. **List every core change in this file.**
 4. **Keep `LICENSE` and all copyright notices.** Changes to PI-Desktop's own files stay LGPL-3.0.
    This repository is public, so the source of every installer built from it is available.
-5. **Never put secrets in this repository.** It is public: keys go in Actions secrets, and TBO-only
-   logic goes in the private plugins repository.
+5. **Never put secrets or private material in this repository.** It is public: keys go in Actions
+   secrets; customer names, evaluation cases and other private documents stay out of it.
 
 ## TBO changes to the core
 
@@ -44,7 +50,7 @@ five plugins, the one-approval flow, traceability, sign-in and AI models.
 | Shared TBO pull-request checks: Kimi review and task reference | `.github/workflows/ai-review.yml` (copy of `tbocloud/ai-review/caller.yml`), `.github/workflows/task-reference.yml` (same as `tbocloud/helpdesk_client`) | New files (upstream never has them) |
 | **TBO logo** in the app icons (light and dark), Windows `.ico`, macOS `.icns`, menu bar icon, installer background and in-app logo | `apps/desktop/build/*`, `apps/desktop/src/assets/brand/*` | Branding script copies them from `scripts/tbo/assets/` |
 | **Default theme TBO Dark** for a new install (`plugin:tbo.theme:tbo-dark`); without the plugin the shell falls back to System | `crates/host-core/src/rpc/mod.rs` (`settings.get` defaults) | Branding script |
-| **Bundled private TBO plugins** (`tbo.theme`), copied in at build time | `scripts/tbo/bundled-plugins.json`, `scripts/tbo/fetch-plugins.mjs`, `.gitignore`, `tbo-release.yml` | New files; one `.gitignore` block |
+| **TBO plugins** in `tbo/plugins/`; the installers bundle `tbo.theme`, copied in at build time; CI tests and packs them | `tbo/plugins/`, `scripts/tbo/bundled-plugins.json`, `scripts/tbo/fetch-plugins.mjs`, `.gitignore`, `tbo-release.yml`, `.github/workflows/tbo-plugins.yml` and their tests | New files; one `.gitignore` block |
 | **TBO Copilot worker**: the headless worker that investigates TBO Support tickets read-only (Phase 1c-1); it uses the engine packages as they are, so the core is unchanged. Its files hold no keys, customer data or evaluation answers; at run time it reads a ticket and the customer's code into a folder that it deletes after the run. See `apps/tbo-worker/README.md` | `apps/tbo-worker/`, its entry in `pnpm-lock.yaml` | New app (upstream never has it) |
 
 ### Brand images
@@ -129,42 +135,28 @@ enable updates with `TBO_UPDATES=enabled`, or by changing `tboUpdatesEnabled`.
 
 ## Bundled TBO plugins
 
-TBO plugins live in the private repository
-[`tbocloud/tbo-copilot-plugins`](https://github.com/tbocloud/tbo-copilot-plugins). The installers
-ship the ones listed in `scripts/tbo/bundled-plugins.json` (today: `tbo.theme`, the TBO colours):
+TBO plugins live in this repository, in `tbo/plugins/`. The installers ship
+the ones listed in `scripts/tbo/bundled-plugins.json` (today: `tbo.theme`, the TBO colours):
 
 ```json
-{ "repository": "tbocloud/tbo-copilot-plugins", "ref": "main", "plugins": ["tbo.theme"] }
+{ "source": "tbo/plugins", "plugins": ["tbo.theme"] }
 ```
 
-- **At build time** `tbo-release.yml` checks out that repository at `ref` with a read-only deploy key,
-  and `scripts/tbo/fetch-plugins.mjs` copies each listed folder into
-  `apps/desktop/resources/plugins/`. The host registers everything there as a bundled plugin, enabled
-  by default. A later step checks the plugins are inside the packaged app.
-- **Releases (`tbo-v*` tags) fail without the key**, so a release never ships without the theme.
-  Manual and pull-request test builds only warn, and then open on the System theme.
+- **At build time** `tbo-release.yml` runs `scripts/tbo/fetch-plugins.mjs`, which copies each listed
+  folder into `apps/desktop/resources/plugins/`. The host registers everything there as a bundled
+  plugin, enabled by default. A later step checks the plugins are inside the packaged app.
+- Every build ships the plugins as they are in the commit it builds; no key or second repository is
+  involved.
 - Only ids starting with `tbo.` are accepted, so a TBO plugin can never replace one of upstream's
   bundled plugins (`pi.browser`, `pi.file-manager`). The copied folders are ignored by git.
-- `ref` is `main`, so a release ships the plugins as they are on `main` when it is built; the build log
-  records the commit. Pin `ref` to a tag or commit to freeze them.
+- **Checks:** `.github/workflows/tbo-plugins.yml` runs the plugins' unit tests and validates and packs
+  each plugin whenever one changes.
 
 **Locally** (for `pnpm dev`, or to package by hand):
 
 ```bash
-node scripts/tbo/fetch-plugins.mjs                          # clones with your git credentials
-node scripts/tbo/fetch-plugins.mjs --source ../tbo-copilot-plugins   # or from a local checkout
+node scripts/tbo/fetch-plugins.mjs
 ```
-
-### Setting up the deploy key (repository admin, once)
-
-```bash
-ssh-keygen -t ed25519 -N "" -C "tbo-copilot release" -f tbo-plugins-deploy-key
-gh repo deploy-key add tbo-plugins-deploy-key.pub -R tbocloud/tbo-copilot-plugins --title "tbo-copilot release (read-only)"
-gh secret set TBO_PLUGINS_DEPLOY_KEY -R tbocloud/tbo-copilot < tbo-plugins-deploy-key
-rm tbo-plugins-deploy-key tbo-plugins-deploy-key.pub
-```
-
-The key can only read `tbo-copilot-plugins`. Pull requests from forks never receive it.
 
 ## Installers (CI)
 
@@ -213,8 +205,8 @@ on Apple Silicon.
 
 ### Upstream workflows in this repository
 
-Upstream's workflow files stay unchanged so merges stay clean, but these are **disabled** in the
-repository's Actions settings:
+Upstream's workflow files stay unchanged (upstream's own tests read them), but these are **disabled**
+in the repository's Actions settings:
 
 | Workflow | Why it is disabled |
 |---|---|
@@ -224,7 +216,8 @@ repository's Actions settings:
 | `docs-check.yml` | Requires a Chinese mirror for every doc, which `docs/tbo/` does not have |
 | `pr-base.yml` | Requires pull requests into `main`; TBO pull requests go into `tbo` |
 
-`ci.yml` stays on: it tests every pull request.
+`ci.yml` stays on: it tests every pull request. `tbo-plugins.yml` tests and packs the TBO plugins
+when they change.
 
 ## Run it locally
 
@@ -238,6 +231,21 @@ CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 pnpm dev
   Settings → AI providers (OpenAI with an API key).
 - Requirements: Node ≥22.19, pnpm 12.8.1, stable Rust (see the main `README.md`).
 
-## Taking a new PI-Desktop release
+## PI-Desktop changes
 
-See [upstream-sync.md](upstream-sync.md).
+TBO Copilot no longer takes PI-Desktop's changes (owner's decision, 14 Oct 2026). The repository
+left PI-Desktop's fork network, and `main` stays frozen.
+
+To bring in **one specific fix**, for example a security fix, copy that commit by hand:
+
+```bash
+git remote add pi-desktop https://github.com/vastsa/PI-Desktop.git   # once
+git fetch origin
+git fetch pi-desktop
+git checkout -b feature/TASK-YYYY-NNNNN-pi-desktop-fix origin/tbo
+git cherry-pick -x <commit>
+node scripts/tbo/apply-branding.mjs && node scripts/tbo/apply-branding.mjs --check
+```
+
+Resolve any conflict in favour of the TBO changes listed above, run the tests, and open a pull
+request into `tbo`.
