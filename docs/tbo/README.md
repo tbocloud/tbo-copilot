@@ -20,7 +20,7 @@ five plugins, the one-approval flow, traceability, sign-in and AI models.
 
 | Folder | Contents |
 |---|---|
-| `tbo/plugins/` | The TBO plugins and their tests ([tbo/plugins/README.md](../../tbo/plugins/README.md)) |
+| `tbo/plugins/` | The TBO plugins and their tests (see `tbo/plugins/README.md`) |
 | `apps/tbo-worker/` | The Copilot worker |
 | `scripts/tbo/`, `docs/tbo/` | TBO's build scripts and documents |
 
@@ -135,7 +135,7 @@ enable updates with `TBO_UPDATES=enabled`, or by changing `tboUpdatesEnabled`.
 
 ## Bundled TBO plugins
 
-TBO plugins live in this repository, in [`tbo/plugins/`](../../tbo/plugins/). The installers ship
+TBO plugins live in this repository, in `tbo/plugins/`. The installers ship
 the ones listed in `scripts/tbo/bundled-plugins.json` (today: `tbo.theme`, the TBO colours):
 
 ```json
