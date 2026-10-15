@@ -74,7 +74,7 @@ A ticket's journey:
 | **Customer connector** | `tbocloud/helpdesk_client` | Support button, recording/replay, MCP server. Add: `hub_api` write-back, code identity, customizations, deploy status, version history, per-doctype write allow-list, stages/confirm/reopen UI, security fixes | To extend (§6.2) |
 | **Worker** | `tbocloud/tbo-copilot` (headless engine app + MCP relay) + new repo `tbocloud/tbo-copilot-worker` (supervisor, sandbox, llm-proxy) | The 24/7 AI agent with tools, sandbox benches, evidence, GitHub pipeline | To build (§6.3) |
 | **Deploy** | hub (`helpdesk/copilot/press.py`, `deploy.py`, `verify.py`) | Press API calls, window, lock, verification, rollback | To build (§6.4) |
-| **Desktop app** | `tbocloud/tbo-copilot` + `tbocloud/tbo-copilot-plugins` | Optional for developers: connects to the hub MCP server from Settings → MCP (no plugin needed); `tbo.support` plugin stays as a fallback | Done; small follow-ups |
+| **Desktop app** | `tbocloud/tbo-copilot` (its plugins in `tbo/plugins/` since 14 Oct 2026) | Optional for developers: connects to the hub MCP server from Settings → MCP (no plugin needed); `tbo.support` plugin stays as a fallback | Done; small follow-ups |
 | **Teams bot, Entra sign-in** | hub (`helpdesk/copilot/teams/`) | Buttons in Teams, two-way chat, Microsoft login | Later (§6.6) |
 
 ## 4. Root cause decides the path, and what the customer hears
@@ -190,7 +190,7 @@ Customer-side endpoints in `support_ticket.py` (POST, owner or `raised_by` only)
 - Tests: unit (tool-def mapping, allow-list parser, stage policy, resolveExecution payloads); integration (`vitest` starts a stub Streamable-HTTP MCP server + a real `tbo-worker-host` with a fake provider that returns one `mcp_hub_ping` tool call; asserts the round trip and that `mcp_*` tools are absent in Plan mode).
 - Upstream: offer `pi-host --mcp` (headless MCP relay with an injected client seam) to vastsa/PI-Desktop; the TBO app then shrinks to policy + local tools.
 
-**Supervisor `apps/tbo-worker`** (TypeScript, so it reuses `@pi-desktop/racp` `RacpClient` with a Unix-socket transport and `@pi-desktop/shared` event types; TBO-private prompts/policy live in `tbocloud/tbo-copilot-plugins/tbo.worker-policy`, fetched at build by `scripts/tbo/fetch-plugins.mjs`):
+**Supervisor `apps/tbo-worker`** (TypeScript, so it reuses `@pi-desktop/racp` `RacpClient` with a Unix-socket transport and `@pi-desktop/shared` event types; its prompts and policy live in `apps/tbo-worker` itself, since the separate plugins repository was retired on 14 Oct 2026):
 
 | Module | Behaviour |
 |---|---|

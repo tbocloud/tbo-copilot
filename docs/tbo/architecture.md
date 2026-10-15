@@ -108,7 +108,7 @@ TBO Copilot is built on these existing parts. The table was checked against `tbo
 | **Teams meetings** via Microsoft Graph (an Entra app with client credentials) | `helpdesk/teams_meetings.py` | TBO already has an Entra app registration |
 | GitHub PR sync to tasks | `helpdesk/github_sync.py` | Links fixes to tickets |
 | Shared AI review (Kimi) and task-reference checks | `tbocloud/ai-review`, each repository | The automatic review gate |
-| TBO Copilot desktop app: TBO branding, CI installers, private plugins bundled | this repository, `tbocloud/tbo-copilot-plugins` | The optional developer client |
+| TBO Copilot desktop app: TBO branding, CI installers, TBO plugins bundled | this repository (the plugins in `tbo/plugins/`) | The optional developer client |
 
 ---
 
@@ -399,8 +399,7 @@ Secrets live in the backend's secret store and GitHub Actions secrets, never in 
 
 | Repository | Contains | Visibility |
 |---|---|---|
-| `tbocloud/tbo-copilot` (this fork) | PI-Desktop + **minimal TBO changes**: branding script, update switch, CI installers, docs. **Planned:** the headless MCP relay (§6), ideally merged upstream instead | Public (LGPL) |
-| `tbocloud/tbo-copilot-plugins` | Desktop plugins (`tbo.theme` today) and, later, the five MCP servers | Private |
+| `tbocloud/tbo-copilot` (this repository; a copy of PI-Desktop, no longer a fork) | PI-Desktop + **minimal TBO changes**: branding script, update switch, CI installers, docs, the TBO plugins (`tbo/plugins/`) and the Copilot worker. **Planned:** the headless MCP relay (§6) and, later, the five MCP servers | Public (LGPL; the plugins keep their own licence) |
 | TBO Copilot backend (new repository) | Teams bot, job queue, approvals, model router, audit; runs `pi-host` | Private |
 | `tbocloud/helpdesk` | TBO Support: ticket flow, approvals, summary cards, traceability records | Existing |
 | `tbocloud/helpdesk_client` | Customer connector: MCP tools, write allow-list, code identity | Existing |
@@ -445,4 +444,4 @@ Secrets live in the backend's secret store and GitHub Actions secrets, never in 
 4. Is the **Luna model ID and data terms** confirmed (multi-LLM task)?
 5. **Entra:** who creates the sign-in app and the bot registration, and which groups map to which roles?
 6. **Upstream:** is contributing the headless MCP relay to `vastsa/PI-Desktop` acceptable?
-7. **GitHub plan:** rulesets are not enforced on private repositories on the Free plan (`tbo-copilot-plugins`, `helpdesk_client`). Upgrade, or rely on convention?
+7. **GitHub plan:** rulesets are not enforced on private repositories on the Free plan (`helpdesk_client`). Upgrade, or rely on convention?
