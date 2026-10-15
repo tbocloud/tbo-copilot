@@ -2,6 +2,8 @@
 
 **Status:** proposal for review (TASK-2026-00010). Later tasks build to this document and update it when a decision changes.
 
+**Update (8 Oct 2026).** The owner approved the full system design and build plan: `system-design.md` and `build-plan.md` in this folder (phase plans in `phases/`). Decisions that refine this document: the hub code lives inside `tbocloud/helpdesk` as `helpdesk/copilot/`; the server agent is a TBO headless app in this repository with an MCP relay (no Rust change) plus a worker repository for the supervisor, sandbox and model proxy; the automatic check in the pilot is a sandbox copy of the customer's site, not a Press UAT deploy; production deployment is controlled (a person presses Deploy) until low-risk categories are proven; config and data fixes need a senior approver and are never automatic in the pilot; Kimi k2.6 with OpenAI as fallback.
+
 **What we are building:** TBO Copilot, an AI support engineer for Team Back Office. It takes a customer issue from investigation to a tested fix. **One person approves it from a short summary**, and every change is recorded outside the AI. It is built from:
 - PI-Desktop's agent (this repository);
 - TBO Support (`tbocloud/helpdesk`);
