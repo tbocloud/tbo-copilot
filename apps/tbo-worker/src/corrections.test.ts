@@ -74,6 +74,7 @@ describe("the instructions", () => {
   it("tell the model when an agent asked for the correction of the customer's mistake", () => {
     expect(turnPrompt({ ...context, prepare_correction: true }, workspace)).toContain("report customer_mistake with a change_set");
     expect(turnPrompt({ ...context, prepare_correction: true }, workspace)).toContain("if it shows another cause, report that cause");
+    expect(turnPrompt({ ...context, prepare_correction: true }, workspace)).toContain("within their limits");
     expect(turnPrompt(context, workspace)).not.toContain("change_set");
   });
 

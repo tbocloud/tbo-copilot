@@ -72,7 +72,7 @@ export function turnPrompt(context: RunContext, workspace: Workspace): string {
     `This run's folder holds INDEX.md, the ticket in context/, and ${apps}; all read-only.`,
     workspace.problems.length ? `Preparing the folder had problems: ${workspace.problems.join("; ")}.` : "",
     context.prepare_correction
-      ? "An agent asked you to prepare the correction of the customer's own mistake. If the evidence shows it is their mistake, report customer_mistake with a change_set listing every record to correct; if it shows another cause, report that cause as usual."
+      ? "An agent asked you to prepare the correction of the customer's own mistake. If the evidence shows it is their mistake, report customer_mistake with a change_set prepared as the Corrections rules say, within their limits and with their fallbacks; if it shows another cause, report that cause as usual."
       : "",
     context.corrections?.length
       ? `This ticket already has corrections (${context.corrections.map((c) => `${c.change_set}: ${c.status}`).join(", ")}): read them in the run context and prepare only the records they missed.`
