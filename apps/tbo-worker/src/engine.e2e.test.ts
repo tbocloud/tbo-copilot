@@ -169,6 +169,23 @@ describe.skipIf(!ready)("the worker end to end", () => {
     expect(system).not.toContain("rm -rf");
   }, 120_000);
 
+  it("stops the model as soon as the hub has the report", async () => {
+    const read = (path: string): ModelStep => ({ tool: { name: "Read", arguments: { path } } });
+    const { report, model } = await runWith([
+      { tool: { name: "ToolSearch", arguments: { query: TOOL_SEARCH_QUERY } } },
+      { tool: { name: "hub_submit_investigation", arguments: REPORT } },
+      read("INDEX.md"),
+      read("context/ticket.md"),
+      read("INDEX.md"),
+      read("context/ticket.md"),
+      { text: "Done." },
+    ]);
+
+    expect(report.outcome).toBe("submitted");
+    // request 2 carried the report; at most the one already on its way may follow
+    expect(model.requests.length).toBeLessThanOrEqual(3);
+  }, 120_000);
+
   it("starts no turn when the run is cancelled while its workspace is prepared", async () => {
     stub.heartbeatAction = "cancel";
     try {

@@ -7,9 +7,12 @@ import { fileURLToPath } from "node:url";
 import { ConfigError, envFilePath, envFileWarning, githubTokenFromGh, loadConfig, type WorkerConfig } from "./config.js";
 import { Engine } from "./engine.js";
 import { loadCases, reportMarkdown, runEvaluation } from "./evaluate.js";
+import { FIX_PERSONA, FIX_RULES, REVIEW_PERSONA, REVIEW_RULES } from "./fix-prompt.js";
+import { FIX_TOOL_DEFINITIONS, REVIEW_TOOL_DEFINITIONS } from "./fix-tools.js";
 import { HubClient } from "./hub.js";
 import { createLogger, type Logger, type LogLevel } from "./log.js";
 import { PERSONA, RULES } from "./prompt.js";
+import { SocketSandbox } from "./sandbox.js";
 import { RunToolRouter, Worker } from "./supervisor.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 
@@ -41,6 +44,10 @@ async function startEngine(cfg: WorkerConfig, router: RunToolRouter, log: Logger
     runTool: (sessionId, name, args) => router.run(sessionId, name, args),
     persona: PERSONA,
     rules: RULES,
+    profiles: {
+      fix: { tools: FIX_TOOL_DEFINITIONS, persona: FIX_PERSONA, rules: FIX_RULES },
+      review: { tools: REVIEW_TOOL_DEFINITIONS, persona: REVIEW_PERSONA, rules: REVIEW_RULES },
+    },
   });
 }
 
@@ -51,6 +58,7 @@ async function check(cfg: WorkerConfig, hub: HubClient, log: Logger): Promise<nu
   say(`hub user    ${await hub.whoAmI()}`);
   say(`model       ${cfg.model.modelId} at ${cfg.model.baseUrl}`);
   say(`github      ${cfg.githubToken ? "token found" : "no token (set GITHUB_TOKEN or log in with gh): only public repositories can be read"}`);
+  say(`sandbox     ${cfg.sandboxSocket ? `runner at ${cfg.sandboxSocket}: investigations and fixes` : "none (TBO_SANDBOX_SOCKET not set): investigations only"}`);
   const engine = await startEngine(cfg, new RunToolRouter(hub), log);
   try {
     const model = await engine.configureModel(cfg.model);
@@ -94,7 +102,7 @@ export async function main(argv: string[]): Promise<number> {
 
   const router = new RunToolRouter(hub);
   const engine = await startEngine(cfg, router, log);
-  const worker = new Worker(cfg, hub, engine, router, log);
+  const worker = new Worker(cfg, hub, engine, router, log, cfg.sandboxSocket ? new SocketSandbox(cfg.sandboxSocket) : undefined);
   const controller = new AbortController();
   let interrupts = 0;
   const onSignal = () => {

@@ -233,6 +233,31 @@ describe("classifyAgentError", () => {
     });
   });
 
+  it("does not retry a 429 that says the account is out of credit or quota", () => {
+    expect(
+      classifyAgentError(
+        '429: {"message":"Your account is suspended due to insufficient balance, please recharge your account","type":"exceeded_current_quota_error"}',
+      ),
+    ).toMatchObject({ code: "PROVIDER_RATE_LIMITED", retriable: false });
+    expect(
+      classifyAgentError(
+        Object.assign(new Error("You exceeded your current quota, please check your plan and billing details."), {
+          status: 429,
+        }),
+      ),
+    ).toMatchObject({ code: "PROVIDER_RATE_LIMITED", retriable: false });
+    expect(classifyAgentError("insufficient_quota")).toMatchObject({
+      code: "PROVIDER_RATE_LIMITED",
+      retriable: false,
+    });
+    expect(classifyAgentError("429: the account is out of credit")).toMatchObject({
+      code: "PROVIDER_RATE_LIMITED",
+      retriable: false,
+    });
+    expect(classifyAgentError('429: {"error":{"type":"rate_limit_error"}}'))
+      .toMatchObject({ code: "PROVIDER_RATE_LIMITED", retriable: true });
+  });
+
   it("classifies pi-ai '<status>: <body>' errorMessage strings", () => {
     expect(classifyAgentError('429: {"error":{"type":"rate_limit_error"}}'))
       .toMatchObject({ code: "PROVIDER_RATE_LIMITED", retriable: true });

@@ -31,6 +31,8 @@ export type Workspace = {
   root: string;
   contextDir: string;
   apps: AppCheckout[];
+  /** The app a fix job changes: writable, on Copilot's own branch. */
+  writable?: AppCheckout;
   /** What could not be cloned or checked out, in plain words (for the evidence and the events). */
   problems: string[];
 };
@@ -43,7 +45,12 @@ export type WorkspaceOptions = {
   repoMap: Record<string, string>;
   allowLocalRepos?: boolean;
   log?: (message: string, data?: Record<string, unknown>) => void;
+  /** A fix job: this app is cloned with `token`, onto `branch`, left writable, committing as TBO Copilot. */
+  writable?: { app: string; branch: string; email: string; token?: string };
 };
+
+/** A fix job's branch: always Copilot's own. */
+export const COPILOT_BRANCH = /^copilot\/[A-Za-z0-9][A-Za-z0-9._/-]{0,190}$/;
 
 /** `owner/repo`, `github.com/owner/repo` and https URLs → `https://github.com/owner/repo.git`. */
 export function normalizeRepository(repository: string, allowLocal = false): string | undefined {
@@ -208,11 +215,11 @@ function conversationMarkdown(context: RunContext): string {
   return parts.join("\n");
 }
 
-function indexMarkdown(context: RunContext, apps: AppCheckout[], problems: string[]): string {
+function indexMarkdown(context: RunContext, apps: AppCheckout[], problems: string[], writable?: string): string {
   const lines = [
     `# Run ${context.run}: ticket ${context.ticket.name}`,
     "",
-    "Everything here is read-only.",
+    writable ? `Everything here is read-only, except \`apps/${writable}/\`: the app you fix.` : "Everything here is read-only.",
     "",
     "## Context",
     "",
@@ -279,14 +286,18 @@ export async function prepareWorkspace(job: Job, options: WorkspaceOptions): Pro
 
   const apps: AppCheckout[] = [];
   const problems: string[] = [];
+  const writable = options.writable;
+  if (writable && !COPILOT_BRANCH.test(writable.branch)) throw new Error(`a fix pushes only to a copilot/ branch, not ${writable.branch}`);
+  let changing: AppCheckout | undefined;
   for (const app of appsToRead(context, options.repoMap)) {
     const repository = app.repository ? normalizeRepository(app.repository, options.allowLocalRepos) : undefined;
     if (!repository) {
       problems.push(`${app.app}: no usable repository${app.repository ? ` (${app.repository})` : ""}`);
       continue;
     }
+    const fixing = writable?.app === app.app;
     try {
-      const mirror = await ensureMirror(repository, options);
+      const mirror = await ensureMirror(repository, fixing && writable.token ? { ...options, githubToken: writable.token } : options);
       const choice = await chooseCommit(app, context, mirror, options.homeDir);
       if (!choice.commit) {
         problems.push(`${app.app}: no commit to read in ${repository}`);
@@ -297,7 +308,13 @@ export async function prepareWorkspace(job: Job, options: WorkspaceOptions): Pro
       await runGit(appsRoot, ["clone", "--quiet", "--no-checkout", mirror, dir], env);
       await runGit(dir, ["checkout", "--quiet", "--detach", choice.commit], env);
       await runGit(dir, ["remote", "remove", "origin"], env);
-      apps.push({
+      if (fixing) {
+        await runGit(dir, ["checkout", "--quiet", "-b", writable.branch], env);
+        await runGit(dir, ["config", "user.name", "TBO Copilot"], env);
+        await runGit(dir, ["config", "user.email", writable.email], env);
+        await runGit(dir, ["config", "commit.gpgsign", "false"], env);
+      }
+      const checkout: AppCheckout = {
         app: app.app,
         repository,
         commit: choice.commit,
@@ -305,7 +322,9 @@ export async function prepareWorkspace(job: Job, options: WorkspaceOptions): Pro
         ...(app.branch ? { branch: app.branch } : {}),
         dir,
         ...(choice.note ? { note: choice.note } : {}),
-      });
+      };
+      apps.push(checkout);
+      if (fixing) changing = checkout;
       if (choice.note) problems.push(`${app.app}: ${choice.note}`);
     } catch (error) {
       options.log?.("clone failed", { app: app.app, repository, error: String(error) });
@@ -324,9 +343,12 @@ export async function prepareWorkspace(job: Job, options: WorkspaceOptions): Pro
   await writeFile(join(contextDir, "triage.json"), JSON.stringify(context.triage ?? {}, null, 1));
   await writeFile(join(contextDir, "site.json"), JSON.stringify(site, null, 1));
   await writeFile(join(contextDir, "previous_runs.json"), JSON.stringify(context.previous_runs ?? [], null, 1));
-  await writeFile(join(root, "INDEX.md"), indexMarkdown(context, apps, problems));
-  await setReadOnly(appsRoot);
+  if (context.diagnosis) await writeFile(join(contextDir, "diagnosis.json"), JSON.stringify(context.diagnosis, null, 1));
+  await writeFile(join(root, "INDEX.md"), indexMarkdown(context, apps, problems, changing?.app));
+  // every clone is read-only but the one a fix job changes
+  for (const app of apps) if (app !== changing) await setReadOnly(app.dir);
+  await chmod(appsRoot, 0o555);
   await setReadOnly(contextDir);
   await chmod(join(root, "INDEX.md"), 0o444);
-  return { run: job.run, root, contextDir, apps, problems };
+  return { run: job.run, root, contextDir, apps, problems, ...(changing ? { writable: changing } : {}) };
 }
