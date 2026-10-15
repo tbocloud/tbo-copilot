@@ -252,7 +252,8 @@ request into `tbo`.
 
 ## Design documents
 
-- `architecture.md`: the agreed principles and decisions.
-- `system-design.md`: the full system design (approved 8 Oct 2026).
-- `build-plan.md`: the build plan with a status per phase.
-- `phases/`: one plan per phase, approved before building.
+- [architecture.md](./architecture.md): the agreed principles and decisions.
+- [system-design.md](./system-design.md): the full system design (approved 8 Oct 2026).
+- [build-plan.md](./build-plan.md): the build plan with a status per phase.
+- One plan per phase, approved before building: [Phase 0](./phases/phase-0.md), [Phase 1a](./phases/phase-1a.md),
+  [Phase 1b](./phases/phase-1b.md).

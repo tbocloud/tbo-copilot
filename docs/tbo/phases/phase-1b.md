@@ -1,6 +1,6 @@
 # Phase 1b: Hub MCP server (TASK-2026-00013)
 
-**Status:** approved 9 Oct 2026; built and checked on the pair on 9 Oct 2026; **pushed to `tbo-copilot`** in both repos (helpdesk f648e2f, which joins the first push's history without a force push; helpdesk_client 88f97f0); the desktop app check is yours. See "As built" at the end. **Estimate:** about 8.5 developer-days, three pieces (H4, H5 in helpdesk; C6 in helpdesk_client). **Design reference:** `../system-design.md` §5.1 (Hub MCP server), §5.2 (new MCP tools), §5.3 (the worker's hub token); `../build-plan.md` Phase 1b; the TASK-2026-00013 brief. **Built on:** the `tbo-copilot` branch of each repo, first brought up to date with `main`.
+**Status:** approved 9 Oct 2026; built and checked on the pair on 9 Oct 2026; **pushed to `tbo-copilot`** in both repos (helpdesk's joins the first push's history without a force push); the desktop app check is yours. See "As built" at the end. **Estimate:** about 8.5 developer-days, three pieces (H4, H5 in helpdesk; C6 in helpdesk_client). **Design reference:** `../system-design.md` §5.1 (Hub MCP server), §5.2 (new MCP tools), §5.3 (the worker's hub token); `../build-plan.md` Phase 1b; the TASK-2026-00013 brief. **Built on:** the `tbo-copilot` branch of each repo, first brought up to date with `main`.
 
 ## Goal
 
@@ -12,13 +12,13 @@
 
 1. **MCP Inspector** (`npx @modelcontextprotocol/inspector`), Streamable HTTP, URL `http://tbo.localhost:8002/api/method/helpdesk.api.copilot_mcp.handle`, header `Authorization: token <key>:<secret>` of a test agent:
    - it lists 17 tools;
-   - `my_work`, `get_ticket 0236`, `search_tickets "invoice"` and `search_knowledge_base` answer;
+   - `my_work`, `get_ticket 0123`, `search_tickets "invoice"` and `search_knowledge_base` answer;
    - a ticket outside the agent's team, or an Administrator key, is refused.
 2. **TBO Copilot desktop app:** add the server in Settings → MCP (HTTP endpoint + the same header), then use it in Agent mode:
    - "What's on my plate today?"
-   - "Summarise ticket 0236 with its triage."
-   - "Add an internal note to 0236": an approval card first, then the note appears under the agent's name.
-   - "Draft a reply to 0236": the suggested-reply card is filled and nothing is sent.
+   - "Summarise ticket 0123 with its triage."
+   - "Add an internal note to 0123": an approval card first, then the note appears under the agent's name.
+   - "Draft a reply to 0123": the suggested-reply card is filled and nothing is sent.
 3. **The worker's run token:**
    - the fake worker claims a run and calls `get_run_context` with its run token;
    - it reads customer.localhost through the hub with `customer_erp_read`: `get_code_identity`, `get_error_log`, and `get_version_history` of a Sales Invoice;
@@ -153,13 +153,13 @@ Nothing new. For the desktop demo, your agent account on tbo.localhost with API 
 
 ## As built (9 Oct 2026)
 
-| Piece | Repo, branch `tbo-copilot` | Commit | Tests |
-|---|---|---|---|
-| Step 0 | helpdesk rebased onto main a0b08bb (15 newer commits); helpdesk_client was current | Phase 0/1a now f987b46 … 82b4bb8 | Phase 0/1a modules re-run: green |
-| H4 | helpdesk | ddd67fc | `test_copilot_mcp_protocol` 12, `test_copilot_mcp_auth` 5, `test_copilot_mcp_read_tools` 10, `test_copilot_call_log` 4 |
-| H5 | helpdesk | 7d389a8 | `test_copilot_mcp_write_tools` 8, `test_copilot_mcp_worker` 9, `test_support_hub_permissions` 5 |
-| C6 | helpdesk_client | 76f9281 | `test_diagnostic_tools` 10, `test_mcp_security` 13 (+2) |
-| Test fixes | helpdesk 4776b25; helpdesk_client d030291, adbaf8c, 88f97f0 | | see below |
+| Piece | Repo (branch `tbo-copilot`) | Tests |
+|---|---|---|
+| Step 0 | helpdesk brought up to date with `main` (15 newer commits); helpdesk_client was current | Phase 0/1a modules re-run: green |
+| H4 | helpdesk | `test_copilot_mcp_protocol` 12, `test_copilot_mcp_auth` 5, `test_copilot_mcp_read_tools` 10, `test_copilot_call_log` 4 |
+| H5 | helpdesk | `test_copilot_mcp_write_tools` 8, `test_copilot_mcp_worker` 9, `test_support_hub_permissions` 5 |
+| C6 | helpdesk_client | `test_diagnostic_tools` 10, `test_mcp_security` 13 (+2) |
+| Test fixes | helpdesk, helpdesk_client | see below |
 
 **Step 0 conflicts:** `test_utils.py` (both sides added helpers at the end: kept both); `tasky/api.py` `_assign_user` (main now passes `assigned_by` and a note; kept that with our fallback for Frappe 15, which has `assign_to.add` but not `_add`).
 
@@ -169,22 +169,22 @@ Nothing new. For the desktop demo, your agent account on tbo.localhost with API 
 - `customer_erp_read` refuses write tools at the schema level (enum), before the hub calls the site.
 
 **Checks on the pair:**
-- **MCP Inspector:** `npx @modelcontextprotocol/inspector --cli … --transport http --header "Authorization: token …"` listed 17 tools and called `get_ticket 0236`, `search_tickets`, `my_work` and `get_copilot_run`.
+- **MCP Inspector:** `npx @modelcontextprotocol/inspector --cli … --transport http --header "Authorization: token …"` listed 17 tools and called `get_ticket 0123`, `search_tickets`, `my_work` and `get_copilot_run`.
 - **curl:**
   - `initialize` answered 2025-06-18;
   - `notifications/initialized` got 202;
   - GET got 405, and a request without a key got 401;
-  - `add_ticket_comment` and `draft_ticket_reply` on 0236 were written as the test agent, with nothing sent to the customer;
+  - `add_ticket_comment` and `draft_ticket_reply` on 0123 were written as the test agent, with nothing sent to the customer;
   - every call was in HDS Copilot Call Log.
 - **Worker:**
   - `claim_job` over REST, then the run token: the 4 worker tools only;
-  - `customer_erp_read` read customer.localhost through the hub with `get_site_info`, `get_code_identity` (helpdesk_client `tbo-copilot` 76f9281, clean), `get_version_history` (the hub's own edits marked "hub"), `get_deploy_status` and `get_customizations`; `set_value` was refused;
+  - `customer_erp_read` read customer.localhost through the hub with `get_site_info`, `get_code_identity` (helpdesk_client on `tbo-copilot`, clean), `get_version_history` (the hub's own edits marked "hub"), `get_deploy_status` and `get_customizations`; `set_value` was refused;
   - `submit_investigation` routed the run, after which the token got 401.
 - **Test agent:** `mcp.agent@example.com` (Agent role, API keys) on tbo.localhost; worker user `copilot.worker@example.com` (Copilot Worker).
 
 **Cleaned up on 9 Oct:** test runs had left data on the local sites, because some code commits by design and those tests only rolled back:
-- 8 fake connections, 2 customers, tickets 0242, 0243, 0244 and 0247, and about 680 pull errors on tbo.localhost;
-- customer ticket SUP-2026-00021 and 15 test Error Logs on customer.localhost.
+- 8 fake connections, 2 customers, 4 tickets and about 680 pull errors on tbo.localhost;
+- a customer ticket and 15 test Error Logs on customer.localhost.
 
 All were removed, and the tests now use `hold_commits`. The Error Log cleanup rolls back before it commits.
 

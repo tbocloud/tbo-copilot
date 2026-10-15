@@ -4,14 +4,14 @@ Design: `system-design.md`. Phase plans: `phases/`. Section numbers continue fro
 
 | Phase | Content | Status | Plan |
 |---|---|---|---|
-| 0 | Groundwork and fixes | Code done locally, now pushed 9 Oct 2026 to the `tbo-copilot` branch of each repo (helpdesk_client C1 7b091bb, C2 4eeceba; helpdesk after the 9 Oct rebase onto main 8816ca6: H1a d8ff85d + 1b42b98, H1b 349cdfb); seed tickets and the evaluation list written (`evaluation/tickets.md`); waiting: AI keys + OpenAI model name from the owner, real ticket numbers for the evaluation list, checkpoint 5 (fallback), task numbers, push | `phases/phase-0.md` |
-| 1a | Hub foundation + customer stages | Built 9 Oct 2026, checkpoint passed on the pair; pushed 9 Oct to the `tbo-copilot` branch of each repo (helpdesk, rebased onto main 8816ca6: H2 dc96f38, H3 d16875b, H6a c8f1849, H6b 8457741 + 7803d4e; helpdesk_client C3 08c06dd, C4 b60728e); UI click-through by the owner pending | `phases/phase-1a.md` |
-| 1b | Hub MCP server (TASK-2026-00013) | Built and checked 9 Oct 2026; pushed to `tbo-copilot` in both repos (helpdesk f648e2f, helpdesk_client 88f97f0); desktop app check by the owner pending | `phases/phase-1b.md` |
-| 1c | Worker + sandbox, shadow mode | Not started | — |
-| 1d | One approval + merge | Not started | — |
-| 2 | Controlled production deployment | Not started | — |
-| 3 | Config and data changes (senior approval) | Not started | — |
-| 4 | Pilot and hardening | Not started | — |
+| 0 | Groundwork and fixes | Built; on the `tbo-copilot` branch of `helpdesk` and `helpdesk_client` since 9 Oct 2026 | `phases/phase-0.md` |
+| 1a | Hub foundation + customer stages | Built 9 Oct 2026, checkpoint passed on the local pair; on `tbo-copilot` | `phases/phase-1a.md` |
+| 1b | Hub MCP server (TASK-2026-00013) | Built and checked 9 Oct 2026; on `tbo-copilot` | `phases/phase-1b.md` |
+| 1c | Worker + sandbox, shadow mode | Built: the investigation (1c-1) in `apps/tbo-worker`; the fix stage (1c-2) in review; the sandbox runner waits for the worker server | — |
+| 1d | One approval + merge | Built; checkpoint passed 15 Oct 2026 | — |
+| 2 | Controlled production deployment | Built against a stand-in for Press; the checks on TBO's Press are under way | — |
+| 3 | Config and data changes (senior approval) | Built; checkpoint demo pending | — |
+| 4 | Pilot and hardening | Plan written, waiting for approval | — |
 | Later | §5.6 features | Not started | — |
 
 ## 7. Build plan, step by step (revised after the owner's review)
@@ -76,7 +76,7 @@ Order: the **vertical slice first** (ticket → investigation → diagnosis → 
 
 - **Unit tests per PR**: hub `helpdesk/tests/test_copilot_*.py` (FrappeTestCase with `hold_commits`; helpers in `test_utils.py`: `make_copilot_settings`, `make_copilot_run`, `make_site_registry`, `make_copilot_approval`, `fake_worker_result`, `FakePress`, `FakeClientSite`), covering transitions and locks, lease and idempotent events, router outcomes, approval assignment / senior rule / first wins / supersede / reminders, MCP auth and rate limit, change sets, deploy with `FakePress`; client `helpdesk_client/tests/` (`test_hub_api`, `test_mcp_auth`, `test_write_safety`, `test_hub_role`, `test_diagnostic_tools`, security regressions: a guest cannot…, a non-support user cannot…, GET is refused…); worker `vitest` unit + integration with a stub MCP server and a fake provider.
 - **CI**: helpdesk (CodeRabbit, task-reference, server tests, lint, semantic commits), helpdesk_client, tbo-copilot (fork tests + plugin fetch), tbo-copilot-worker (`vitest`, docker build).
-- **End-to-end on the local pair** after Phase 5: raise a ticket as a test user on customer.localhost with a recording → HD Ticket, triage, "Received" on the client → the worker (or the fake worker) investigates → for each category: the right message, approval type and artifacts → approve → PR webhook replay (`send_github_webhook` fixture) → Merged → Deploy Request (FakePress locally) → Resolved on the client → Confirm, then Reopen → escalation. Negative cases: lease lost mid-run, worker `fail`, approval superseded by a new push, reject → follow-up, deploy failure → recovery + escalation, customer reopen, double approval click, hub down (worker outbox keeps events).
+- **End-to-end on the local pair** after Phase 2: raise a ticket as a test user on customer.localhost with a recording → HD Ticket, triage, "Received" on the client → the worker (or the fake worker) investigates → for each category: the right message, approval type and artifacts → approve → PR webhook replay (`send_github_webhook` fixture) → Merged → Deploy Request (FakePress locally) → Resolved on the client → Confirm, then Reopen → escalation. Negative cases: lease lost mid-run, worker `fail`, approval superseded by a new push, reject → follow-up, deploy failure → recovery + escalation, customer reopen, double approval click, hub down (worker outbox keeps events).
 - **Red team before the pilot**: prompt injection in the ticket text, error logs, the repo's `AGENTS.md`, and the recording transcript; a planted `.env` and symlinks; expect denials, no egress, no secrets in events or PRs, `suspicious_instructions_seen` recorded.
 - **Evaluation**: the fixed set re-run on every prompt, model or engine change; track fix rate, false-PR rate, human edits needed, time, cost per completed task.
 
@@ -85,7 +85,7 @@ Order: the **vertical slice first** (ticket → investigation → diagnosis → 
 | Risk | Mitigation |
 |---|---|
 | Merge conflicts with the helpdesk maintainer's daily work in `helpdesk` | everything in `helpdesk/copilot/` + own doctypes; small PRs cut from that day's `main`; shared files (`hooks.py`, `install.py`, `test_utils.py`) touched once per PR with minimal lines |
-| Press API shapes and auth unverified for 0.7.0; no rollback API; one build at a time; builds strain live sites | confirm on TBO's Press before Phase 5; night window only; revert-PR rollback; DB restores manual with backup names on the escalation |
+| Press API shapes and auth unverified for 0.7.0; no rollback API; one build at a time; builds strain live sites | confirm on TBO's Press before Phase 2; night window only; revert-PR rollback; DB restores manual with backup names on the escalation |
 | GitHub Free plan: rulesets not enforced on private repos; some customer apps live in other orgs | the hub enforces `copilot/**` and per-run tokens; direct pushes stay a documented convention; other-org repos are investigate-only until the App is installed there |
 | Sanitizer misses a secret (ZATCA keys, tokens) in a customer copy | strip-list reviewed with the helpdesk maintainer; the copy is quarantined until sanitized; no files copied; snapshots expire after 7 days |
 | Customer apps have almost no tests | evidence relies on migrate, the agent's regression test (fails on base / passes on fix) and page/report smoke checks; the card says what was not tested |
@@ -99,7 +99,7 @@ Open questions: which project holds Copilot tasks per customer; who is in the fi
 ## 10. How we work: one phase at a time
 
 1. **Before each phase** (and each step 1a–1d): write that phase's architecture and plan as `phases/phase-<n>.md` (what changes, files, doctypes, APIs, tests, the checkpoint, risks) → the owner approves → build in small PRs → test on the local pair → report the checkpoint → update the status in `build-plan.md` and in memory.
-2. **Nothing is pushed or merged without the owner's go-ahead** (existing rule), and each repo's own rules apply (helpdesk: AGENTS.md, task reference, CodeRabbit; tbo-copilot: worktree per task, no `git add .`). **In `helpdesk` and `helpdesk_client`, Copilot work is pushed to the `tbo-copilot` branch; nothing is pushed to `main`, no pull request goes to `main`, and a branch already on GitHub is never rewritten** (owner, 9 Oct 2026). A newer `main` is merged into `tbo-copilot` and the module tests are run again before the push. **In `tbocloud/tbo-copilot`, documents and code go to `tbo` (the default branch) through a pull request (the branch rules ask for one approval and the `ai-review` and `task-reference` checks); `main` there is the copy of upstream PI-Desktop and is never touched.** The repository is public, so only a cleaned copy of these documents goes there. A pull request, if one is wanted, targets `tbo-copilot` and is opened as a draft, because helpdesk's auto-merge workflow switches auto-merge on for every non-draft pull request whatever its base.
+2. **Nothing is pushed or merged without the owner's go-ahead** (existing rule), and each repo's own rules apply (helpdesk: AGENTS.md, task reference, CodeRabbit; tbo-copilot: worktree per task, no `git add .`). **In `helpdesk` and `helpdesk_client`, Copilot work is pushed to the `tbo-copilot` branch; nothing is pushed to `main`, no pull request goes to `main`, and a branch already on GitHub is never rewritten** (owner, 9 Oct 2026). A newer `main` is merged into `tbo-copilot` and the module tests are run again before the push. **In `tbocloud/tbo-copilot`, documents and code go to `tbo` (the default branch) through a pull request (the branch rules ask for one approval and the `ai-review` and `task-reference` checks); `main` there is the frozen copy of PI-Desktop and is never touched.** The repository is public, so only a cleaned copy of these documents goes there. In `helpdesk` and `helpdesk_client`, a pull request, if one is wanted, targets `tbo-copilot` and is opened as a draft, because helpdesk's auto-merge workflow switches auto-merge on for every non-draft pull request whatever its base.
 3. **Each phase ends with a demo on the local pair** (`tbo.localhost` ↔ `customer.localhost`), and no phase starts before the previous checkpoint passes.
 4. **First actions after this plan is approved**: save the memory files (§11), store the design documents (§11), then write `phases/phase-0.md` for approval.
 

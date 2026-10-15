@@ -1,6 +1,6 @@
 # Phase 0: Groundwork and fixes
 
-**Status:** approved 8 Oct 2026. Built locally, not pushed: C1 `7b091bb`, C2 `4eeceba` (helpdesk_client `feature/c1-security-quick-wins`); H1a `da6cef9` + `a0bdd3a`, H1b `e0af424` (helpdesk `feature/phase0-hub-fixes`). Seed tickets and the evaluation list written (F). Left: the owner enters the two AI keys and names the OpenAI model (E), real ticket numbers for the evaluation list (F), checkpoint 5, task numbers, push. **Estimate:** about 7 developer-days. **Design reference:** `../system-design.md` §5.1 (fixes table), §5.2 (security fixes), §5.5 (models); `../build-plan.md` Phase 0.
+**Status:** approved 8 Oct 2026. Built, and on the `tbo-copilot` branch of each repo since 9 Oct 2026: C1 and C2 in helpdesk_client, H1a and H1b in helpdesk. Seed tickets and the evaluation list written (F). Left at the time: the two AI keys and the OpenAI model (E), real ticket numbers for the evaluation list (F), checkpoint 5, task numbers. **Estimate:** about 7 developer-days. **Design reference:** `../system-design.md` §5.1 (fixes table), §5.2 (security fixes), §5.5 (models); `../build-plan.md` Phase 0.
 
 ## Goal
 
