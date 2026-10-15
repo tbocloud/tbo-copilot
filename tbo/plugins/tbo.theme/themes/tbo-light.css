@@ -1,0 +1,14 @@
+/*
+  TBO Light: the Team Back Office orange on the default light palette. Only the
+  accent tokens change; backgrounds and text stay neutral.
+
+  The brand orange (#FB991C) is too light for this palette: white text on it
+  and orange text on white are only 2.2:1. Text on accent-filled controls uses
+  the light background colour, so the accent is a darker shade of the same
+  orange, #A85A00: white on it is 5.1:1 and it reads at 4.8:1 on #f9f9f9.
+*/
+:root[data-theme="light"] {
+  --ds-accent: #a85a00;
+  --ds-accent-hover: #8f4c00;
+  --ds-accent-soft: #b86200;
+}

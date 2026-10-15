@@ -1,0 +1,13 @@
+/*
+  TBO Dark: the Team Back Office orange (#FB991C) as the accent on the default
+  dark palette. Only the accent tokens change; backgrounds and text stay neutral.
+
+  Text on accent-filled controls uses the dark background colour, so dark text
+  sits on orange (8.2:1 contrast). Orange text on the dark background is 8.2:1.
+  The selector matches the shell's own base selector, so load order decides.
+*/
+:root[data-theme="dark"] {
+  --ds-accent: #fb991c;
+  --ds-accent-hover: #fcad4a;
+  --ds-accent-soft: #c47a1a;
+}

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "tbo.theme",
+  "name": "TBO Theme",
+  "version": "1.0.0",
+  "description": "Team Back Office colours for TBO Copilot: the brand orange as the accent, everything else neutral.",
+  "author": "Team Back Office",
+  "main": "main.js",
+  "contributes": {
+    "themes": [
+      {
+        "id": "tbo-light",
+        "label": "TBO Light",
+        "path": "themes/tbo-light.css",
+        "base": "light"
+      },
+      {
+        "id": "tbo-dark",
+        "label": "TBO Dark",
+        "path": "themes/tbo-dark.css",
+        "base": "dark"
+      }
+    ]
+  },
+  "permissions": ["ui.theme"],
+  "engines": { "piDesktop": ">=0.16.0" }
+}

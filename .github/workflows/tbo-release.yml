@@ -19,7 +19,7 @@
 #
 # Upstream's release workflow (release.yml) is disabled in this repository's
 # Actions settings: it signs with upstream's Apple team and expects PI-Desktop
-# artifact names. Its file stays unchanged so upstream merges stay clean.
+# artifact names. Its file stays unchanged: upstream's own tests read it.
 #
 # GitHub-hosted runners are free for this public repository. Intel macOS is
 # opt-in to keep builds short.
@@ -129,10 +129,6 @@ jobs:
       matrix: ${{ fromJSON(needs.verify.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    env:
-      # The TBO plugins (scripts/tbo/bundled-plugins.json) live in a private
-      # repository; a read-only deploy key on it fetches them.
-      HAS_TBO_PLUGINS_KEY: ${{ secrets.TBO_PLUGINS_DEPLOY_KEY != '' }}
     defaults:
       run:
         shell: bash
@@ -176,38 +172,9 @@ jobs:
           wait "$host_build_pid"
           trap - EXIT
 
-      - name: Read the TBO plugins to bundle
-        id: tbo_plugins
-        run: |
-          set -euo pipefail
-          node -e '
-            const config = require("./scripts/tbo/bundled-plugins.json");
-            console.log(`repository=${config.repository}`);
-            console.log(`ref=${config.ref}`);
-          ' >> "$GITHUB_OUTPUT"
-
-      - name: Check out the TBO plugins
-        if: env.HAS_TBO_PLUGINS_KEY == 'true'
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ steps.tbo_plugins.outputs.repository }}
-          ref: ${{ steps.tbo_plugins.outputs.ref }}
-          ssh-key: ${{ secrets.TBO_PLUGINS_DEPLOY_KEY }}
-          persist-credentials: false
-          path: .tbo-plugins
-
       - name: Bundle the TBO plugins
-        # Releases must ship the TBO theme; test builds may go without it.
-        run: |
-          set -euo pipefail
-          if [ "$HAS_TBO_PLUGINS_KEY" = "true" ]; then
-            node scripts/tbo/fetch-plugins.mjs --source .tbo-plugins
-          elif [[ "$GITHUB_REF" == refs/tags/tbo-v* ]]; then
-            echo "::error::The TBO_PLUGINS_DEPLOY_KEY secret is not set, so this release would ship without the TBO plugins. See docs/tbo/README.md."
-            exit 1
-          else
-            echo "::warning::TBO_PLUGINS_DEPLOY_KEY is not set: this test build has no TBO plugins and opens on the System theme."
-          fi
+        # From tbo/plugins/ in this repository (scripts/tbo/bundled-plugins.json).
+        run: node scripts/tbo/fetch-plugins.mjs
 
       # Arguments go straight after the script name, without `--`: pnpm 12
       # passes a literal `--` through to the script, and electron-builder then
@@ -266,7 +233,6 @@ jobs:
           codesign -dv "$app" 2>&1 | grep -E "Identifier|Signature" || true
 
       - name: Check the bundled TBO plugins
-        if: env.HAS_TBO_PLUGINS_KEY == 'true'
         run: |
           set -euo pipefail
           if [ "${{ matrix.platform }}" = "macos" ]; then

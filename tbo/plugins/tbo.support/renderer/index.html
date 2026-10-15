@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="pi-plugin-chrome" content="v2" />
+    <title>TBO Support</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #181818;
+        --surface: #212121;
+        --fg: #ffffff;
+        --muted: color-mix(in oklab, #ffffff 58%, transparent);
+        --border: color-mix(in oklab, #ffffff 12%, transparent);
+        --accent: #fb991c;
+        --on-accent: #1c1203;
+        --good: #4fbf78;
+        --bad: #f07a63;
+      }
+      :root[data-base="light"] {
+        color-scheme: light;
+        --bg: #ffffff;
+        --surface: #f7f7f8;
+        --fg: #1a1c1f;
+        --muted: #5d5d5d;
+        --border: color-mix(in oklab, #1a1c1f 12%, transparent);
+        --accent: #a85a00;
+        --on-accent: #ffffff;
+        --good: #2e8a4d;
+        --bad: #b2452d;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        padding: var(--pi-plugin-titlebar-height, 0px) 18px 18px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      h1 { margin: 0 0 2px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+      .site { color: var(--muted); margin: 0 0 16px; overflow-wrap: anywhere; }
+      .status { display: flex; gap: 8px; align-items: center; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); margin-bottom: 16px; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+      .status.ok .dot { background: var(--good); }
+      .status.err .dot { background: var(--bad); }
+      form { display: grid; gap: 12px; }
+      label { display: grid; gap: 4px; font-weight: 500; }
+      input {
+        font: inherit; color: var(--fg); background: var(--surface);
+        border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+      }
+      input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      .help { color: var(--muted); margin: 0; }
+      .row { display: flex; gap: 8px; flex-wrap: wrap; }
+      button {
+        font: inherit; font-weight: 600; border-radius: 8px; padding: 8px 14px; cursor: pointer;
+        border: 1px solid var(--border); background: var(--surface); color: var(--fg);
+      }
+      button.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+      button:disabled { opacity: 0.55; cursor: default; }
+      .error { color: var(--bad); margin: 0; min-height: 1.5em; }
+    </style>
+  </head>
+  <body>
+    <h1>TBO Support</h1>
+    <p class="site" id="site">Checking…</p>
+
+    <div class="status" id="status" role="status"><span class="dot"></span><span id="status-text">Checking your sign-in…</span></div>
+
+    <form id="form" autocomplete="off">
+      <p class="help">You need your own TBO Support API key and secret. Only a TBO Support admin (System Manager) can create them: your user → <b>API Access → Generate Keys</b>. Paste them here. The key is checked first, then kept in your computer's secure store (Keychain on macOS, or encrypted for your Windows user with DPAPI).</p>
+      <label for="key">API key <input id="key" name="key" spellcheck="false" required /></label>
+      <label for="secret">API secret <input id="secret" name="secret" type="password" spellcheck="false" required /></label>
+      <p class="error" id="error" aria-live="polite"></p>
+      <div class="row">
+        <button class="primary" id="save" type="submit">Sign in</button>
+        <button id="signout" type="button" hidden>Sign out</button>
+      </div>
+    </form>
+
+    <script>
+      const bridge = window.pluginBridge;
+      const $ = (id) => document.getElementById(id);
+
+      const applyAppearance = (appearance) => {
+        const base = appearance && appearance.base;
+        document.documentElement.dataset.base = base === "light" || base === "dark"
+          ? base
+          : window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      };
+      if (bridge) {
+        bridge.on && bridge.on("appearance:changed", applyAppearance);
+        bridge.invoke("app.getAppearance").then(applyAppearance).catch(() => applyAppearance(null));
+      } else {
+        applyAppearance(null);
+      }
+
+      function show(state) {
+        $("site").textContent = state.site ? state.site : "No site set";
+        const box = $("status");
+        box.classList.toggle("ok", !!state.signedIn);
+        box.classList.toggle("err", !state.signedIn && !!state.error);
+        $("status-text").textContent = state.signedIn
+          ? `Signed in as ${state.user}`
+          : state.error ? state.error : "Not signed in";
+        $("signout").hidden = !state.signedIn;
+        $("save").textContent = state.signedIn ? "Replace key" : "Sign in";
+      }
+
+      async function call(channel, payload) {
+        if (!bridge) return { ok: false, error: "Open this panel inside TBO Copilot." };
+        try {
+          return await bridge.invoke(channel, payload);
+        } catch (e) {
+          return { ok: false, error: e && e.message ? e.message : String(e) };
+        }
+      }
+
+      async function refresh() {
+        const res = await call("tbo-support.state");
+        show(res.ok ? res : { error: res.error });
+      }
+
+      $("form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        $("error").textContent = "";
+        $("save").disabled = true;
+        $("save").textContent = "Checking…";
+        const res = await call("tbo-support.sign-in", { key: $("key").value, secret: $("secret").value });
+        $("save").disabled = false;
+        if (res.ok) {
+          $("key").value = "";
+          $("secret").value = "";
+          show(res);
+          bridge && bridge.invoke("ui.showToast", { message: `Signed in to TBO Support as ${res.user}` }).catch(() => {});
+        } else {
+          $("error").textContent = res.error || "Sign-in failed.";
+          refresh();
+        }
+      });
+
+      $("signout").addEventListener("click", async () => {
+        const res = await call("tbo-support.sign-out");
+        if (res.ok) show(res);
+        else $("error").textContent = res.error || "Sign-out failed.";
+      });
+
+      refresh();
+    </script>
+  </body>
+</html>

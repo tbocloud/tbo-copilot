@@ -2,7 +2,7 @@
 // TBO Copilot branding.
 //
 // Re-applies every user-visible rename from PI-Desktop to TBO Copilot. Run it
-// after each merge of an upstream PI-Desktop release (docs/tbo/upstream-sync.md).
+// after copying in a PI-Desktop fix (docs/tbo/README.md, "PI-Desktop changes").
 //
 //   node scripts/tbo/apply-branding.mjs          apply the branding
 //   node scripts/tbo/apply-branding.mjs --check  exit 1 if anything is unbranded
