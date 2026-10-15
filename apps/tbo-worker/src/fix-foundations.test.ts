@@ -147,7 +147,7 @@ describe("the sandbox runner's client", () => {
     const { server, path, seen } = await runner((request) =>
       request.op === "start"
         ? { ok: true, result: { id: "sbx-1" } }
-        : { ok: true, result: { ok: false, exit_code: 1, output: "AssertionError: 1.25 != 0.2", ms: 900 } },
+        : { ok: true, result: { ok: false, exit_code: 1, output: "AssertionError: 1.25 != 0.2", ms: 900, failure: "assertion" } },
     );
     try {
       const sandbox = new SocketSandbox(path, 5_000);
@@ -156,6 +156,17 @@ describe("the sandbox runner's client", () => {
       expect(started.id).toBe("sbx-1");
       expect(result).toMatchObject({ ok: false, exit_code: 1 });
       expect(seen[1]).toEqual({ op: "check", id: "sbx-1", app: "demo_app", module: "demo_app.tests.test_margin" });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("stops at a failed check whose answer does not say how it failed", async () => {
+    const { server, path } = await runner(() => ({ ok: true, result: { ok: false, exit_code: 1, output: "FAILED", ms: 900 } }));
+    try {
+      await expect(new SocketSandbox(path, 5_000).check("sbx-1", "demo_app", "demo_app.tests.test_margin")).rejects.toThrow(
+        "did not say how demo_app.tests.test_margin failed",
+      );
     } finally {
       server.close();
     }

@@ -54,7 +54,7 @@ A worker started with `TBO_SANDBOX_SOCKET` (the sandbox runner on the worker ser
    - **tools:** `sandbox` (check one test module, the app's tests, migrate), `my_changes`, `repo_git`, `fix_done`;
    - **edits:** Edit, Write and MultiEdit are allowed only inside the app being fixed, never its `.git`, never through a symbolic link leading out, never by a delegate (`policy.editsInside`). Everything else is still refused.
 5. **Checks on its own** (`verify`), from the runner's results, never from the model's words:
-   - the model's test fails on the code the site runs (the bug is shown) and passes on the fix;
+   - the model's test fails on the code the site runs (the bug is shown) and passes on the fix. It must fail on an assertion: the runner's answer says whether a failed check failed an assertion or errored (`failure`), and an answer without it stops the job;
    - the copy still migrates;
    - the app's tests pass;
    - no new error appears;

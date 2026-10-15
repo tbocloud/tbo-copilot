@@ -118,9 +118,15 @@ export class SocketSandbox implements Sandbox {
     return this.call("migrate", { id });
   }
 
-  check(id: string, app: string, module: string): Promise<SandboxResult> {
-    if (!APP.test(app) || !MODULE.test(module)) return Promise.reject(new SandboxError(`not a test module: ${module}`));
-    return this.call("check", { id, app, module });
+  async check(id: string, app: string, module: string): Promise<SandboxResult> {
+    if (!APP.test(app) || !MODULE.test(module)) throw new SandboxError(`not a test module: ${module}`);
+    const result = await this.call<SandboxResult>("check", { id, app, module });
+    // whether the bug was shown rests on this: a runner that cannot say stops the job,
+    // instead of the model retrying a test that may be right
+    if (!result.ok && !result.skipped && result.failure !== "assertion" && result.failure !== "error") {
+      throw new SandboxError(`the sandbox runner's answer to check did not say how ${module} failed (an assertion or an error)`);
+    }
+    return result;
   }
 
   tests(id: string, app: string): Promise<SandboxResult> {
