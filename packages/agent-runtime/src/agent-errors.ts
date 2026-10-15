@@ -360,7 +360,7 @@ export function networkFailureDiagnostics(
  * the provider's own words instead of backing off for many minutes.
  */
 const ACCOUNT_EXHAUSTED_PATTERN =
-  /insufficient[ _]?(?:quota|balance|funds|credit)|exceeded[ _]?(?:your[ _])?current[ _]?quota|credit balance is too low/i;
+  /insufficient[ _]?(?:quota|balance|funds|credit)|exceeded[ _]?(?:your[ _])?current[ _]?quota|credit balance is too low|out of credits?\b/i;
 
 export function classifyAgentError(err: unknown): ClassifiedAgentError {
   const envelope = err !== null && typeof err === "object"

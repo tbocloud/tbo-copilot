@@ -211,6 +211,7 @@ export function checkChangeSet(value: unknown): string | undefined {
   }
   const aside = set.set_aside ?? [];
   if (!Array.isArray(aside)) return "change_set.set_aside must be a list";
+  if (!changes.length && !aside.length) return "change_set must list at least one record to change or set aside; send none when nothing is due";
   if (aside.length > MAX_SET_ASIDE) return `change_set.set_aside holds at most ${MAX_SET_ASIDE} records`;
   for (const [i, raw] of aside.entries()) {
     const item = record(raw);

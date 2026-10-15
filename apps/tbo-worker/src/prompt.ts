@@ -1,5 +1,5 @@
 import type { RunContext } from "./hub.js";
-import { MAX_CHANGE_RECORDS, TOOL_SEARCH_QUERY } from "./tools.js";
+import { MAX_CHANGE_RECORDS, MAX_SET_ASIDE, TOOL_SEARCH_QUERY } from "./tools.js";
 import type { Workspace } from "./workspace.js";
 
 /** Replaces the engine's product persona; the engine keeps its own tool and safety rules after it. */
@@ -41,7 +41,7 @@ Propose a correction for wrong_setting and data_damaged_by_bug, and for customer
 - Find every affected record with hub_customer_erp_read (get_list with filters, get_count first). Read only the names and the fields you need; never export whole records or personal data.
 - List each record: {"action": "update", "doctype", "name", "values": {"field": new value}, "why"}. A table row of a record: "rows": [{"table": table fieldname, "name": row name, "values": {...}}]; a missing row: "add_rows": [{"table", "values"}]; a missing record: {"action": "create", "doctype", "values"}. Use the exact values the field takes (the option text, the linked record's name, numbers as numbers).
 - Never delete anything. Never correct users, roles, permissions, system or email settings, scripts, scheduled jobs, custom fields, property setters, workflows or print formats.
-- Submitted documents (docstatus 1: invoices, payments, stock entries) are not changed: put them in "set_aside" with the ERP way (cancel and amend, or a return or credit note where e-invoicing forbids cancelling).
+- Submitted documents (docstatus 1: invoices, payments, stock entries) are not changed: put them in "set_aside" with the ERP way (cancel and amend, or a return or credit note where e-invoicing forbids cancelling). At most ${MAX_SET_ASIDE} there; when more are affected, list none and say in the proposal how many and how you found them, for a person to handle.
 - At most ${MAX_CHANGE_RECORDS} records; for more, propose a data patch in the customer's app instead and send no change_set.
 - found_by: the doctype and filters that found the records. customer_note: one or two plain sentences the customer reads once it is applied. summary: what the correction does.
 - If the run context lists earlier corrections on this ticket, prepare only the records they did not cover.
@@ -72,7 +72,7 @@ export function turnPrompt(context: RunContext, workspace: Workspace): string {
     `This run's folder holds INDEX.md, the ticket in context/, and ${apps}; all read-only.`,
     workspace.problems.length ? `Preparing the folder had problems: ${workspace.problems.join("; ")}.` : "",
     context.prepare_correction
-      ? "An agent asked you to prepare the correction of the customer's own mistake: report customer_mistake with a change_set listing every record to correct."
+      ? "An agent asked you to prepare the correction of the customer's own mistake. If the evidence shows it is their mistake, report customer_mistake with a change_set listing every record to correct; if it shows another cause, report that cause as usual."
       : "",
     context.corrections?.length
       ? `This ticket already has corrections (${context.corrections.map((c) => `${c.change_set}: ${c.status}`).join(", ")}): read them in the run context and prepare only the records they missed.`

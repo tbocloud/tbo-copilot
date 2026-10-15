@@ -32,6 +32,8 @@ describe("a correction in the report (Phase 3)", () => {
     [{ changes: [{ doctype: "Item Price", name: "IP-1", values: "15" }] }, "values must be an object"],
     [{ changes: Array.from({ length: MAX_CHANGE_RECORDS + 1 }, (_, i) => ({ doctype: "Item Price", name: `IP-${i}`, values: { price_list_rate: 1 } })) }, "data patch"],
     ["fix it", "must be an object"],
+    [{}, "at least one record"],
+    [{ changes: [], set_aside: [] }, "at least one record"],
   ])("refuses what the hub would refuse: %#", (changeSet, words) => {
     expect(checkChangeSet(changeSet)).toContain(words);
   });
@@ -66,10 +68,12 @@ describe("the instructions", () => {
     expect(RULES).toContain("## Corrections");
     expect(RULES).toContain("Never delete anything");
     expect(RULES).toContain("set_aside");
+    expect(RULES).toContain("At most 200 there");
   });
 
   it("tell the model when an agent asked for the correction of the customer's mistake", () => {
     expect(turnPrompt({ ...context, prepare_correction: true }, workspace)).toContain("report customer_mistake with a change_set");
+    expect(turnPrompt({ ...context, prepare_correction: true }, workspace)).toContain("if it shows another cause, report that cause");
     expect(turnPrompt(context, workspace)).not.toContain("change_set");
   });
 

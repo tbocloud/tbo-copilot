@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import type { FixLimits, WorkerConfig } from "./config.js";
 import { preview, type Engine, type TurnObserver } from "./engine.js";
 import { EventOutbox } from "./events.js";
-import { againPrompt, FIX_NUDGE, fixPrompt, reviewPrompt } from "./fix-prompt.js";
+import { againPrompt, FIX_NUDGE, fixPrompt, REVIEW_NUDGE, reviewPrompt } from "./fix-prompt.js";
 import type { Finding, FixDone, FixToolState } from "./fix-tools.js";
 import { GitHubRest } from "./github.js";
 import { HubError, type HubClient, type Job, type RunContext, type SiteApp } from "./hub.js";
@@ -392,8 +392,13 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
         const reviewSession = await engine.openSession(workspace.root, `Copilot review ${run}`, model, { profile: "review" });
         sessions.push(reviewSession);
         router.fixSessions.set(reviewSession, state);
-        await engine.runTurn(reviewSession, reviewPrompt(target.app, String(context.diagnosis?.summary ?? "")), observer);
-        findings = state.findings ?? [];
+        let review = await engine.runTurn(reviewSession, reviewPrompt(target.app, String(context.diagnosis?.summary ?? "")), observer);
+        if (!state.findings && mayGoOn() && !flags.budgetReason && review.reason === "completed") review = await engine.runTurn(reviewSession, REVIEW_NUDGE, observer);
+        if (!mayGoOn()) break;
+        if (flags.budgetReason) return await fail(`${flags.budgetReason} during the review`);
+        // no verdict is no review: the pull request would say it was reviewed
+        if (!state.findings) return await fail(review.reason === "error" ? `the review failed (${review.errorCode ?? "unknown error"})` : "the review ended without a verdict");
+        findings = state.findings;
         outbox.push("review", { round, findings: findings.length, must_fix: findings.filter((item) => item.severity === "must_fix").length });
         if (!findings.some((item) => item.severity === "must_fix")) break;
       }

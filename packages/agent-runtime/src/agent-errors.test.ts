@@ -250,6 +250,10 @@ describe("classifyAgentError", () => {
       code: "PROVIDER_RATE_LIMITED",
       retriable: false,
     });
+    expect(classifyAgentError("429: the account is out of credit")).toMatchObject({
+      code: "PROVIDER_RATE_LIMITED",
+      retriable: false,
+    });
     expect(classifyAgentError('429: {"error":{"type":"rate_limit_error"}}'))
       .toMatchObject({ code: "PROVIDER_RATE_LIMITED", retriable: true });
   });

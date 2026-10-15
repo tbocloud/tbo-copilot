@@ -64,5 +64,8 @@ export function reviewPrompt(app: string, diagnosis: string): string {
   ].join("\n");
 }
 
+export const REVIEW_NUDGE =
+  "You have not called review_done yet. Call it now with your findings: an empty list when the change is right.";
+
 export const FIX_NUDGE =
   "You have not called fix_done yet. If the fix is ready, call it now. If you cannot fix it, call fix_done anyway with an explanation of what blocks you and what a developer should do.";

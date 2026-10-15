@@ -226,6 +226,21 @@ describe.skipIf(!ready)("a fix job end to end", () => {
     expect(() => git("rev-parse", "--verify", `refs/heads/${branch}`)).toThrow();
   }, 180_000);
 
+  it("opens no pull request when the review gives no verdict", async () => {
+    const sandbox = new FakeSandbox();
+    const pulls = github.calls.filter((call) => call.path.endsWith("/pulls")).length;
+    // the reviewer answers in words twice (the review and its one reminder) and never calls review_done
+    const script = [...fixScript().slice(0, 10), { text: "The change looks right." }, { text: "Still looks right." }];
+    const { report, run, branch } = await runFix(script, sandbox);
+
+    expect(report.outcome).toBe("failed");
+    expect(report.reason).toContain("the review ended without a verdict");
+    expect(github.calls.filter((call) => call.path.endsWith("/pulls"))).toHaveLength(pulls);
+    expect(() => git("rev-parse", "--verify", `refs/heads/${branch}`)).toThrow();
+    const failure = stub.callsTo("submit_result").find((call) => call.body.run === run)!;
+    expect(String((failure.body.result as { reason: string }).reason)).toContain("without a verdict");
+  }, 180_000);
+
   it("refuses a fix whose test passes on the code the site runs: the bug was never shown", async () => {
     const sandbox = new FakeSandbox();
     sandbox.alwaysPasses = true;
