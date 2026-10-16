@@ -29,6 +29,7 @@ sudo nano /var/lib/tbo-worker/env
 | `TBO_WORKER_API_KEY`, `TBO_WORKER_API_SECRET` | The API key of TBO Support's worker user (role Copilot Worker) |
 | `TBO_WORKER_ID` | A name for this worker, for example `aws-worker-1` |
 | `TBO_MODEL_BASE_URL`, `TBO_MODEL_ID` | The model, for example `https://api.openai.com/v1` and `gpt-5.6-luna` |
+| `TBO_MODEL_API_STYLE` | `responses` for OpenAI's GPT-5.6 models: through Chat Completions they refuse tools together with reasoning (found on the first run, 16 Oct 2026) |
 | `TBO_MODEL_API_KEY` | The worker's own AI key (an OpenAI project key with a monthly limit) |
 | `TBO_MODEL_PRICE_IN`, `TBO_MODEL_PRICE_OUT`, `TBO_MODEL_PRICE_CACHED` | Dollars per million tokens, for the per-run budget |
 
