@@ -115,6 +115,10 @@ A value may be followed by a comment (`KEY=value   # note`); a `#` inside quotes
 
 **Limits.** `TBO_MAX_TOKENS` counts the tokens of every model request in the run. Each request sends the whole conversation again, so the count grows quickly; a run of about 40 tool calls can pass 1.5 million. `TBO_MAX_USD` applies only when the prices are set, and 0 switches it off. When a limit is reached, the worker stops the turn and asks the model once to report what it has found. That last turn may make at most 3 tool calls and take at most 3 minutes; without a report then, the run fails with the limit as its reason.
 
+## On a server
+
+TBO's worker server runs it in Docker: [deploy/README.md](deploy/README.md) (build, the settings file, run, update).
+
 ## Commands
 
 ```
