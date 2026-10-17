@@ -1,12 +1,13 @@
 import type { LocalToolResult } from "@pi-desktop/host-runtime";
 
-import type { WorkerConfig } from "./config.js";
+import type { ModelConfig, WorkerConfig } from "./config.js";
 import { preview, type Engine, type TurnObserver, type TurnResult } from "./engine.js";
 import { EventOutbox } from "./events.js";
 import { runFixJob } from "./fix.js";
 import { runFixTool, type FixToolState } from "./fix-tools.js";
 import { HubError, type HubClient, type Job } from "./hub.js";
 import type { Logger } from "./log.js";
+import { StageModels, noModelReason, stageModels, type StageModel } from "./models.js";
 import { RunBudget } from "./policy.js";
 import { NUDGE, finalPrompt, turnPrompt } from "./prompt.js";
 import type { Sandbox } from "./sandbox.js";
@@ -32,6 +33,8 @@ export type RunReport = {
   tokensCached: number;
   tokensOut: number;
   costUsd: number;
+  /** The models that answered, in the order used (a fallback comes second). */
+  model?: string;
   minutes: number;
   problems: string[];
 };
@@ -87,7 +90,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 export class Worker {
   private stopping = false;
   private currentSession: string | undefined;
-  private model: { providerId: string; modelId: string } | undefined;
+  /** The engine's provider and model for each model a run has used, by provider and model. */
+  private readonly models = new Map<string, { providerId: string; modelId: string }>();
 
   constructor(
     private readonly cfg: WorkerConfig,
@@ -123,7 +127,12 @@ export class Worker {
   }
 
   async runForever(signal: AbortSignal): Promise<void> {
-    this.log("info", "worker started", { workerId: this.cfg.workerId, hub: this.cfg.hubUrl, model: this.cfg.model.modelId });
+    this.log("info", "worker started", {
+      workerId: this.cfg.workerId,
+      hub: this.cfg.hubUrl,
+      providers: this.cfg.providers.map((provider) => provider.section),
+      ...(this.cfg.model ? { model: this.cfg.model.modelId } : {}),
+    });
     while (!signal.aborted && !this.stopping) {
       let job: Job | null = null;
       try {
@@ -147,15 +156,22 @@ export class Worker {
     return job ? this.process(job) : null;
   }
 
-  private async ensureModel(): Promise<{ providerId: string; modelId: string }> {
-    this.model ??= await this.engine.configureModel(this.cfg.model);
-    return this.model;
+  /** The engine's provider and model for a stage's model, set up once. A provider name has one address and key (config.ts). */
+  private async engineModel(model: ModelConfig): Promise<{ providerId: string; modelId: string }> {
+    const key = `${model.providerName}|${model.modelId}`;
+    let known = this.models.get(key);
+    if (!known) {
+      known = await this.engine.configureModel(model);
+      this.models.set(key, known);
+    }
+    return known;
   }
 
   async process(job: Job): Promise<RunReport> {
     if (job.context.kind === "fix") return this.processFix(job);
     const ticket = job.context.ticket.name;
-    const budget = new RunBudget(this.cfg.limits, Date.now, this.cfg.model);
+    const models = new StageModels("investigate", stageModels(this.cfg, "investigate", job.context));
+    const budget = new RunBudget(this.cfg.limits, Date.now, models.current);
     const outbox = new EventOutbox((events) => this.hub.postEvents(job.run, job.lease_token, events), { log: this.log });
     const state: RunState = {
       stage: "workspace",
@@ -169,6 +185,7 @@ export class Worker {
       denied: 0,
     };
     let sessionId: string | undefined;
+    const sessions: string[] = [];
     let workspace: Workspace | undefined;
     let watchdog: NodeJS.Timeout | undefined;
     const report = (outcome: RunOutcome, reason?: string): RunReport => ({
@@ -182,7 +199,8 @@ export class Worker {
       tokensIn: budget.spend.tokensIn,
       tokensCached: budget.spend.tokensCached,
       tokensOut: budget.spend.tokensOut,
-      costUsd: Number(budget.cost(this.cfg.model).usd ?? 0),
+      costUsd: Number(budget.cost().usd ?? 0),
+      model: String(budget.cost().model ?? ""),
       minutes: Math.round(budget.minutes() * 10) / 10,
       problems: workspace?.problems ?? [],
     });
@@ -190,19 +208,22 @@ export class Worker {
     const heartbeat = setInterval(() => void this.beat(job, state, () => sessionId), this.cfg.limits.heartbeatIntervalMs);
 
     try {
+      if (!models.current) {
+        const reason = noModelReason("investigate");
+        await this.fail(job, outbox, reason);
+        return report("failed", reason);
+      }
       workspace = await prepareWorkspace(job, this.workspaceOptions());
       outbox.push("workspace", {
         apps: workspace.apps.map(({ app, repository, commit, source, note }) => ({ app, repository, commit, source, note })),
         problems: workspace.problems,
       });
-      const model = await this.ensureModel();
-      sessionId = await this.engine.openSession(workspace.root, `Copilot ${job.run}, ticket ${ticket}`, model);
-      this.currentSession = sessionId;
-      this.router.sessions.set(sessionId, {
+      const root = workspace.root;
+      const tools: RunTools = {
         runToken: `${job.run}:${job.lease_token}`,
         apps: Object.fromEntries(workspace.apps.map((app) => [app.app, app.dir])),
         homeDir: this.cfg.homeDir,
-        cost: () => budget.cost(this.cfg.model),
+        cost: () => budget.cost(),
         beforeSubmit: () => outbox.flush(),
         submitted: (text) => {
           state.submitted = true;
@@ -215,7 +236,18 @@ export class Worker {
         },
         isSubmitted: () => state.submitted,
         prepareCorrection: job.context.prepare_correction === true,
-      });
+      };
+      // a fresh session on the stage's model; the run's tools follow it
+      const openOn = async (plan: StageModel): Promise<string> => {
+        budget.use(plan);
+        const id = await this.engine.openSession(root, `Copilot ${job.run}, ticket ${ticket}`, await this.engineModel(plan));
+        sessions.push(id);
+        sessionId = id;
+        this.currentSession = id;
+        this.router.sessions.set(id, tools);
+        return id;
+      };
+      await openOn(models.current);
       state.stage = "investigate";
       const observer = this.observer(outbox, budget, state, () => sessionId);
       // the time limit holds even while the model thinks without any event
@@ -223,24 +255,35 @@ export class Worker {
         if (!state.finalTurn) observer.check();
       }, 15_000);
       const mayGoOn = () => !state.submitted && !state.cancelled && !state.leaseLost && !this.stopping;
-      // a cancel, a lost lease or a stop can arrive while the clones and the session are prepared
-      let turn: TurnResult = { reason: "aborted", text: "" };
-      if (mayGoOn()) turn = await this.engine.runTurn(sessionId, turnPrompt(job.context, workspace), observer);
-      if (mayGoOn() && !state.budgetReason && turn.reason === "completed") {
-        outbox.push("reminder", { note: "the turn ended without a report" });
-        turn = await this.engine.runTurn(sessionId, NUDGE, observer);
-      }
-      if (mayGoOn() && state.budgetReason) {
-        // a limit stopped the work: one short turn to report what was found, rather than nothing
-        outbox.push("final_turn", { reason: state.budgetReason });
-        state.finalTurn = true;
-        const id = sessionId;
-        const timer = setTimeout(() => void this.engine.abort(id), FINAL_TURN_MS);
-        try {
-          turn = await this.engine.runTurn(sessionId, finalPrompt(state.budgetReason), observer);
-        } finally {
-          clearTimeout(timer);
+      // the investigation: one turn, a reminder if it ended without a report, and after a limit one short turn to report
+      const investigate = async (id: string): Promise<TurnResult> => {
+        // a cancel, a lost lease or a stop can arrive while the clones and the session are prepared
+        let turn: TurnResult = { reason: "aborted", text: "" };
+        if (mayGoOn()) turn = await this.engine.runTurn(id, turnPrompt(job.context, workspace!), observer);
+        if (mayGoOn() && !state.budgetReason && turn.reason === "completed") {
+          outbox.push("reminder", { note: "the turn ended without a report" });
+          turn = await this.engine.runTurn(id, NUDGE, observer);
         }
+        if (mayGoOn() && state.budgetReason) {
+          // a limit stopped the work: one short turn to report what was found, rather than nothing
+          outbox.push("final_turn", { reason: state.budgetReason });
+          state.finalTurn = true;
+          const timer = setTimeout(() => void this.engine.abort(id), FINAL_TURN_MS);
+          try {
+            turn = await this.engine.runTurn(id, finalPrompt(state.budgetReason), observer);
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+        return turn;
+      };
+      let turn = await investigate(sessionId!);
+      // the provider failed: the investigation starts again once, in a fresh session on the fallback model
+      const fallback = mayGoOn() && !state.budgetReason ? models.next(turn) : undefined;
+      if (fallback) {
+        outbox.push("fallback", { job: "investigate", model: fallback.modelId, section: fallback.section, after: turn.errorCode });
+        this.log("warn", "investigation moves to the fallback model", { run: job.run, model: fallback.modelId, error: turn.errorCode });
+        turn = await investigate(await openOn(fallback));
       }
       if (state.submitted) return report("submitted");
       if (state.cancelled) return report("cancelled", "the run was cancelled on TBO Support");
@@ -265,9 +308,9 @@ export class Worker {
       clearInterval(heartbeat);
       if (watchdog) clearInterval(watchdog);
       outbox.close();
-      if (sessionId) {
-        this.router.sessions.delete(sessionId);
-        await this.engine.closeSession(sessionId, workspace?.root).catch(() => undefined);
+      for (const id of sessions) {
+        this.router.sessions.delete(id);
+        await this.engine.closeSession(id, workspace?.root).catch(() => undefined);
       }
       this.currentSession = undefined;
       if (!this.cfg.keepRuns) await removeWorkspace(workspaceRoot(this.cfg.runsDir, job.run)).catch(() => undefined);
@@ -288,7 +331,7 @@ export class Worker {
       router: this.router,
       sandbox: this.sandbox,
       log: this.log,
-      model: () => this.ensureModel(),
+      engineModel: (model) => this.engineModel(model),
       stopping: () => this.stopping,
       workspaceOptions: () => this.workspaceOptions(),
     });
@@ -334,6 +377,7 @@ export class Worker {
         outbox.push("usage", {
           tokens_in: usage.inputTokens ?? 0,
           cached: usage.cacheReadTokens ?? 0,
+          ...(usage.cacheWriteTokens ? { cache_write: usage.cacheWriteTokens } : {}),
           tokens_out: usage.outputTokens ?? 0,
         });
         if (!state.finalTurn) check();

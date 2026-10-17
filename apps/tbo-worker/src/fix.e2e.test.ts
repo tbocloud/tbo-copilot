@@ -5,13 +5,13 @@ import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { findHostCore, findSidecar, type WorkerConfig } from "./config.js";
+import { findHostCore, findSidecar, type ProviderConfig, type WorkerConfig } from "./config.js";
 import { Engine } from "./engine.js";
 import { repoName } from "./fix.js";
 import { FIX_PERSONA, FIX_RULES, REVIEW_PERSONA, REVIEW_RULES } from "./fix-prompt.js";
 import { FIX_TOOL_DEFINITIONS, FIX_TOOL_SEARCH_QUERY, REVIEW_TOOL_DEFINITIONS, REVIEW_TOOL_SEARCH_QUERY } from "./fix-tools.js";
 import { GitHubRest } from "./github.js";
-import { HubClient, type Job } from "./hub.js";
+import { HubClient, type Job, type RunContext } from "./hub.js";
 import { silentLogger } from "./log.js";
 import { PERSONA, RULES } from "./prompt.js";
 import { RunToolRouter, Worker } from "./supervisor.js";
@@ -108,10 +108,27 @@ describe.skipIf(!ready)("a fix job end to end", () => {
     await removeWorkspace(repo.dir);
   });
 
-  async function runFix(script: ModelStep[], sandbox: FakeSandbox) {
+  /** `providers`: the worker's own providers, each at a scripted model; the run context then names `models`. */
+  async function runFix(script: ModelStep[], sandbox: FakeSandbox, options: { models?: RunContext["models"]; providers?: Array<{ section: string; script: ModelStep[] }> } = {}) {
     const model = await new FakeModel(script).start();
     models.push(model);
     runNumber += 1;
+    const scripted: FakeModel[] = [];
+    const providers: ProviderConfig[] = [];
+    for (const provider of options.providers ?? []) {
+      const fake = await new FakeModel(provider.script).start();
+      models.push(fake);
+      scripted.push(fake);
+      providers.push({
+        section: provider.section,
+        providerName: `E2E fix ${provider.section} ${runNumber}`,
+        baseUrl: fake.url,
+        apiKey: "fake-key",
+        apiStyle: "chat_completions",
+        contextWindow: 128_000,
+        maxOutputTokens: 8_000,
+      });
+    }
     const run = `TBO-RUN-2026-000${runNumber}`;
     const branch = `copilot/TASK-2026-00009-r${runNumber}-a1`;
     const job: Job = {
@@ -139,6 +156,7 @@ describe.skipIf(!ready)("a fix job end to end", () => {
           commit_email: "copilot@example.com",
           repositories: [repoName(repo.dir, true)!],
         },
+        ...(options.models ? { models: options.models } : {}),
       },
     };
     stub.jobs.push(job);
@@ -152,6 +170,7 @@ describe.skipIf(!ready)("a fix job end to end", () => {
       logsDir: join(root, "logs"),
       hubUrl: stub.url,
       worker: { apiKey: "key", apiSecret: "secret" },
+      providers,
       model: {
         providerName: "TBO Worker model",
         baseUrl: model.url,
@@ -174,7 +193,7 @@ describe.skipIf(!ready)("a fix job end to end", () => {
     };
     const worker = new Worker(cfg, new HubClient(stub.url, cfg.worker), engine, router, silentLogger, sandbox);
     const report = await worker.runOnce(run);
-    return { report: report!, model, run, branch };
+    return { report: report!, model, run, branch, scripted };
   }
 
   const git = (...args: string[]) => execFileSync("git", args, { cwd: repo.dir, encoding: "utf8" }).trim();
@@ -239,6 +258,39 @@ describe.skipIf(!ready)("a fix job end to end", () => {
     expect(() => git("rev-parse", "--verify", `refs/heads/${branch}`)).toThrow();
     const failure = stub.callsTo("submit_result").find((call) => call.body.run === run)!;
     expect(String((failure.body.result as { reason: string }).reason)).toContain("without a verdict");
+  }, 180_000);
+
+  it("restarts the fix once on the fallback model when the provider fails, and reviews on the review's own model", async () => {
+    const sandbox = new FakeSandbox();
+    const before = stub.calls.length;
+    const { report, scripted } = await runFix([{ text: "The older model is never asked." }], sandbox, {
+      models: {
+        fix: [
+          { section: "OpenAI", model: "luna-fake", price_in: 1, price_out: 2 },
+          { section: "Anthropic-compatible", model: "kimi-fake", price_in: 0.5, price_out: 1 },
+        ],
+        review: [{ section: "Anthropic-compatible", model: "kimi-review-fake", price_in: 0.5, price_out: 1 }],
+      },
+      providers: [
+        // the key is out of credit: re-sending cannot help, so the turn fails at once
+        { section: "OpenAI", script: [{ fail: { status: 429, message: "You exceeded your current quota (insufficient_quota)" } }] },
+        { section: "Anthropic-compatible", script: fixScript() },
+      ],
+    });
+
+    expect(report.outcome).toBe("submitted");
+    expect(scripted[0]!.requests).toHaveLength(1);
+    // the fresh session is told that the stopped one may have left edits
+    expect(JSON.stringify(scripted[1]!.requests[0]!.messages)).toContain("stopped part-way through this fix");
+    const events = stub.calls.slice(before).filter((call) => call.path.endsWith("post_events")).flatMap((call) => call.body.events as Array<{ type: string; payload: Record<string, unknown> }>);
+    expect(events.filter((event) => event.type === "fallback").map((event) => [event.payload.job, event.payload.model, event.payload.after])).toEqual([
+      ["fix", "kimi-fake", "PROVIDER_RATE_LIMITED"],
+    ]);
+    const args = (stub.callsTo("submit_change").at(-1)!.body.params as { arguments: { cost: { stages: Array<Record<string, unknown>> } } }).arguments;
+    expect(args.cost.stages.map((stage) => [stage.job, stage.model, stage.fallback])).toEqual([
+      ["fix", "kimi-fake", true],
+      ["review", "kimi-review-fake", false],
+    ]);
   }, 180_000);
 
   it("refuses a fix whose test passes on the code the site runs: the bug was never shown", async () => {

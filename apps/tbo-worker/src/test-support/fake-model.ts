@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
-export type ModelStep = { text?: string; tool?: { name: string; arguments: Record<string, unknown> } };
+/** One reply: a tool call, a closing text, or a provider failure (an HTTP status and its message). */
+export type ModelStep = { text?: string; tool?: { name: string; arguments: Record<string, unknown> }; fail?: { status: number; message: string } };
 export type ModelRequest = { messages: Array<{ role: string; content?: unknown; tool_call_id?: string }>; tools?: Array<{ function?: { name?: string } }> };
 
 /**
@@ -45,6 +46,11 @@ export class FakeModel {
     const body = JSON.parse(Buffer.concat(chunks).toString() || "{}") as ModelRequest;
     this.requests.push(body);
     const step = this.script[this.requests.length - 1] ?? { text: "Done." };
+    if (step.fail) {
+      res.writeHead(step.fail.status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: { message: step.fail.message, type: "invalid_request_error" } }));
+      return;
+    }
     const id = `chatcmpl-${this.requests.length}`;
     const base = { id, object: "chat.completion.chunk", created: 1_760_000_000, model: "fake-model" };
     const frames: unknown[] = [];

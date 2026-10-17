@@ -60,9 +60,56 @@ describe("loadConfig", () => {
       expect(error).toBeInstanceOf(ConfigError);
       expect((error as Error).message).toContain("TBO_HUB_URL");
       expect((error as Error).message).toContain("TBO_WORKER_API_KEY");
-      expect((error as Error).message).toContain("TBO_MODEL_API_KEY (or MOONSHOT_API_KEY)");
+      expect((error as Error).message).toContain("TBO_PROVIDER_OPENAI_API_KEY (or TBO_PROVIDER_MOONSHOT_API_KEY, or the older TBO_MODEL_API_KEY)");
       expect((error as Error).message).not.toContain("secret-value");
     }
+  });
+
+  it("reads the providers from their own settings, with defaults, and only those with a key", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
+    const { MOONSHOT_API_KEY: _old, ...base } = required;
+    const cfg = loadConfig({
+      dir,
+      env: { ...base, TBO_PROVIDER_OPENAI_API_KEY: "sk-o", TBO_PROVIDER_MOONSHOT_BASE_URL: "https://elsewhere.test/v1" },
+    });
+    expect(cfg.providers).toEqual([
+      {
+        section: "OpenAI",
+        providerName: "TBO Worker · OpenAI",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-o",
+        apiStyle: "responses",
+        contextWindow: 256_000,
+        maxOutputTokens: 16_000,
+      },
+    ]);
+    expect(cfg.model).toBeUndefined();
+    const both = loadConfig({
+      dir,
+      env: { ...required, TBO_PROVIDER_OPENAI_API_KEY: "sk-o", TBO_PROVIDER_MOONSHOT_API_KEY: "sk-m", TBO_PROVIDER_MOONSHOT_BASE_URL: "https://proxy.test/v1/" },
+    });
+    expect(both.providers.map((provider) => [provider.section, provider.baseUrl, provider.apiStyle])).toEqual([
+      ["OpenAI", "https://api.openai.com/v1", "responses"],
+      ["Anthropic-compatible", "https://proxy.test/v1", "chat_completions"],
+    ]);
+    // the older single model keeps working beside them
+    expect(both.model).toMatchObject({ modelId: "kimi-k2.6", apiKey: "m" });
+  });
+
+  it("keeps the older model's provider name apart from the providers'", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
+    expect(() => loadConfig({ dir, env: { ...required, TBO_MODEL_PROVIDER_NAME: "TBO Worker · OpenAI" } })).toThrow("TBO_MODEL_PROVIDER_NAME must not be");
+    expect(loadConfig({ dir, env: { ...required, TBO_MODEL_PROVIDER_NAME: "Kimi" } }).model?.providerName).toBe("Kimi");
+  });
+
+  it("sends a key only over https, or plain http to this machine", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
+    const env = (url: string) => ({ ...required, TBO_PROVIDER_OPENAI_API_KEY: "sk-o", TBO_PROVIDER_OPENAI_BASE_URL: url });
+    expect(() => loadConfig({ dir, env: env("http://models.example.com/v1") })).toThrow("TBO_PROVIDER_OPENAI_BASE_URL must use https");
+    expect(() => loadConfig({ dir, env: env("not a url") })).toThrow("is not a valid URL");
+    expect(() => loadConfig({ dir, env: { ...required, TBO_MODEL_BASE_URL: "http://models.example.com/v1" } })).toThrow("TBO_MODEL_BASE_URL must use https");
+    expect(loadConfig({ dir, env: env("http://127.0.0.1:4000/v1/") }).providers[0]!.baseUrl).toBe("http://127.0.0.1:4000/v1");
+    expect(loadConfig({ dir, env: env("http://localhost:4000/v1") }).providers[0]!.baseUrl).toBe("http://localhost:4000/v1");
   });
 
   it("refuses a limit or interval of 0 or less, but allows 0 for prices and the dollar limit", () => {
@@ -71,7 +118,7 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ dir, env: { ...required, TBO_CLAIM_SECONDS: "0" } })).toThrow("above 0");
     expect(() => loadConfig({ dir, env: { ...required, TBO_HEARTBEAT_SECONDS: "0" } })).toThrow("above 0");
     const cfg = loadConfig({ dir, env: { ...required, TBO_MODEL_PRICE_IN: "0", TBO_MAX_USD: "0" } });
-    expect(cfg.model.priceInPerMillion).toBe(0);
+    expect(cfg.model?.priceInPerMillion).toBe(0);
     expect(cfg.limits.maxUsd).toBe(0);
   });
 });

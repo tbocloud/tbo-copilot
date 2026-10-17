@@ -28,10 +28,15 @@ sudo nano /var/lib/tbo-worker/env
 | `TBO_HUB_URL` | TBO Support's address, for example `https://demo-tbo.tbocloud.in` |
 | `TBO_WORKER_API_KEY`, `TBO_WORKER_API_SECRET` | The API key of TBO Support's worker user (role Copilot Worker) |
 | `TBO_WORKER_ID` | A name for this worker, for example `aws-worker-1` |
-| `TBO_MODEL_BASE_URL`, `TBO_MODEL_ID` | The model, for example `https://api.openai.com/v1` and `gpt-5.6-luna` |
-| `TBO_MODEL_API_STYLE` | `responses` for OpenAI's GPT-5.6 models: through Chat Completions they refuse tools together with reasoning (found on the first run, 16 Oct 2026) |
-| `TBO_MODEL_API_KEY` | The worker's own AI key (an OpenAI project key with a monthly limit) |
-| `TBO_MODEL_PRICE_IN`, `TBO_MODEL_PRICE_OUT`, `TBO_MODEL_PRICE_CACHED` | Dollars per million tokens, for the per-run budget |
+| `TBO_PROVIDER_OPENAI_API_KEY` | The worker's own OpenAI key (a project key with a monthly limit), for TBO Support's OpenAI section. Its API style defaults to `responses`: through Chat Completions, OpenAI's GPT-5.6 models refuse tools together with reasoning (found on the first run, 16 Oct 2026) |
+| `TBO_PROVIDER_MOONSHOT_API_KEY` | The Moonshot (Kimi) key, for TBO Support's Anthropic-compatible section; leave it out until Moonshot is topped up |
+| `TBO_PROVIDER_<OPENAI or MOONSHOT>_BASE_URL`, `_API_STYLE` | Only to change the defaults (`https://api.openai.com/v1`, `https://api.moonshot.ai/v1`) |
+
+Each stage (investigate, fix, review) takes its model and prices from TBO Support (Settings → AI providers, Models per
+job), main first; on a key, billing, wrong-model, server, network or timeout failure it restarts once on the other
+section's model, in a fresh session. The older `TBO_MODEL_*` settings (one model for every stage, with its
+`TBO_MODEL_PRICE_*`) still work, and are used when TBO Support names no model this worker has a key for: keep them
+until the hub has TASK-2026-00012.
 
 Every other setting has a default (`apps/tbo-worker/src/config.ts`). Keys are typed on the server only: never in
 chat, Git or this folder.

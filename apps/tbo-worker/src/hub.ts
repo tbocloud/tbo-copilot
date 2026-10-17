@@ -65,6 +65,8 @@ export type RunContext = {
   prepare_correction?: boolean;
   /** This ticket's corrections so far: a new look prepares only the records they missed. */
   corrections?: Array<{ change_set: string; status: string; summary?: string; found_by?: string; applied_at?: string; records?: number }>;
+  /** Each worker job's models in TBO Support's order (main, then fallback), with USD per million tokens; never a key. */
+  models?: Partial<Record<"investigate" | "fix" | "review", Array<{ section: string; model: string; price_in?: number; price_out?: number; price_cached?: number }>>>;
 };
 
 export type WorkerEvent = { seq: number; type: string; payload: Record<string, unknown> };

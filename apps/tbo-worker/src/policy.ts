@@ -58,22 +58,51 @@ export function answersFor(request: Pick<AskToolRequest, "questions">): string[]
 
 /** `tokensIn` counts every input token, `tokensCached` the part the provider served from its cache. */
 export type Spend = { toolCalls: number; tokensIn: number; tokensCached: number; tokensOut: number; startedAt: number };
-type Prices = Pick<ModelConfig, "modelId" | "priceInPerMillion" | "priceOutPerMillion" | "priceCachedPerMillion">;
+export type Prices = Pick<ModelConfig, "modelId" | "priceInPerMillion" | "priceOutPerMillion" | "priceCachedPerMillion">;
+/** A stage on one model: what the run's tokens are counted against from `use()` on. */
+export type StagePrices = Prices & { job: string; section?: string; fallback?: boolean };
+
+type Segment = StagePrices & { tokensIn: number; tokensCached: number; tokensOut: number };
+
+function dollars(segment: Segment): number {
+  const cachedPrice = segment.priceCachedPerMillion ?? segment.priceInPerMillion;
+  return ((segment.tokensIn - segment.tokensCached) * segment.priceInPerMillion + segment.tokensCached * cachedPrice + segment.tokensOut * segment.priceOutPerMillion) / 1_000_000;
+}
 
 /**
  * Tool calls, tokens and time for one run. `exceeded()` names the first limit
  * passed, so the turn can be stopped and the run failed with that reason.
+ * Tokens are also counted per stage and model (`use()`), so the cost stays
+ * right after a stage moves to its fallback model.
  */
 export class RunBudget {
   readonly spend: Spend;
   private readonly seenOperations = new Set<string>();
+  private readonly segments: Segment[] = [];
+  private current: Segment | undefined;
 
   constructor(
     private readonly limits: Pick<Limits, "maxToolCalls" | "maxMinutes" | "maxTokens"> & Partial<Pick<Limits, "maxUsd">>,
     private readonly now: () => number = Date.now,
-    private readonly prices?: Prices,
+    first?: StagePrices,
   ) {
     this.spend = { toolCalls: 0, tokensIn: 0, tokensCached: 0, tokensOut: 0, startedAt: now() };
+    if (first) this.use(first);
+  }
+
+  /** The stage and model the next tokens belong to; the same stage on the same model adds to its earlier share. */
+  use(stage: StagePrices): void {
+    const { job, modelId, priceInPerMillion, priceOutPerMillion, priceCachedPerMillion } = stage;
+    const section = stage.section ?? "";
+    const fallback = Boolean(stage.fallback);
+    this.current = this.segments.find((item) => item.job === job && item.modelId === modelId && (item.section ?? "") === section && Boolean(item.fallback) === fallback);
+    if (this.current) return;
+    this.current = {
+      job, modelId, section, fallback, priceInPerMillion, priceOutPerMillion,
+      ...(priceCachedPerMillion !== undefined ? { priceCachedPerMillion } : {}),
+      tokensIn: 0, tokensCached: 0, tokensOut: 0,
+    };
+    this.segments.push(this.current);
   }
 
   toolCall(): void {
@@ -88,13 +117,24 @@ export class RunBudget {
       this.seenOperations.add(usage.operationId);
     }
     const cached = Math.max(0, usage.cacheReadTokens || 0);
-    this.spend.tokensIn += Math.max(0, usage.inputTokens || 0) + cached;
-    this.spend.tokensCached += cached;
-    this.spend.tokensOut += Math.max(0, usage.outputTokens || 0);
+    // OpenAI's Responses API reports the input it writes to its cache apart, outside inputTokens: it is fresh input
+    const tokensIn = Math.max(0, usage.inputTokens || 0) + Math.max(0, usage.cacheWriteTokens || 0) + cached;
+    const tokensOut = Math.max(0, usage.outputTokens || 0);
+    for (const total of [this.spend, this.current]) {
+      if (!total) continue;
+      total.tokensIn += tokensIn;
+      total.tokensCached += cached;
+      total.tokensOut += tokensOut;
+    }
   }
 
   minutes(): number {
     return (this.now() - this.spend.startedAt) / 60_000;
+  }
+
+  /** Dollars so far, at each stage's model prices. */
+  usd(): number {
+    return this.segments.reduce((sum, segment) => sum + dollars(segment), 0);
   }
 
   exceeded(): string | undefined {
@@ -102,22 +142,33 @@ export class RunBudget {
     if (this.spend.tokensIn + this.spend.tokensOut > this.limits.maxTokens) return `the investigation used more than ${this.limits.maxTokens} tokens`;
     if (this.minutes() > this.limits.maxMinutes) return `the investigation took longer than ${this.limits.maxMinutes} minutes`;
     const maxUsd = this.limits.maxUsd ?? 0;
-    if (maxUsd > 0 && this.prices && Number(this.cost(this.prices).usd) > maxUsd) return `the investigation cost more than ${maxUsd} USD`;
+    if (maxUsd > 0 && this.usd() > maxUsd) return `the investigation cost more than ${maxUsd} USD`;
     return undefined;
   }
 
-  /** What the run cost, for the hub: tokens, dollars at the configured prices, and the model. */
-  cost(model: Prices): Record<string, unknown> {
-    const fresh = this.spend.tokensIn - this.spend.tokensCached;
-    const cachedPrice = model.priceCachedPerMillion ?? model.priceInPerMillion;
-    const usd = (fresh * model.priceInPerMillion + this.spend.tokensCached * cachedPrice + this.spend.tokensOut * model.priceOutPerMillion) / 1_000_000;
+  /**
+   * What the run cost, for the hub: the run's tokens and dollars, the models, and one entry
+   * per stage and model (`stages`), which TBO Support logs as one usage row each.
+   */
+  cost(): Record<string, unknown> {
+    const used = this.segments.filter((segment) => segment.tokensIn || segment.tokensOut);
     return {
       tokens_in: this.spend.tokensIn,
       tokens_cached: this.spend.tokensCached,
       tokens_out: this.spend.tokensOut,
       tokens: this.spend.tokensIn + this.spend.tokensOut,
-      usd: Math.round(usd * 10_000) / 10_000,
-      model: model.modelId,
+      usd: Math.round(this.usd() * 10_000) / 10_000,
+      model: [...new Set((used.length ? used : this.segments.slice(0, 1)).map((segment) => segment.modelId))].join(", "),
+      stages: used.map((segment) => ({
+        job: segment.job,
+        model: segment.modelId,
+        ...(segment.section ? { section: segment.section } : {}),
+        fallback: Boolean(segment.fallback),
+        tokens_in: segment.tokensIn,
+        tokens_cached: segment.tokensCached,
+        tokens_out: segment.tokensOut,
+        usd: Math.round(dollars(segment) * 1_000_000) / 1_000_000,
+      })),
     };
   }
 }
