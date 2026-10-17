@@ -7,9 +7,11 @@ USER frappe
 WORKDIR /home/frappe/frappe-bench
 COPY --chown=frappe:frappe apps/ /tmp/tbo-apps/
 COPY --chown=frappe:frappe tbo_sandbox_site.py /tmp/tbo_sandbox_site.py
-# Each app goes in as Frappe installs one (an editable install, listed in sites/apps.txt);
+# Each app goes in as Frappe installs one (an editable install, listed in sites/apps.txt, which
+# the official image ends without a newline);
 # the helper module the runner calls with `bench execute` goes next to the bench's packages.
 RUN set -e; \
+    [ -z "$(tail -c1 sites/apps.txt)" ] || echo >> sites/apps.txt; \
     for path in /tmp/tbo-apps/*/; do \
         [ -d "$path" ] || continue; \
         app=$(basename "$path"); \
