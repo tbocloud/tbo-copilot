@@ -150,7 +150,9 @@ def app_set(spec: dict) -> list[dict]:
 
 
 def key_of(image: str, apps: list[dict]) -> str:
-    text = json.dumps({"image": image, "apps": apps}, sort_keys=True)
+    """One image and snapshot per base image, set of apps and recipe: a changed recipe builds afresh."""
+    recipe = hashlib.sha256(b"".join((HERE / "site" / name).read_bytes() for name in ("Dockerfile", "tbo_sandbox_site.py"))).hexdigest()
+    text = json.dumps({"image": image, "apps": apps, "recipe": recipe}, sort_keys=True)
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
@@ -239,9 +241,13 @@ def start_db(name: str, net: str, datadir: Path, password: str, config: dict):
 
 
 def wait_for_db(name: str, password: str, seconds: int = 180):
-    end = time.time() + seconds
+    """Ready once it answers over TCP twice: on a first start MariaDB's entrypoint initialises
+    with networking off (the socket answers), then restarts the server for real."""
+    end, answered = time.time() + seconds, 0
     while time.time() < end:
-        if docker("exec", name, "mariadb-admin", "ping", "-uroot", f"-p{password}", "--silent", check=False, timeout=30).returncode == 0:
+        ping = ("exec", name, "mariadb-admin", "ping", "--protocol=tcp", "-h", "127.0.0.1", "-uroot", f"-p{password}", "--silent")
+        answered = answered + 1 if docker(*ping, check=False, timeout=30).returncode == 0 else 0
+        if answered >= 2:
             return
         time.sleep(2)
     raise Refused("the sandbox's database did not start")
@@ -361,7 +367,7 @@ def op_migrate(request: dict) -> dict:
 
 
 def site_call(sandbox: str, method: str, kwargs: dict, timeout: int = 600):
-    result = run_bench(sandbox, ["bench", "--site", SITE, "execute", f"tbo_sandbox_site.{method}", "--kwargs", json.dumps(kwargs)], timeout)
+    result = run_bench(sandbox, ["bench", "--site", SITE, "execute", f"frappe.tbo_sandbox_site.{method}", "--kwargs", json.dumps(kwargs)], timeout)
     if not result["ok"]:
         raise Refused(f"the sandbox could not answer {method}: {result['output'][-1500:]}")
     lines = [line for line in result["output"].splitlines() if line.strip()]

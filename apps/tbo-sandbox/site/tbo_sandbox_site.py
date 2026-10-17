@@ -1,4 +1,6 @@
-"""Called inside a sandbox site by the runner (`bench --site sandbox.localhost execute tbo_sandbox_site.<name>`).
+"""Called inside a sandbox site by the runner (`bench --site sandbox.localhost execute frappe.tbo_sandbox_site.<name>`).
+
+Copied into the sandbox image's own Frappe package (site/Dockerfile): bench executes only code of an installed app.
 
 Only reads, or writes that are rolled back: the sandbox is a throwaway copy, but a dry run
 must leave it as it found it, so the next check starts from the same data.
