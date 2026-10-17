@@ -32,14 +32,13 @@ describe("RunBudget", () => {
   });
 
   it("prices cached input at its own rate", () => {
-    const budget = new RunBudget(limits);
+    const budget = new RunBudget(limits, Date.now, { job: "investigate", modelId: "kimi-k2.6", priceInPerMillion: 0.6, priceCachedPerMillion: 0.15, priceOutPerMillion: 2.5 });
     budget.usage({ inputTokens: 1_000_000, cacheReadTokens: 4_000_000, outputTokens: 100_000, totalTokens: 5_100_000 });
-    const cost = budget.cost({ modelId: "kimi-k2.6", priceInPerMillion: 0.6, priceCachedPerMillion: 0.15, priceOutPerMillion: 2.5 });
-    expect(cost).toMatchObject({ tokens_in: 5_000_000, tokens_cached: 4_000_000, tokens_out: 100_000, usd: 1.45 });
+    expect(budget.cost()).toMatchObject({ tokens_in: 5_000_000, tokens_cached: 4_000_000, tokens_out: 100_000, usd: 1.45 });
   });
 
   it("stops at a dollar limit when prices are known", () => {
-    const prices = { modelId: "kimi-k2.6", priceInPerMillion: 1, priceOutPerMillion: 4 };
+    const prices = { job: "investigate", modelId: "kimi-k2.6", priceInPerMillion: 1, priceOutPerMillion: 4 };
     const budget = new RunBudget({ ...limits, maxTokens: 10_000_000, maxUsd: 0.5 }, Date.now, prices);
     budget.usage({ inputTokens: 300_000, outputTokens: 50_000, totalTokens: 350_000 });
     expect(budget.exceeded()).toBeUndefined();
@@ -51,17 +50,41 @@ describe("RunBudget", () => {
   });
 
   it("prices the run with the configured rates", () => {
-    const budget = new RunBudget(limits);
+    const budget = new RunBudget(limits, Date.now, { job: "investigate", section: "OpenAI", modelId: "gpt-5.6-luna", priceInPerMillion: 0.6, priceOutPerMillion: 2.5 });
     budget.usage({ inputTokens: 2_000_000, outputTokens: 1_000_000, totalTokens: 3_000_000 });
-    expect(budget.cost({ modelId: "kimi-k2.6", priceInPerMillion: 0.6, priceOutPerMillion: 2.5 })).toEqual({
+    expect(budget.cost()).toEqual({
       tokens_in: 2_000_000,
       tokens_cached: 0,
       tokens_out: 1_000_000,
       tokens: 3_000_000,
       usd: 3.7,
-      model: "kimi-k2.6",
+      model: "gpt-5.6-luna",
+      stages: [{ job: "investigate", model: "gpt-5.6-luna", section: "OpenAI", fallback: false, tokens_in: 2_000_000, tokens_cached: 0, tokens_out: 1_000_000, usd: 3.7 }],
     });
     expect(budget.exceeded()).toContain("tokens");
+  });
+
+  it("counts each stage and model apart, so a switch to the fallback keeps the cost right", () => {
+    const luna = { modelId: "gpt-5.6-luna", section: "OpenAI", priceInPerMillion: 1, priceOutPerMillion: 2 };
+    const kimi = { modelId: "kimi-k2.6", section: "Anthropic-compatible", priceInPerMillion: 0.5, priceCachedPerMillion: 0.1, priceOutPerMillion: 4 };
+    const budget = new RunBudget({ ...limits, maxTokens: 100_000_000, maxUsd: 10 }, Date.now, { ...luna, job: "fix" });
+    budget.usage({ inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 });
+    budget.use({ ...kimi, job: "fix", fallback: true });
+    budget.usage({ inputTokens: 1_000_000, cacheReadTokens: 1_000_000, outputTokens: 1_000_000, totalTokens: 3_000_000 });
+    budget.use({ ...kimi, job: "review", fallback: true });
+    budget.usage({ inputTokens: 0, outputTokens: 500_000, totalTokens: 500_000 });
+    budget.use({ ...kimi, job: "fix", fallback: true }); // the next round adds to the same share
+    budget.usage({ inputTokens: 0, outputTokens: 250_000, totalTokens: 250_000 });
+    const cost = budget.cost() as { usd: number; model: string; stages: Array<Record<string, unknown>> };
+    expect(cost.stages.map((stage) => [stage.job, stage.model, stage.fallback, stage.usd])).toEqual([
+      ["fix", "gpt-5.6-luna", false, 1],
+      ["fix", "kimi-k2.6", true, 5.6],
+      ["review", "kimi-k2.6", true, 2],
+    ]);
+    expect(cost.usd).toBe(8.6);
+    expect(cost.model).toBe("gpt-5.6-luna, kimi-k2.6");
+    budget.usage({ inputTokens: 0, outputTokens: 400_000, totalTokens: 400_000 });
+    expect(budget.exceeded()).toBe("the investigation cost more than 10 USD");
   });
 });
 

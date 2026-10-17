@@ -82,15 +82,25 @@ Limits: `TBO_FIX_MAX_TOOL_CALLS` (120), `TBO_FIX_MAX_MINUTES` (60), `TBO_FIX_MAX
 TBO_HUB_URL=http://tbo.localhost:8002
 TBO_WORKER_API_KEY=...
 TBO_WORKER_API_SECRET=...
-MOONSHOT_API_KEY=...
+# The AI providers this worker may use: one key or both. TBO Support names each stage's model
+# (Settings → AI providers → Models per job) and its price; the key only goes to the address here.
+TBO_PROVIDER_OPENAI_API_KEY=...       # TBO Support's OpenAI section
+TBO_PROVIDER_MOONSHOT_API_KEY=...     # TBO Support's Anthropic-compatible section (Kimi)
+# Optional, with these defaults:
+# TBO_PROVIDER_OPENAI_BASE_URL=https://api.openai.com/v1
+# TBO_PROVIDER_OPENAI_API_STYLE=responses
+# TBO_PROVIDER_MOONSHOT_BASE_URL=https://api.moonshot.ai/v1
+# TBO_PROVIDER_MOONSHOT_API_STYLE=chat_completions
+# (and <prefix>_CONTEXT_WINDOW, <prefix>_MAX_OUTPUT_TOKENS: 256000 and 16000)
 
-# Optional. The model:
-TBO_MODEL_BASE_URL=https://api.moonshot.ai/v1
-TBO_MODEL_ID=kimi-k2.6
-# USD per million tokens, for each run's cost; cached input is input the provider served from its cache:
-TBO_MODEL_PRICE_IN=0.60
-TBO_MODEL_PRICE_CACHED=0.15
-TBO_MODEL_PRICE_OUT=2.50
+# Older, still working: one model for every stage, used when TBO Support names no model
+# this worker has a key for (an older hub). Prices in USD per million tokens.
+# TBO_MODEL_API_KEY=...   (or MOONSHOT_API_KEY)
+# TBO_MODEL_BASE_URL=https://api.moonshot.ai/v1
+# TBO_MODEL_ID=kimi-k2.6
+# TBO_MODEL_PRICE_IN=0.60
+# TBO_MODEL_PRICE_CACHED=0.15
+# TBO_MODEL_PRICE_OUT=2.50
 
 # Optional. The engine, and GitHub (else the logged-in gh token is used):
 TBO_HOST_CORE_BIN=/path/to/pi-desktop-host-core

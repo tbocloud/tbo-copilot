@@ -52,7 +52,9 @@ export type TurnObserver = {
   onAssistantText?(text: string): void;
 };
 
-export type TurnResult = { reason: "completed" | "aborted" | "error"; errorCode?: string; text: string };
+/** How a turn ended; a failed one also says whether the engine thought it worth retrying and the provider's HTTP status. */
+export type TurnResult = { reason: "completed" | "aborted" | "error"; errorCode?: string; text: string; retriable?: boolean; providerStatus?: number };
+type TurnFailure = Pick<TurnResult, "retriable" | "providerStatus">;
 
 const SECRET_ENV = /(KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL)/i;
 
@@ -96,6 +98,9 @@ export function preview(value: unknown, limit = 600): string {
  * agent mode with permission mode `ask`, and every prompt is answered `deny`.
  */
 export class Engine {
+  /** Each provider's models so far: a provider keeps every model a run may still use. */
+  private readonly providerModels = new Map<string, Map<string, { id: string; contextWindow: number; maxTokens: number }>>();
+
   private constructor(
     private readonly host: HostProcess,
     private readonly sidecar: AgentSidecar,
@@ -182,8 +187,14 @@ export class Engine {
     return new Engine(host, sidecar, runtime, options, sessions);
   }
 
-  /** Creates or updates the worker's model provider and makes it the default; permission mode `ask` by default too. */
+  /**
+   * Creates or updates the model's provider (by name) with this model added to the ones it
+   * already has, and makes it the default; permission mode `ask` by default too.
+   */
   async configureModel(model: ModelConfig): Promise<{ providerId: string; modelId: string }> {
+    const known = this.providerModels.get(model.providerName) ?? new Map<string, { id: string; contextWindow: number; maxTokens: number }>();
+    known.set(model.modelId, { id: model.modelId, contextWindow: model.contextWindow, maxTokens: model.maxOutputTokens });
+    this.providerModels.set(model.providerName, known);
     const { providers } = await this.host.call<{ providers: Array<{ id: string; name: string }> }>("providers.list", { includeDisabled: true });
     const fields = {
       name: model.providerName,
@@ -193,7 +204,7 @@ export class Engine {
       baseUrl: model.baseUrl,
       authKind: "api_key_and_base_url",
       apiStyle: model.apiStyle,
-      models: [{ id: model.modelId, contextWindow: model.contextWindow, maxTokens: model.maxOutputTokens }],
+      models: [...known.values()],
       defaultModelId: model.modelId,
       secretValue: model.apiKey,
       supportsReasoning: false,
@@ -226,6 +237,7 @@ export class Engine {
   /** Runs one turn to its end. Permission prompts are denied and questions answered while it runs. */
   async runTurn(sessionId: string, content: string, observer: TurnObserver = {}): Promise<TurnResult> {
     let text = "";
+    let failure: TurnFailure = {};
     const started = new Map<string, { name: string; at: number }>();
     let settle!: (result: TurnResult) => void;
     const done = new Promise<TurnResult>((resolve) => {
@@ -235,11 +247,13 @@ export class Engine {
       if (envelope.sessionId !== sessionId) return;
       void this.handle(envelope, observer, started, (value) => {
         text = value;
+      }, (value) => {
+        failure = value;
       });
     });
     const offEnd = this.runtime.onTurnEnded((info) => {
       if (info.sessionId !== sessionId) return;
-      settle({ reason: info.reason, ...(info.errorCode ? { errorCode: info.errorCode } : {}), text });
+      settle({ reason: info.reason, ...(info.errorCode ? { errorCode: info.errorCode } : {}), text, ...(info.reason === "error" ? failure : {}) });
     });
     try {
       await this.runtime.prompt({ sessionId, content, effectivePermissionMode: "ask", principal: { subject: "tbo-worker", roles: ["owner"] } });
@@ -258,6 +272,7 @@ export class Engine {
     observer: TurnObserver,
     started: Map<string, { name: string; at: number }>,
     setText: (text: string) => void,
+    setFailure: (failure: TurnFailure) => void,
   ): Promise<void> {
     const event = envelope.event;
     try {
@@ -292,6 +307,15 @@ export class Engine {
         case "usage":
           observer.onUsage?.(event.usage);
           return;
+        case "error": {
+          // the provider's status decides whether another model may help (models.ts)
+          const status = Number((event.error.details as { providerStatus?: unknown } | undefined)?.providerStatus);
+          setFailure({
+            ...(typeof event.error.retriable === "boolean" ? { retriable: event.error.retriable } : {}),
+            ...(Number.isInteger(status) && status > 0 ? { providerStatus: status } : {}),
+          });
+          return;
+        }
         case "message_end": {
           if (event.message.role !== "assistant") return;
           const value = messageText(event.message);

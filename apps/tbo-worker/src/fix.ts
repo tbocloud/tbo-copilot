@@ -2,14 +2,15 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
-import type { FixLimits, WorkerConfig } from "./config.js";
-import { preview, type Engine, type TurnObserver } from "./engine.js";
+import type { FixLimits, ModelConfig, WorkerConfig } from "./config.js";
+import { preview, type Engine, type TurnObserver, type TurnResult } from "./engine.js";
 import { EventOutbox } from "./events.js";
-import { againPrompt, FIX_NUDGE, fixPrompt, REVIEW_NUDGE, reviewPrompt } from "./fix-prompt.js";
+import { againPrompt, FIX_NUDGE, fixPrompt, restartPrompt, REVIEW_NUDGE, reviewPrompt } from "./fix-prompt.js";
 import type { Finding, FixDone, FixToolState } from "./fix-tools.js";
 import { GitHubRest } from "./github.js";
 import { HubError, type HubClient, type Job, type RunContext, type SiteApp } from "./hub.js";
 import type { Logger } from "./log.js";
+import { StageModels, noModelReason, stageModels, type StageModel } from "./models.js";
 import { RunBudget, editsInside } from "./policy.js";
 import { gitEnv, runGit } from "./repo-git.js";
 import type { Sandbox, SandboxResult } from "./sandbox.js";
@@ -35,7 +36,8 @@ export type FixDeps = {
   router: FixSessions;
   sandbox: Sandbox;
   log: Logger;
-  model: () => Promise<{ providerId: string; modelId: string }>;
+  /** The engine's provider and model for a stage's model. */
+  engineModel: (model: ModelConfig) => Promise<{ providerId: string; modelId: string }>;
   stopping: () => boolean;
   workspaceOptions: () => WorkspaceOptions;
   github?: GitHubRest;
@@ -244,10 +246,13 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
   const context = job.context;
   const run = job.run;
   const limits = cfg.fixLimits ?? DEFAULT_FIX_LIMITS;
+  // each stage on its own model from TBO Support's list, moving once to the fallback after a provider failure
+  const fixModels = new StageModels("fix", stageModels(cfg, "fix", context));
+  const reviewModels = new StageModels("review", stageModels(cfg, "review", context));
   const budget = new RunBudget(
     { maxToolCalls: limits.maxToolCalls, maxMinutes: limits.maxMinutes, maxTokens: limits.maxTokens, maxUsd: Number(context.fix?.max_usd ?? 0) },
     Date.now,
-    cfg.model,
+    fixModels.current,
   );
   const outbox = new EventOutbox((events) => hub.postEvents(run, job.lease_token, events), { log });
   const flags = { cancelled: false, leaseLost: false, budgetReason: "", denied: 0, stopped: false };
@@ -265,7 +270,8 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
     tokensIn: budget.spend.tokensIn,
     tokensCached: budget.spend.tokensCached,
     tokensOut: budget.spend.tokensOut,
-    costUsd: Number(budget.cost(cfg.model).usd ?? 0),
+    costUsd: Number(budget.cost().usd ?? 0),
+    model: String(budget.cost().model ?? ""),
     minutes: Math.round(budget.minutes() * 10) / 10,
     problems: workspace?.problems ?? [],
   });
@@ -331,6 +337,8 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
   try {
     const fix = context.fix;
     if (!fix) return await fail("the run has no fix context");
+    if (!fixModels.current) return await fail(noModelReason("fix"));
+    if (!reviewModels.current) return await fail(noModelReason("review"));
     const chosen = chooseApp(context, cfg.allowLocalRepos);
     if (typeof chosen === "string") return await fail(chosen);
     const key = await hub.repoToken(run, job.lease_token, chosen.repo);
@@ -363,10 +371,36 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
       sandboxId: started.id,
       checks: [],
     };
-    const model = await deps.model();
-    const fixSession = await engine.openSession(workspace.root, `Copilot fix ${run}`, model, { profile: "fix", decide: editsInside(workspace.root, target.dir) });
-    sessions.push(fixSession);
-    router.fixSessions.set(fixSession, state);
+    const root = workspace.root;
+    const openFix = async (plan: StageModel): Promise<string> => {
+      const id = await engine.openSession(root, `Copilot fix ${run}`, await deps.engineModel(plan), { profile: "fix", decide: editsInside(root, target.dir) });
+      sessions.push(id);
+      router.fixSessions.set(id, state);
+      return id;
+    };
+    // the fix's turn and, when it ended without fix_done, one reminder
+    const fixTurns = async (session: string, prompt: string): Promise<TurnResult> => {
+      budget.use(fixModels.current!);
+      let turn: TurnResult = mayGoOn() ? await engine.runTurn(session, prompt, observer) : { reason: "aborted", text: "" };
+      if (!state.done && mayGoOn() && !flags.budgetReason && turn.reason === "completed") turn = await engine.runTurn(session, FIX_NUDGE, observer);
+      return turn;
+    };
+    // a review in a fresh session: its turn and, without a verdict, one reminder
+    const reviewTurns = async (): Promise<TurnResult> => {
+      const plan = reviewModels.current!;
+      budget.use(plan);
+      const session = await engine.openSession(root, `Copilot review ${run}`, await deps.engineModel(plan), { profile: "review" });
+      sessions.push(session);
+      router.fixSessions.set(session, state);
+      let review = await engine.runTurn(session, reviewPrompt(target.app, String(context.diagnosis?.summary ?? "")), observer);
+      if (!state.findings && mayGoOn() && !flags.budgetReason && review.reason === "completed") review = await engine.runTurn(session, REVIEW_NUDGE, observer);
+      return review;
+    };
+    const movedOn = (stage: StageModels, to: StageModel, turn: TurnResult) => {
+      outbox.push("fallback", { job: stage.job, model: to.modelId, section: to.section, after: turn.errorCode });
+      log("warn", `${stage.job} moves to the fallback model`, { run, model: to.modelId, error: turn.errorCode });
+    };
+    let fixSession = await openFix(fixModels.current);
 
     let evidence: EvidenceRow[] = [];
     let findings: Finding[] = [];
@@ -374,8 +408,14 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
     for (let round = 1; round <= limits.maxRounds; round += 1) {
       state.done = undefined;
       const prompt = round === 1 ? fixPrompt(context, target.app, fix.branch, testedOn) : againPrompt(findings.filter((item) => item.severity === "must_fix"), failures);
-      let turn = mayGoOn() ? await engine.runTurn(fixSession, prompt, observer) : { reason: "aborted" as const, text: "" };
-      if (!state.done && mayGoOn() && !flags.budgetReason && turn.reason === "completed") turn = await engine.runTurn(fixSession, FIX_NUDGE, observer);
+      let turn = await fixTurns(fixSession, prompt);
+      // the provider failed: the fix starts again once, in a fresh session on the fallback model
+      const fixFallback = !state.done && mayGoOn() && !flags.budgetReason ? fixModels.next(turn) : undefined;
+      if (fixFallback) {
+        movedOn(fixModels, fixFallback, turn);
+        fixSession = await openFix(fixFallback);
+        turn = await fixTurns(fixSession, restartPrompt(fixPrompt(context, target.app, fix.branch, testedOn), round > 1 ? prompt : undefined));
+      }
       if (!mayGoOn()) break;
       if (flags.budgetReason) return await fail(`${flags.budgetReason} before the fix was ready`);
       if (!state.done) {
@@ -389,11 +429,12 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
       findings = [];
       if (!failures.length) {
         state.findings = undefined;
-        const reviewSession = await engine.openSession(workspace.root, `Copilot review ${run}`, model, { profile: "review" });
-        sessions.push(reviewSession);
-        router.fixSessions.set(reviewSession, state);
-        let review = await engine.runTurn(reviewSession, reviewPrompt(target.app, String(context.diagnosis?.summary ?? "")), observer);
-        if (!state.findings && mayGoOn() && !flags.budgetReason && review.reason === "completed") review = await engine.runTurn(reviewSession, REVIEW_NUDGE, observer);
+        let review = await reviewTurns();
+        const reviewFallback = !state.findings && mayGoOn() && !flags.budgetReason ? reviewModels.next(review) : undefined;
+        if (reviewFallback) {
+          movedOn(reviewModels, reviewFallback, review);
+          review = await reviewTurns();
+        }
         if (!mayGoOn()) break;
         if (flags.budgetReason) return await fail(`${flags.budgetReason} during the review`);
         // no verdict is no review: the pull request would say it was reviewed
@@ -438,7 +479,7 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
       tested_on: testedOn,
       people_checks: done.people_checks,
       risk_notes: [done.risk_notes, ...findings.map((item) => `${item.severity}: ${item.note}`)].filter(Boolean).join("\n").slice(0, 2000),
-      cost: budget.cost(cfg.model),
+      cost: budget.cost(),
     });
     if (reply.isError) return await fail(`TBO Support refused the change: ${reply.text.slice(0, 300)}`);
     outbox.close();

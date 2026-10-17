@@ -4,7 +4,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** The OpenAI-compatible model the worker's engine talks to (Kimi first). */
+/** One OpenAI-compatible model the worker's engine talks to, with its prices. */
 export type ModelConfig = {
   providerName: string;
   baseUrl: string;
@@ -19,6 +19,23 @@ export type ModelConfig = {
   priceCachedPerMillion?: number;
   priceOutPerMillion: number;
 };
+
+/**
+ * A provider in the worker's own settings file: where its models answer and the key for them.
+ * TBO Support names only the section and the model for each job (`run_context.models`), so a
+ * key is only ever sent to an address this file holds.
+ */
+export type ProviderConfig = Omit<ModelConfig, "modelId" | "priceInPerMillion" | "priceCachedPerMillion" | "priceOutPerMillion"> & {
+  /** The TBO Support section it serves (Settings → AI providers). */
+  section: string;
+};
+
+/** The providers the settings file may name: `<prefix>_API_KEY` turns one on, the rest have defaults. */
+export const PROVIDERS = [
+  { prefix: "TBO_PROVIDER_OPENAI", section: "OpenAI", providerName: "TBO Worker · OpenAI", baseUrl: "https://api.openai.com/v1", apiStyle: "responses" },
+  // Kimi: TBO Support reaches it through its Anthropic-compatible section, the engine through Moonshot's OpenAI-compatible address
+  { prefix: "TBO_PROVIDER_MOONSHOT", section: "Anthropic-compatible", providerName: "TBO Worker · Moonshot", baseUrl: "https://api.moonshot.ai/v1", apiStyle: "chat_completions" },
+] as const;
 
 export type Limits = {
   maxToolCalls: number;
@@ -56,7 +73,10 @@ export type WorkerConfig = {
   worker: HubAuth;
   /** An agent's key, used only by `eval` to start and read runs. */
   agent?: HubAuth;
-  model: ModelConfig;
+  /** The providers this worker has a key for; each stage takes its model from TBO Support's list. */
+  providers: ProviderConfig[];
+  /** The older single model (`TBO_MODEL_*`): every stage uses it when TBO Support names no model this worker has a key for. */
+  model?: ModelConfig;
   githubToken?: string;
   hostCoreBinary: string;
   sidecarEntry: string;
@@ -175,7 +195,24 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
   };
   const hubUrl = need("TBO_HUB_URL").replace(/\/+$/, "");
   const worker = { apiKey: need("TBO_WORKER_API_KEY"), apiSecret: need("TBO_WORKER_API_SECRET") };
-  const apiKey = need("TBO_MODEL_API_KEY", "MOONSHOT_API_KEY");
+  const apiKey = env.TBO_MODEL_API_KEY?.trim() || env.MOONSHOT_API_KEY?.trim() || "";
+  const providers = PROVIDERS.flatMap((provider): ProviderConfig[] => {
+    const key = env[`${provider.prefix}_API_KEY`]?.trim();
+    if (!key) return [];
+    const value = (name: string) => env[`${provider.prefix}_${name}`]?.trim();
+    return [
+      {
+        section: provider.section,
+        providerName: provider.providerName,
+        baseUrl: (value("BASE_URL") || provider.baseUrl).replace(/\/+$/, ""),
+        apiKey: key,
+        apiStyle: value("API_STYLE") || provider.apiStyle,
+        contextWindow: positive(value("CONTEXT_WINDOW"), 256_000, `${provider.prefix}_CONTEXT_WINDOW`),
+        maxOutputTokens: positive(value("MAX_OUTPUT_TOKENS"), 16_000, `${provider.prefix}_MAX_OUTPUT_TOKENS`),
+      },
+    ];
+  });
+  if (!apiKey && !providers.length) missing.push("TBO_PROVIDER_OPENAI_API_KEY (or TBO_PROVIDER_MOONSHOT_API_KEY, or the older TBO_MODEL_API_KEY)");
   const hostCoreBinary = env.TBO_HOST_CORE_BIN?.trim() || findHostCore() || "";
   const sidecarEntry = env.TBO_SIDECAR?.trim() || findSidecar() || "";
   if (!hostCoreBinary) missing.push("TBO_HOST_CORE_BIN (no built pi-desktop-host-core found)");
@@ -195,20 +232,25 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
     hubUrl,
     worker,
     ...(agentKey && agentSecret ? { agent: { apiKey: agentKey, apiSecret: agentSecret } } : {}),
-    model: {
-      providerName: env.TBO_MODEL_PROVIDER_NAME?.trim() || "TBO Worker model",
-      baseUrl: (env.TBO_MODEL_BASE_URL?.trim() || DEFAULT_MODEL_BASE_URL).replace(/\/+$/, ""),
-      modelId: env.TBO_MODEL_ID?.trim() || DEFAULT_MODEL_ID,
-      apiKey,
-      apiStyle: env.TBO_MODEL_API_STYLE?.trim() || "chat_completions",
-      contextWindow: positive(env.TBO_MODEL_CONTEXT_WINDOW, 256_000, "TBO_MODEL_CONTEXT_WINDOW"),
-      maxOutputTokens: positive(env.TBO_MODEL_MAX_OUTPUT_TOKENS, 16_000, "TBO_MODEL_MAX_OUTPUT_TOKENS"),
-      priceInPerMillion: nonNegative(env.TBO_MODEL_PRICE_IN, 0, "TBO_MODEL_PRICE_IN"),
-      priceOutPerMillion: nonNegative(env.TBO_MODEL_PRICE_OUT, 0, "TBO_MODEL_PRICE_OUT"),
-      ...(env.TBO_MODEL_PRICE_CACHED?.trim()
-        ? { priceCachedPerMillion: nonNegative(env.TBO_MODEL_PRICE_CACHED, 0, "TBO_MODEL_PRICE_CACHED") }
-        : {}),
-    },
+    providers,
+    ...(apiKey
+      ? {
+          model: {
+            providerName: env.TBO_MODEL_PROVIDER_NAME?.trim() || "TBO Worker model",
+            baseUrl: (env.TBO_MODEL_BASE_URL?.trim() || DEFAULT_MODEL_BASE_URL).replace(/\/+$/, ""),
+            modelId: env.TBO_MODEL_ID?.trim() || DEFAULT_MODEL_ID,
+            apiKey,
+            apiStyle: env.TBO_MODEL_API_STYLE?.trim() || "chat_completions",
+            contextWindow: positive(env.TBO_MODEL_CONTEXT_WINDOW, 256_000, "TBO_MODEL_CONTEXT_WINDOW"),
+            maxOutputTokens: positive(env.TBO_MODEL_MAX_OUTPUT_TOKENS, 16_000, "TBO_MODEL_MAX_OUTPUT_TOKENS"),
+            priceInPerMillion: nonNegative(env.TBO_MODEL_PRICE_IN, 0, "TBO_MODEL_PRICE_IN"),
+            priceOutPerMillion: nonNegative(env.TBO_MODEL_PRICE_OUT, 0, "TBO_MODEL_PRICE_OUT"),
+            ...(env.TBO_MODEL_PRICE_CACHED?.trim()
+              ? { priceCachedPerMillion: nonNegative(env.TBO_MODEL_PRICE_CACHED, 0, "TBO_MODEL_PRICE_CACHED") }
+              : {}),
+          },
+        }
+      : {}),
     ...(env.GITHUB_TOKEN?.trim() ? { githubToken: env.GITHUB_TOKEN.trim() } : {}),
     hostCoreBinary,
     sidecarEntry,

@@ -56,12 +56,14 @@ async function check(cfg: WorkerConfig, hub: HubClient, log: Logger): Promise<nu
   say(`worker id   ${cfg.workerId}`);
   say(`hub         ${cfg.hubUrl}`);
   say(`hub user    ${await hub.whoAmI()}`);
-  say(`model       ${cfg.model.modelId} at ${cfg.model.baseUrl}`);
+  for (const provider of cfg.providers) say(`provider    ${provider.section} at ${provider.baseUrl} (${provider.apiStyle}); its models come from TBO Support`);
+  if (cfg.model) say(`model       ${cfg.model.modelId} at ${cfg.model.baseUrl}${cfg.providers.length ? " (when TBO Support names no model for a provider above)" : ""}`);
   say(`github      ${cfg.githubToken ? "token found" : "no token (set GITHUB_TOKEN or log in with gh): only public repositories can be read"}`);
   say(`sandbox     ${cfg.sandboxSocket ? `runner at ${cfg.sandboxSocket}: investigations and fixes` : "none (TBO_SANDBOX_SOCKET not set): investigations only"}`);
   const engine = await startEngine(cfg, new RunToolRouter(hub), log);
   try {
-    const model = await engine.configureModel(cfg.model);
+    // a session opens on the older single model, or on the first provider (its models come from TBO Support)
+    const model = await engine.configureModel(cfg.model ?? { ...cfg.providers[0]!, modelId: "engine-check", priceInPerMillion: 0, priceOutPerMillion: 0 });
     const probe = await mkdtemp(join(cfg.dir, "check-"));
     const session = await engine.openSession(probe, "tbo-worker check", model);
     await engine.closeSession(session, probe);
@@ -131,7 +133,8 @@ export async function main(argv: string[]): Promise<number> {
         const cases = (await loadCases(casesFile)).filter((item) => !only || only.includes(item.id));
         const results = await runEvaluation(cases, { cfg, hub, worker, log, signal: controller.signal });
         const date = new Date().toISOString().slice(0, 16).replace("T", " ");
-        const markdown = reportMarkdown(results, { model: cfg.model.modelId, date });
+        const used = [...new Set(results.flatMap((result) => result.model.split(", ")).filter(Boolean))].join(", ");
+        const markdown = reportMarkdown(results, { model: used || cfg.model?.modelId || "none answered", date });
         const reportFile = option(args, "--report") ?? join(cfg.dir, "eval", `report-${date.replace(/[ :]/g, "-")}.md`);
         await mkdir(join(reportFile, ".."), { recursive: true });
         await writeFile(reportFile, markdown);

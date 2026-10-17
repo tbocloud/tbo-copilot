@@ -40,6 +40,8 @@ export type EvalResult = {
   /** Of `tokens`, the input the provider served from its cache (cheaper). */
   tokensCached: number;
   costUsd: number;
+  /** The models that answered. */
+  model: string;
   minutes: number;
 };
 
@@ -89,7 +91,7 @@ export async function runEvaluation(
     if (deps.signal?.aborted) break;
     deps.cfg.repoMap[item.app] = item.repository;
     deps.log("info", "evaluation case", { id: item.id, ticket: item.ticket, app: item.app });
-    const empty = { rootCause: null, confidence: null, right: false, filesFound: [], summary: "", toolCalls: 0, tokens: 0, tokensCached: 0, costUsd: 0, minutes: 0 };
+    const empty = { rootCause: null, confidence: null, right: false, filesFound: [], summary: "", toolCalls: 0, tokens: 0, tokensCached: 0, costUsd: 0, model: "", minutes: 0 };
     try {
       const current = await deps.hub.getRun(item.ticket);
       if (current.run && current.can_cancel) await deps.hub.cancelRun(item.ticket);
@@ -120,6 +122,7 @@ export async function runEvaluation(
         tokens: (report?.tokensIn ?? 0) + (report?.tokensOut ?? 0),
         tokensCached: report?.tokensCached ?? 0,
         costUsd: report?.costUsd ?? 0,
+        model: report?.model ?? "",
         minutes: report?.minutes ?? 0,
       });
       if (report?.outcome === "stopped") break; // the worker was stopped: no more cases
