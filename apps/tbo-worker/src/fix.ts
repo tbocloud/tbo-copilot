@@ -12,6 +12,7 @@ import { HubError, type HubClient, type Job, type RunContext, type SiteApp } fro
 import type { Logger } from "./log.js";
 import { StageModels, noModelReason, stageModels, type StageModel } from "./models.js";
 import { RunBudget, editsInside } from "./policy.js";
+import { SuspiciousWatch } from "./suspicious.js";
 import { gitEnv, runGit } from "./repo-git.js";
 import type { Sandbox, SandboxResult } from "./sandbox.js";
 import type { RunOutcome, RunReport } from "./supervisor.js";
@@ -303,6 +304,7 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
     })();
   }, cfg.limits.heartbeatIntervalMs);
   const mayGoOn = () => !flags.cancelled && !flags.leaseLost && !deps.stopping();
+  const watch = new SuspiciousWatch();
   const observer: TurnObserver & { check: () => void } = {
     check: () => {
       stopIfAsked();
@@ -318,7 +320,10 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
       outbox.push("tool_call", { tool: toolName, args: preview(args, 500) });
       observer.check();
     },
-    onToolEnd: ({ toolName, isError, ms, result }) => outbox.push("tool_result", { tool: toolName, is_error: isError, ms, ...(isError ? { error: result.slice(0, 500) } : {}) }),
+    onToolEnd: ({ toolName, isError, ms, result, text }) => {
+      outbox.push("tool_result", { tool: toolName, is_error: isError, ms, ...(isError ? { error: result.slice(0, 500) } : {}) });
+      for (const line of watch.check(text ?? result)) outbox.push("suspicious_instruction", { tool: toolName, text: line });
+    },
     onPermissionDenied: (request) => {
       flags.denied += 1;
       outbox.push("permission_denied", { tool: request.toolName, args: preview(request.argsPreview, 300) });

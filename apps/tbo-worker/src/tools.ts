@@ -32,6 +32,7 @@ export const CATEGORIES = [
   "bug",
   "data_damaged_by_bug",
   "core_issue",
+  "customization_request",
   "unclear",
 ] as const;
 

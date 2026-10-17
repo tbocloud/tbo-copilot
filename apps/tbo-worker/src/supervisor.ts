@@ -8,9 +8,10 @@ import { runFixTool, type FixToolState } from "./fix-tools.js";
 import { HubError, type HubClient, type Job } from "./hub.js";
 import type { Logger } from "./log.js";
 import { StageModels, noModelReason, stageModels, type StageModel } from "./models.js";
-import { RunBudget } from "./policy.js";
+import { RunBudget, smallestCap } from "./policy.js";
 import { NUDGE, finalPrompt, turnPrompt } from "./prompt.js";
 import type { Sandbox } from "./sandbox.js";
+import { SuspiciousWatch } from "./suspicious.js";
 import { runTool, type RunTools } from "./tools.js";
 import { prepareWorkspace, removeWorkspace, workspaceRoot, type Workspace, type WorkspaceOptions } from "./workspace.js";
 
@@ -171,7 +172,9 @@ export class Worker {
     if (job.context.kind === "fix") return this.processFix(job);
     const ticket = job.context.ticket.name;
     const models = new StageModels("investigate", stageModels(this.cfg, "investigate", job.context));
-    const budget = new RunBudget(this.cfg.limits, Date.now, models.current);
+    // the worker's own dollar limit, or TBO Support's cap per diagnosis when it is lower
+    const maxUsd = smallestCap(this.cfg.limits.maxUsd, job.context.limits?.max_usd);
+    const budget = new RunBudget({ ...this.cfg.limits, maxUsd }, Date.now, models.current);
     const outbox = new EventOutbox((events) => this.hub.postEvents(job.run, job.lease_token, events), { log: this.log });
     const state: RunState = {
       stage: "workspace",
@@ -343,6 +346,7 @@ export class Worker {
     state: RunState,
     session: () => string | undefined,
   ): TurnObserver & { check: () => void } {
+    const watch = new SuspiciousWatch();
     const check = () => {
       const reason = budget.exceeded();
       const id = session();
@@ -362,8 +366,10 @@ export class Worker {
         const id = session();
         if (state.finalToolCalls > FINAL_TURN_TOOL_CALLS && !state.submitted && id) void this.engine.abort(id);
       },
-      onToolEnd: ({ toolName, isError, ms, result }) => {
+      onToolEnd: ({ toolName, isError, ms, result, text }) => {
         outbox.push("tool_result", { tool: toolName, is_error: isError, ms, ...(isError ? { error: result.slice(0, 500) } : {}) });
+        // text that tries to instruct the AI: recorded for the team, whatever the model makes of it
+        for (const line of watch.check(text ?? result)) outbox.push("suspicious_instruction", { tool: toolName, text: line });
       },
       onPermissionDenied: (request) => {
         state.denied += 1;
