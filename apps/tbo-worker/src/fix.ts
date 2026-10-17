@@ -326,7 +326,12 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
     onPermissionAllowed: (request) => outbox.push("permission_allowed", { tool: request.toolName, args: preview(request.argsPreview, 200) }),
     onUsage: (usage) => {
       budget.usage(usage);
-      outbox.push("usage", { tokens_in: usage.inputTokens ?? 0, cached: usage.cacheReadTokens ?? 0, tokens_out: usage.outputTokens ?? 0 });
+      outbox.push("usage", {
+        tokens_in: usage.inputTokens ?? 0,
+        cached: usage.cacheReadTokens ?? 0,
+        ...(usage.cacheWriteTokens ? { cache_write: usage.cacheWriteTokens } : {}),
+        tokens_out: usage.outputTokens ?? 0,
+      });
       observer.check();
     },
     onAssistantText: (text) => outbox.push("assistant", { text: text.slice(0, 1_000) }),

@@ -91,3 +91,27 @@ Before a model takes a job, it runs on the evaluation cases with the worker's `e
 (`apps/tbo-worker/README.md`): right root cause, fix files found, time and cost per case, compared with the model it
 would replace. Each case's result stays in the private repository; this page gets only the totals and the kinds of
 job the model finds hard.
+
+### GPT-5.6 Luna against Kimi K2.6 (investigation, 17 Oct 2026)
+
+The same 10 evaluation cases (7 bugs, 3 customization requests from one pilot customer's apps, with no live site
+connected), investigated by the worker: Luna on 17 Oct, Kimi on 12 Oct.
+
+| Measure | GPT-5.6 Luna | Kimi K2.6 |
+|---|---|---|
+| Bugs: root cause right | 5 of 7 | 5 of 7 (the same two missed) |
+| Customization requests not called a defect | 3 of 3 | 3 of 3 |
+| Fix files named | 13 of 23 | 14 of 23 |
+| Median minutes per case | 0.3 | 5.6 |
+| Median tokens per case | 62,000 | 357,000 |
+| Share of input served from the provider's cache | 60% | 86% (16 cases) |
+| Cost of the 10 cases | $0.11 (at $0.20 / $1.20 per million, $0.02 cached) | not priced in that run |
+
+- **Accuracy is the same, time and tokens are not:** Luna sends several tool calls per request, so it needs far
+  fewer requests; each case took well under a minute.
+- **What both find hard:** the two missed bugs have their cause outside the custom app's code (a standard ERPNext
+  report and a sales-return default), and with no live site connected neither model could check the site; both
+  answered "unclear" with the questions to ask, rather than guessing. A connected site (error logs, customizations,
+  version history) is the next thing to measure.
+- **Counting fixed on the way:** OpenAI's Responses API reports the input it writes to its cache apart from the
+  other input; the worker now counts it, which the first Luna run did not (it showed a third of the real tokens).

@@ -117,7 +117,8 @@ export class RunBudget {
       this.seenOperations.add(usage.operationId);
     }
     const cached = Math.max(0, usage.cacheReadTokens || 0);
-    const tokensIn = Math.max(0, usage.inputTokens || 0) + cached;
+    // OpenAI's Responses API reports the input it writes to its cache apart, outside inputTokens: it is fresh input
+    const tokensIn = Math.max(0, usage.inputTokens || 0) + Math.max(0, usage.cacheWriteTokens || 0) + cached;
     const tokensOut = Math.max(0, usage.outputTokens || 0);
     for (const total of [this.spend, this.current]) {
       if (!total) continue;

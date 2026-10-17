@@ -377,6 +377,7 @@ export class Worker {
         outbox.push("usage", {
           tokens_in: usage.inputTokens ?? 0,
           cached: usage.cacheReadTokens ?? 0,
+          ...(usage.cacheWriteTokens ? { cache_write: usage.cacheWriteTokens } : {}),
           tokens_out: usage.outputTokens ?? 0,
         });
         if (!state.finalTurn) check();

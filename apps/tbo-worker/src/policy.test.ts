@@ -64,6 +64,16 @@ describe("RunBudget", () => {
     expect(budget.exceeded()).toContain("tokens");
   });
 
+  it("counts the input a provider reports as written to its cache as fresh input", () => {
+    const budget = new RunBudget(limits, Date.now, { job: "investigate", modelId: "gpt-5.6-luna", priceInPerMillion: 0.2, priceCachedPerMillion: 0.02, priceOutPerMillion: 1.2 });
+    // the Responses API's first request: nearly all of its input is written to the cache
+    budget.usage({ inputTokens: 3, cacheWriteTokens: 9_997, cacheReadTokens: 0, outputTokens: 100, totalTokens: 10_100 });
+    budget.usage({ inputTokens: 3, cacheWriteTokens: 997, cacheReadTokens: 10_000, outputTokens: 100, totalTokens: 11_100 });
+    expect(budget.cost()).toMatchObject({ tokens_in: 21_000, tokens_cached: 10_000, tokens_out: 200 });
+    const [stage] = (budget.cost() as { stages: Array<{ usd: number }> }).stages;
+    expect(stage!.usd).toBeCloseTo((11_000 * 0.2 + 10_000 * 0.02 + 200 * 1.2) / 1_000_000, 6);
+  });
+
   it("counts each stage and model apart, so a switch to the fallback keeps the cost right", () => {
     const luna = { modelId: "gpt-5.6-luna", section: "OpenAI", priceInPerMillion: 1, priceOutPerMillion: 2 };
     const kimi = { modelId: "kimi-k2.6", section: "Anthropic-compatible", priceInPerMillion: 0.5, priceCachedPerMillion: 0.1, priceOutPerMillion: 4 };
