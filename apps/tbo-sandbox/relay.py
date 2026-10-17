@@ -44,6 +44,9 @@ def settings() -> dict:
         "key": str(Path.home() / ".ssh" / "tbo_sandbox"),
         "region": "ap-south-1",
         "timeout": 3600,
+        # the only folder the worker's clones may come from, and how long a sandbox may stay open
+        "code_root": "/var/lib/tbo-worker/runs",
+        "max_open_hours": 3,
     }
     values.update(json.loads(CONFIG.read_text()))
     for needed in ("instance_id", "host"):
@@ -55,12 +58,14 @@ def settings() -> dict:
 # --- the app's code ------------------------------------------------------------------------
 
 
-def host_path(path: str, paths: dict) -> Path:
-    """The worker's path for its clone, as seen on this server."""
+def host_path(path: str, paths: dict, root: str) -> Path | None:
+    """The worker's path for its clone, as seen on this server; None unless it is a mapped path
+    that stays inside `root` once `..` and links are resolved."""
     for inside, outside in paths.items():
         if path == inside or path.startswith(inside.rstrip("/") + "/"):
-            return Path(outside + path[len(inside.rstrip("/")):])
-    return Path(path)
+            found = Path(outside + path[len(inside.rstrip("/")):]).resolve()
+            return found if found.is_relative_to(Path(root).resolve()) else None
+    return None
 
 
 def fingerprint(root: Path) -> str:
@@ -147,7 +152,7 @@ class Relay:
     def __init__(self, config: dict):
         self.config = config
         self.lock = threading.Lock()
-        self.open: dict[str, dict] = {}  # sandbox id -> {"app", "root", "sent"}
+        self.open: dict[str, dict] = {}  # sandbox id -> {"app", "root", "sent", "since"}
 
     def runner(self, request: dict, timeout: int | None = None) -> dict:
         command = ["ssh", "-i", self.config["key"], "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
@@ -177,8 +182,8 @@ class Relay:
         with self.lock:
             if op == "start":
                 mount = (request.get("spec") or {}).get("mount") or {}
-                root = host_path(str(mount.get("dir") or ""), self.config["paths"])
-                if not root.is_dir():
+                root = host_path(str(mount.get("dir") or ""), self.config["paths"], self.config["code_root"])
+                if not root or not root.is_dir():
                     return {"ok": False, "error": f"the app's clone is not on this server: {mount.get('dir')}"}
                 request["code"] = pack(str(mount.get("app")), root)
                 sent = fingerprint(root)
@@ -192,19 +197,34 @@ class Relay:
                 return failed
             reply = self.runner(request)
             if op == "start" and reply.get("ok"):
-                self.open[reply["result"]["id"]] = {"app": request["code"]["app"], "root": root, "sent": sent}
+                self.open[reply["result"]["id"]] = {"app": request["code"]["app"], "root": root, "sent": sent, "since": time.time()}
             elif op in CODE_OPS and reply.get("ok") and request.get("id") in self.open and request.get("code"):
                 self.open[request["id"]]["sent"] = sent
             elif op == "stop":
                 self.open.pop(request.get("id"), None)
             return reply
 
+    def prune(self, live: set[str] | None):
+        """Forgets sandboxes the runner no longer has, and any open longer than a fix may take
+        (a worker that died before `stop`): otherwise the pings would keep the fix server on."""
+        oldest = time.time() - self.config["max_open_hours"] * 3600
+        for sandbox, known in list(self.open.items()):
+            if (live is not None and sandbox not in live) or known["since"] < oldest:
+                self.open.pop(sandbox, None)
+
     def keep_awake(self):
         """Once a minute while a sandbox is open: the runner's ping touches the fix server's busy marker."""
         while True:
             time.sleep(60)
-            if self.open and not self.lock.locked():
-                self.runner({"op": "ping"}, timeout=60)
+            if self.open and self.lock.acquire(blocking=False):
+                try:
+                    self.prune(None)
+                    if self.open:
+                        reply = self.runner({"op": "ping"}, timeout=60)
+                        if reply.get("ok"):
+                            self.prune(set((reply.get("result") or {}).get("sandboxes") or []))
+                finally:
+                    self.lock.release()
 
 
 def serve(config: dict):

@@ -8,7 +8,8 @@ set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "run as root: sudo bash install/runner.sh \"<public key>\""
 key=${1:-}
-case "$key" in ssh-ed25519\ *) ;; *) die "give the relay's ssh-ed25519 public key" ;; esac
+# exactly one key line: a second line would become an entry without the forced command
+[[ "$key" =~ ^ssh-ed25519\ [A-Za-z0-9+/]+={0,2}(\ [A-Za-z0-9._@-]+)?$ ]] || die "give the relay's one-line ssh-ed25519 public key"
 here=$(cd "$(dirname "$0")/.." && pwd)
 lib=/usr/local/lib/tbo-sandbox
 sandboxes=/var/lib/tbo-worker/sandboxes

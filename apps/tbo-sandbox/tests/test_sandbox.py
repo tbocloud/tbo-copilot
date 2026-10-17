@@ -8,6 +8,7 @@ import os
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -97,10 +98,24 @@ class TheApps(unittest.TestCase):
             with self.assertRaises(runner.Refused):
                 runner.app_set({"apps": [bad]})
 
-    def test_the_snapshot_key_follows_the_apps(self):
+    def test_the_snapshot_key_follows_the_apps_and_the_code(self):
         a = [{"app": "x", "repository": "https://github.com/a/x", "commit": "a" * 7}]
-        self.assertEqual(runner.key_of("img:1", a), runner.key_of("img:1", list(a)))
-        self.assertNotEqual(runner.key_of("img:1", a), runner.key_of("img:2", a))
+        self.assertEqual(runner.key_of("img:1", a, "c1"), runner.key_of("img:1", list(a), "c1"))
+        self.assertNotEqual(runner.key_of("img:1", a, "c1"), runner.key_of("img:2", a, "c1"))
+        self.assertNotEqual(runner.key_of("img:1", a, "c1"), runner.key_of("img:1", a, "c2"))
+
+    def test_the_code_fingerprint_is_its_content_not_its_times(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            (root / ".git" / "HEAD").write_text("x")
+            (root / "a.py").write_text("1")
+            before = runner.fingerprint(root)
+            os.utime(root / "a.py", ns=(1, 1))
+            (root / ".git" / "HEAD").write_text("y")
+            self.assertEqual(runner.fingerprint(root), before)
+            (root / "a.py").write_text("2")
+            self.assertNotEqual(runner.fingerprint(root), before)
 
 
 class TheTests(Root):
@@ -117,7 +132,11 @@ class TheTests(Root):
 
     def test_a_pass_and_nothing_to_run(self):
         self.assertTrue(self.classify({"ok": True, "exit_code": 0}, {"tests": 3, "failures": 0, "errors": 0})["ok"])
-        self.assertTrue(self.classify({"ok": False, "exit_code": 1}, {"tests": 0, "failures": 0, "errors": 0})["skipped"])
+        self.assertTrue(self.classify({"ok": True, "exit_code": 0}, {"tests": 0, "failures": 0, "errors": 0})["skipped"])
+
+    def test_no_tests_from_a_failed_command_is_an_error(self):
+        result = self.classify({"ok": False, "exit_code": 1}, {"tests": 0, "failures": 0, "errors": 0})
+        self.assertEqual((result["ok"], result["failure"]), (False, "error"))
 
 
 class TheRequests(Root):
@@ -143,11 +162,25 @@ class TheRequests(Root):
 
 class TheRelay(Root):
     def config(self):
-        return {"paths": {"/data": str(self.root)}, "timeout": 10, "instance_id": "i-1", "host": "10.0.0.1"}
+        return {"paths": {"/data": str(self.root)}, "timeout": 10, "instance_id": "i-1", "host": "10.0.0.1",
+                "code_root": str(self.root / "runs"), "max_open_hours": 3}
 
-    def test_container_paths_map_to_the_server(self):
-        self.assertEqual(relay.host_path("/data/runs/R1/app", {"/data": "/var/lib/tbo-worker"}), Path("/var/lib/tbo-worker/runs/R1/app"))
-        self.assertEqual(relay.host_path("/database/x", {"/data": "/var/lib/tbo-worker"}), Path("/database/x"))
+    def test_a_clone_comes_only_from_the_workers_runs(self):
+        (self.root / "runs" / "R1" / "app").mkdir(parents=True)
+        paths, runs = {"/data": str(self.root)}, str(self.root / "runs")
+        self.assertEqual(relay.host_path("/data/runs/R1/app", paths, runs), (self.root / "runs" / "R1" / "app").resolve())
+        self.assertIsNone(relay.host_path("/data/runs/../../etc", paths, runs))
+        self.assertIsNone(relay.host_path("/data/env", paths, runs))
+        self.assertIsNone(relay.host_path("/etc/passwd", paths, runs))
+
+    def test_stale_sandboxes_stop_keeping_the_fix_server_on(self):
+        hub = relay.Relay(self.config())
+        now = time.time()
+        hub.open = {"sbx-a": {"since": now}, "sbx-b": {"since": now}, "sbx-old": {"since": now - 4 * 3600}}
+        hub.prune(None)
+        self.assertEqual(sorted(hub.open), ["sbx-a", "sbx-b"])
+        hub.prune({"sbx-a"})
+        self.assertEqual(sorted(hub.open), ["sbx-a"])
 
     def test_the_signature_is_aws_v4(self):
         headers = relay.signed("ap-south-1", "Action=StartInstances", "AKIDEXAMPLE", "secret", "token",

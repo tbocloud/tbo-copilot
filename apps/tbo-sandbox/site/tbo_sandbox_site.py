@@ -45,7 +45,11 @@ def try_changes(changes: list) -> list:
             if not isinstance(e, frappe.ValidationError):
                 trial["trace"] = traceback.format_exc()[-1500:]
         finally:
-            frappe.db.rollback(save_point="tbo_try")
+            try:
+                frappe.db.rollback(save_point="tbo_try")
+            except Exception:  # noqa: BLE001 - a lost savepoint must not lose the other results
+                trial.update(ok=False, error=trial.get("error") or "the dry run could not be rolled back")
+                frappe.db.rollback()
         trials.append(trial)
     frappe.db.rollback()
     return trials

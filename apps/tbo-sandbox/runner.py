@@ -149,10 +149,19 @@ def app_set(spec: dict) -> list[dict]:
     return sorted(apps, key=lambda a: a["app"])
 
 
-def key_of(image: str, apps: list[dict]) -> str:
-    """One image and snapshot per base image, set of apps and recipe: a changed recipe builds afresh."""
+def fingerprint(root: Path) -> str:
+    """The content of the code that goes into the image (not its times: each start unpacks afresh)."""
+    digest = hashlib.sha256()
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and not {".git", "node_modules"} & set(p.relative_to(root).parts)):
+        digest.update(f"{path.relative_to(root)}\0".encode() + hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def key_of(image: str, apps: list[dict], code: str) -> str:
+    """One image and snapshot per base image, set of apps, the fixed app's code and the recipe:
+    the snapshot never holds what an earlier edit installed or migrated."""
     recipe = hashlib.sha256(b"".join((HERE / "site" / name).read_bytes() for name in ("Dockerfile", "tbo_sandbox_site.py"))).hexdigest()
-    text = json.dumps({"image": image, "apps": apps, "recipe": recipe}, sort_keys=True)
+    text = json.dumps({"image": image, "apps": apps, "code": code, "recipe": recipe}, sort_keys=True)
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
@@ -160,8 +169,13 @@ def ensure_image(key: str, base: str, apps: list[dict], mounted: tuple[str, Path
     """The bench image for this set of apps: built once and kept. The app being fixed comes
     from the worker's code; the others are cloned at the commit the site runs."""
     tag = f"tbo-sandbox:{key}"
-    if docker("image", "inspect", tag, check=False).returncode == 0:
-        return tag, []
+    found = docker("image", "inspect", "--format", '{{index .Config.Labels "tbo.missing"}}', tag, check=False)
+    if found.returncode == 0:
+        if not found.stdout.decode().strip():
+            return tag, []
+        # an app was missing when it was built (GitHub down, say): try again rather than reuse it
+        docker("rmi", "-f", tag, check=False)
+        shutil.rmtree(ROOT / "snapshots" / key, ignore_errors=True)
     notes = []
     with tempfile.TemporaryDirectory(dir=ROOT) as context:
         context = Path(context)
@@ -182,7 +196,8 @@ def ensure_image(key: str, base: str, apps: list[dict], mounted: tuple[str, Path
             shutil.rmtree(target / ".git", ignore_errors=True)
         shutil.copy(HERE / "site" / "Dockerfile", context / "Dockerfile")
         shutil.copy(HERE / "site" / "tbo_sandbox_site.py", context / "tbo_sandbox_site.py")
-        docker("build", "--quiet", "--build-arg", f"BASE={base}", "-t", tag, str(context), timeout=3600)
+        missing = ",".join(item["app"] for item in apps if not (context / "apps" / item["app"]).exists())
+        docker("build", "--quiet", "--build-arg", f"BASE={base}", "--label", f"tbo.missing={missing}", "-t", tag, str(context), timeout=3600)
     return tag, notes
 
 
@@ -273,13 +288,14 @@ def op_start(request: dict) -> dict:
     apps = app_set(spec)
     if mount.get("app") not in {a["app"] for a in apps}:
         raise Refused(f"{mount.get('app')} is not among the site's apps")
+    prune_old()
     sandbox = f"sbx-{secrets.token_hex(6)}"
     here = ROOT / "runs" / sandbox
     (here / "code").mkdir(parents=True)
     touch_busy()
     try:
         app = unpack(code, here / "code" / mount["app"])
-        key = key_of(config["erpnext_image"], apps)
+        key = key_of(config["erpnext_image"], apps, fingerprint(here / "code" / app))
         image, notes = ensure_image(key, config["erpnext_image"], apps, (app, here / "code" / app))
         snapshot = ensure_snapshot(key, image, config)
         meta = json.loads((snapshot / "meta.json").read_text())
@@ -334,7 +350,7 @@ def tested(sandbox: str, args: list[str], timeout: int) -> dict:
     """A test run, classified from its report: a failed assertion or an error, never guessed from the words."""
     result = run_bench(sandbox, [*args, "--junit-xml-output", "/tmp/tbo-junit.xml"], timeout)
     report = junit(sandbox)
-    if report and report["tests"] == 0:
+    if report and report["tests"] == 0 and result["ok"]:
         return {**result, "ok": True, "skipped": True}
     if result["ok"] and report.get("failures", 0) == 0 and report.get("errors", 0) == 0:
         return result
@@ -400,6 +416,13 @@ def stop(sandbox: str):
         docker("rm", "-f", n[key], check=False)
     docker("network", "rm", n["net"], check=False)
     shutil.rmtree(ROOT / "runs" / sandbox, ignore_errors=True)
+
+
+def prune_old(hours: int = 24):
+    """Removes sandboxes older than a day: their worker died before `stop`."""
+    for path in (ROOT / "runs").glob("sbx-*"):
+        if SANDBOX_ID.match(path.name) and time.time() - path.stat().st_mtime > hours * 3600:
+            stop(path.name)
 
 
 def op_stop(request: dict) -> None:
