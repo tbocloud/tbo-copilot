@@ -114,4 +114,4 @@ connected), investigated by the worker: Luna on 17 Oct, Kimi on 12 Oct.
   answered "unclear" with the questions to ask, rather than guessing. A connected site (error logs, customizations,
   version history) is the next thing to measure.
 - **Counting fixed on the way:** OpenAI's Responses API reports the input it writes to its cache apart from the
-  other input; the worker now counts it, which the first Luna run did not (it showed a third of the real tokens).
+  other input; the worker now counts it, which the first Luna run did not (it showed about a third of the real cost).
