@@ -257,5 +257,6 @@ request into `tbo`.
 - [system-design.md](./system-design.md): the full system design (approved 8 Oct 2026).
 - [build-plan.md](./build-plan.md): the build plan with a status per phase.
 - [models.md](./models.md): which AI model does which job, the providers' data terms, and the desktop app's setup.
+- [worker-server.md](./worker-server.md): running the Copilot worker server, and what to do when something goes wrong.
 - One plan per phase, approved before building: [Phase 0](./phases/phase-0.md), [Phase 1a](./phases/phase-1a.md),
   [Phase 1b](./phases/phase-1b.md).

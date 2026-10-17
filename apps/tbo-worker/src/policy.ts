@@ -56,6 +56,12 @@ export function answersFor(request: Pick<AskToolRequest, "questions">): string[]
   return request.questions.map(() => [INPUT_ANSWER]);
 }
 
+/** The dollar limit of a run: the smallest of the caps that are set (above 0); 0 when none is. */
+export function smallestCap(...caps: unknown[]): number {
+  const set = caps.map(Number).filter((cap) => Number.isFinite(cap) && cap > 0);
+  return set.length ? Math.min(...set) : 0;
+}
+
 /** `tokensIn` counts every input token, `tokensCached` the part the provider served from its cache. */
 export type Spend = { toolCalls: number; tokensIn: number; tokensCached: number; tokensOut: number; startedAt: number };
 export type Prices = Pick<ModelConfig, "modelId" | "priceInPerMillion" | "priceOutPerMillion" | "priceCachedPerMillion">;
