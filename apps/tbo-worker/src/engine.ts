@@ -44,7 +44,8 @@ export type EngineOptions = {
 
 export type TurnObserver = {
   onToolStart?(event: { toolCallId: string; toolName: string; args: unknown; delegate?: string }): void;
-  onToolEnd?(event: { toolCallId: string; toolName: string; isError: boolean; ms: number; result: string }): void;
+  /** `result` is a short preview; `text` the result as the model saw it, up to 64,000 characters. */
+  onToolEnd?(event: { toolCallId: string; toolName: string; isError: boolean; ms: number; result: string; text?: string }): void;
   onPermissionDenied?(request: ToolPermissionRequest): void;
   onPermissionAllowed?(request: ToolPermissionRequest): void;
   onInputAnswered?(request: AskToolRequest): void;
@@ -289,6 +290,7 @@ export class Engine {
             isError: Boolean(event.isError),
             ms: begin ? Date.now() - begin.at : 0,
             result: preview(event.result),
+            text: preview(event.result, 64_000),
           });
           return;
         }

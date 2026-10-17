@@ -11,6 +11,7 @@ import { StageModels, noModelReason, stageModels, type StageModel } from "./mode
 import { RunBudget, smallestCap } from "./policy.js";
 import { NUDGE, finalPrompt, turnPrompt } from "./prompt.js";
 import type { Sandbox } from "./sandbox.js";
+import { SuspiciousWatch } from "./suspicious.js";
 import { runTool, type RunTools } from "./tools.js";
 import { prepareWorkspace, removeWorkspace, workspaceRoot, type Workspace, type WorkspaceOptions } from "./workspace.js";
 
@@ -345,6 +346,7 @@ export class Worker {
     state: RunState,
     session: () => string | undefined,
   ): TurnObserver & { check: () => void } {
+    const watch = new SuspiciousWatch();
     const check = () => {
       const reason = budget.exceeded();
       const id = session();
@@ -364,8 +366,10 @@ export class Worker {
         const id = session();
         if (state.finalToolCalls > FINAL_TURN_TOOL_CALLS && !state.submitted && id) void this.engine.abort(id);
       },
-      onToolEnd: ({ toolName, isError, ms, result }) => {
+      onToolEnd: ({ toolName, isError, ms, result, text }) => {
         outbox.push("tool_result", { tool: toolName, is_error: isError, ms, ...(isError ? { error: result.slice(0, 500) } : {}) });
+        // text that tries to instruct the AI: recorded for the team, whatever the model makes of it
+        for (const line of watch.check(text ?? result)) outbox.push("suspicious_instruction", { tool: toolName, text: line });
       },
       onPermissionDenied: (request) => {
         state.denied += 1;
