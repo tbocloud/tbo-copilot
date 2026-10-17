@@ -96,6 +96,16 @@ describe("loadConfig", () => {
     expect(both.model).toMatchObject({ modelId: "kimi-k2.6", apiKey: "m" });
   });
 
+  it("sends a key only over https, or plain http to this machine", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
+    const env = (url: string) => ({ ...required, TBO_PROVIDER_OPENAI_API_KEY: "sk-o", TBO_PROVIDER_OPENAI_BASE_URL: url });
+    expect(() => loadConfig({ dir, env: env("http://models.example.com/v1") })).toThrow("TBO_PROVIDER_OPENAI_BASE_URL must use https");
+    expect(() => loadConfig({ dir, env: env("not a url") })).toThrow("is not a valid URL");
+    expect(() => loadConfig({ dir, env: { ...required, TBO_MODEL_BASE_URL: "http://models.example.com/v1" } })).toThrow("TBO_MODEL_BASE_URL must use https");
+    expect(loadConfig({ dir, env: env("http://127.0.0.1:4000/v1/") }).providers[0]!.baseUrl).toBe("http://127.0.0.1:4000/v1");
+    expect(loadConfig({ dir, env: env("http://localhost:4000/v1") }).providers[0]!.baseUrl).toBe("http://localhost:4000/v1");
+  });
+
   it("refuses a limit or interval of 0 or less, but allows 0 for prices and the dollar limit", () => {
     const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
     expect(() => loadConfig({ dir, env: { ...required, TBO_MAX_MINUTES: "-1" } })).toThrow(ConfigError);

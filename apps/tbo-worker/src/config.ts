@@ -162,6 +162,22 @@ function nonNegative(value: string | undefined, fallback: number, name: string):
   return parsed;
 }
 
+/** A model address, without trailing slashes. A key only travels encrypted: https, or plain http to this machine (a local test model). */
+function modelUrl(raw: string, name: string): string {
+  const value = raw.replace(/\/+$/, "");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ConfigError(`${name} is not a valid URL`);
+  }
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) {
+    throw new ConfigError(`${name} must use https (plain http only to this machine)`);
+  }
+  return value;
+}
+
 /** The env file's path inside the worker's folder. */
 export function envFilePath(dir: string): string {
   return join(dir, "env");
@@ -204,7 +220,7 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
       {
         section: provider.section,
         providerName: provider.providerName,
-        baseUrl: (value("BASE_URL") || provider.baseUrl).replace(/\/+$/, ""),
+        baseUrl: modelUrl(value("BASE_URL") || provider.baseUrl, `${provider.prefix}_BASE_URL`),
         apiKey: key,
         apiStyle: value("API_STYLE") || provider.apiStyle,
         contextWindow: positive(value("CONTEXT_WINDOW"), 256_000, `${provider.prefix}_CONTEXT_WINDOW`),
@@ -237,7 +253,7 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
       ? {
           model: {
             providerName: env.TBO_MODEL_PROVIDER_NAME?.trim() || "TBO Worker model",
-            baseUrl: (env.TBO_MODEL_BASE_URL?.trim() || DEFAULT_MODEL_BASE_URL).replace(/\/+$/, ""),
+            baseUrl: modelUrl(env.TBO_MODEL_BASE_URL?.trim() || DEFAULT_MODEL_BASE_URL, "TBO_MODEL_BASE_URL"),
             modelId: env.TBO_MODEL_ID?.trim() || DEFAULT_MODEL_ID,
             apiKey,
             apiStyle: env.TBO_MODEL_API_STYLE?.trim() || "chat_completions",
