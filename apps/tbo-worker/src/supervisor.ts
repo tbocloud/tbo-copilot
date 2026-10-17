@@ -156,7 +156,7 @@ export class Worker {
     return job ? this.process(job) : null;
   }
 
-  /** The engine's provider and model for a stage's model, set up once. */
+  /** The engine's provider and model for a stage's model, set up once. A provider name has one address and key (config.ts). */
   private async engineModel(model: ModelConfig): Promise<{ providerId: string; modelId: string }> {
     const key = `${model.providerName}|${model.modelId}`;
     let known = this.models.get(key);

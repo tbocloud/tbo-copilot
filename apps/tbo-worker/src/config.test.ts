@@ -96,6 +96,12 @@ describe("loadConfig", () => {
     expect(both.model).toMatchObject({ modelId: "kimi-k2.6", apiKey: "m" });
   });
 
+  it("keeps the older model's provider name apart from the providers'", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
+    expect(() => loadConfig({ dir, env: { ...required, TBO_MODEL_PROVIDER_NAME: "TBO Worker · OpenAI" } })).toThrow("TBO_MODEL_PROVIDER_NAME must not be");
+    expect(loadConfig({ dir, env: { ...required, TBO_MODEL_PROVIDER_NAME: "Kimi" } }).model?.providerName).toBe("Kimi");
+  });
+
   it("sends a key only over https, or plain http to this machine", () => {
     const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
     const env = (url: string) => ({ ...required, TBO_PROVIDER_OPENAI_API_KEY: "sk-o", TBO_PROVIDER_OPENAI_BASE_URL: url });

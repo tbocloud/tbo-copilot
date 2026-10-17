@@ -228,6 +228,11 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
       },
     ];
   });
+  // the engine knows a provider by its name: the older model's own name keeps it apart from the providers above
+  const modelProviderName = env.TBO_MODEL_PROVIDER_NAME?.trim() || "TBO Worker model";
+  if (apiKey && PROVIDERS.some((provider) => provider.providerName === modelProviderName)) {
+    throw new ConfigError(`TBO_MODEL_PROVIDER_NAME must not be "${modelProviderName}": that name belongs to a TBO_PROVIDER_* provider`);
+  }
   if (!apiKey && !providers.length) missing.push("TBO_PROVIDER_OPENAI_API_KEY (or TBO_PROVIDER_MOONSHOT_API_KEY, or the older TBO_MODEL_API_KEY)");
   const hostCoreBinary = env.TBO_HOST_CORE_BIN?.trim() || findHostCore() || "";
   const sidecarEntry = env.TBO_SIDECAR?.trim() || findSidecar() || "";
@@ -252,7 +257,7 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
     ...(apiKey
       ? {
           model: {
-            providerName: env.TBO_MODEL_PROVIDER_NAME?.trim() || "TBO Worker model",
+            providerName: modelProviderName,
             baseUrl: modelUrl(env.TBO_MODEL_BASE_URL?.trim() || DEFAULT_MODEL_BASE_URL, "TBO_MODEL_BASE_URL"),
             modelId: env.TBO_MODEL_ID?.trim() || DEFAULT_MODEL_ID,
             apiKey,
