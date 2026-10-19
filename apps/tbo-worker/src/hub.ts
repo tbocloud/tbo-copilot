@@ -187,8 +187,8 @@ export class HubClient {
     return this.method("helpdesk.api.copilot_worker.repo_token", { run, lease_token: leaseToken, repository }, this.worker);
   }
 
-  /** One picture or video of the run's ticket, as bytes, while the lease holds. */
-  async ticketFile(run: string, leaseToken: string, fileUrl: string): Promise<Buffer> {
+  /** One picture or video of the run's ticket, as bytes, while the lease holds; never more than `maxBytes` read. */
+  async ticketFile(run: string, leaseToken: string, fileUrl: string, maxBytes = 50 * 1024 * 1024): Promise<Buffer> {
     const response = await this.fetchImpl(this.url + METHOD + "helpdesk.api.copilot_worker.ticket_file", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `token ${this.worker.apiKey}:${this.worker.apiSecret}` },
@@ -206,7 +206,26 @@ export class HubClient {
       const { message, excType } = frappeError(parsed, `ticket_file failed with HTTP ${response.status}`);
       throw new HubError(message, response.status, excType);
     }
-    return Buffer.from(await response.arrayBuffer());
+    const tooLarge = () => new Error(`larger than ${Math.round(maxBytes / (1024 * 1024))} MB`);
+    if (Number(response.headers.get("content-length") || 0) > maxBytes) {
+      await response.body?.cancel();
+      throw tooLarge();
+    }
+    // counted while reading: a missing or wrong length never lets more in
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw tooLarge();
+      }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks);
   }
 
   async heartbeat(run: string, leaseToken: string, stage: string): Promise<{ action: string }> {

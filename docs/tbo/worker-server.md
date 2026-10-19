@@ -42,8 +42,9 @@ Settings → AI providers and are not the worker's.
 
 ## Disk
 
-Old images and stopped containers: `docker image prune -f` and `docker container prune -f` on both servers, once a
-month or when `df -h` shows less than 20% free. The sandbox runner removes each throwaway site after its fix, and
+Old images: `docker image prune -f` on both servers, once a month or when `df -h` shows less than 20% free. Never
+prune containers on the worker server: a stopped `tbo-worker` would be deleted with them (if that happens, create it
+again with the run command in `apps/tbo-worker/deploy/README.md`). The sandbox runner removes each throwaway site after its fix, and
 when a new one starts it removes any left over for more than a day.
 
 ## Incidents

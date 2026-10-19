@@ -87,7 +87,10 @@ export async function videoFrames(video: string, outDir: string, stem: string, f
         (error) => (error ? reject(error) : resolveRun()),
       );
     });
-  const made = async () => (await readdir(outDir)).filter((name) => name.startsWith(`${stem}-`) && name.endsWith(".jpg")).sort();
+  // exactly this video's frames: `clip-2`'s frames are not `clip`'s
+  const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const own = new RegExp(`^${escaped}-\\d+\\.jpg$`);
+  const made = async () => (await readdir(outDir)).filter((name) => own.test(name)).sort();
   await run(`select='eq(n,0)+gt(scene,0.3)',${scale}`);
   if ((await made()).length < 2) await run(`fps=1/5,${scale}`);
   return made();
@@ -102,12 +105,15 @@ async function ticketFiles(context: RunContext, root: string, contextDir: string
   const frames: string[] = [];
   for (const file of files.slice(0, MAX_TICKET_FILES)) {
     const label = file.file_name ?? "a file";
+    // a file's name goes into INDEX.md: never as the customer wrote it (no line breaks, no markup)
+    const shown = safeFileName(label, new Set());
     if ((file.file_size ?? 0) > MAX_TICKET_FILE_BYTES) {
-      problems.push(`${label}: larger than 50 MB, not read`);
+      problems.push(`${shown}: larger than 50 MB, not read`);
       continue;
     }
     try {
       const content = await options.fetchFile(String(file.file_url));
+      if (content.length > MAX_TICKET_FILE_BYTES) throw new Error("larger than 50 MB");
       const name = safeFileName(label, taken);
       if (PICTURE.test(label)) {
         await mkdir(join(contextDir, "files"), { recursive: true });
@@ -120,14 +126,15 @@ async function ticketFiles(context: RunContext, root: string, contextDir: string
       const video = join(scratch, name);
       await writeFile(video, content);
       try {
-        const made = await videoFrames(video, join(contextDir, "frames"), name.replace(/\.[^.]*$/, ""), options.ffmpeg);
+        // the whole safe name, its dot included, so clip.mp4 and clip.mov never share frames
+        const made = await videoFrames(video, join(contextDir, "frames"), name.replace(/\./g, "_"), options.ffmpeg);
         frames.push(...made);
-        if (!made.length) problems.push(`${label}: no frames could be taken from the video`);
+        if (!made.length) problems.push(`${shown}: no frames could be taken from the video`);
       } finally {
         await rm(scratch, { recursive: true, force: true });
       }
     } catch (error) {
-      problems.push(`${label}: not read (${String((error as Error).message ?? error).slice(0, 160)})`);
+      problems.push(`${shown}: not read (${String((error as Error).message ?? error).replace(/\s+/g, " ").slice(0, 160)})`);
     }
   }
   if (files.length > MAX_TICKET_FILES) problems.push(`${files.length - MAX_TICKET_FILES} more pictures or videos on the ticket were not read`);
