@@ -60,7 +60,8 @@ const SECRET_SHAPES: RegExp[] = [
   /\bxox[baprs]-[A-Za-z0-9-]{10,}/g,
   /[A-Za-z0-9+/_=-]{32,}/g, // any long opaque string: a token, a key, a signature
 ];
-const SECRET_ASSIGNMENT = /\b(password|passwd|secret|token|api[_-]?key|apikey|client[_-]?secret)\b(\s*[:=]\s*)(["']?)[^\s"']{4,}\3/gi;
+// the whole value: a quoted one with its spaces ("correct horse battery staple"), or a bare word
+const SECRET_ASSIGNMENT = /\b(password|passwd|secret|token|api[_-]?key|apikey|client[_-]?secret)\b(\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s"']{4,})/gi;
 
 /** The line with anything shaped like a secret replaced, so it can go into an event. */
 export function redactSecrets(line: string): string {

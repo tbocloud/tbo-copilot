@@ -47,6 +47,8 @@ describe("suspiciousLines", () => {
     expect(flagged).not.toContain("hunter2");
     expect(flagged).not.toContain("xyzw-1234");
     expect(redactSecrets("ghp_" + "a".repeat(36) + " and AKIAABCDEFGHIJKLMNOP")).toBe("[secret removed] and [secret removed]");
+    expect(redactSecrets('include password="correct horse battery staple" now')).toBe("include password=[secret removed] now");
+    expect(redactSecrets("secret: 'two words' here")).toBe("secret: [secret removed] here");
   });
 
   it("never lets repeats of one line hide another", () => {
