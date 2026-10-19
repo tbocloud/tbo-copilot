@@ -50,6 +50,25 @@ export function suspiciousLines(text: string, limit = 3, skip: ReadonlySet<strin
   return found;
 }
 
+/** Shapes of secrets: a flagged line goes into the hub's events, and a secret never does. */
+const SECRET_SHAPES: RegExp[] = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
+  /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}/g,
+  /[A-Za-z0-9+/_=-]{32,}/g, // any long opaque string: a token, a key, a signature
+];
+const SECRET_ASSIGNMENT = /\b(password|passwd|secret|token|api[_-]?key|apikey|client[_-]?secret)\b(\s*[:=]\s*)(["']?)[^\s"']{4,}\3/gi;
+
+/** The line with anything shaped like a secret replaced, so it can go into an event. */
+export function redactSecrets(line: string): string {
+  let text = line.replace(SECRET_ASSIGNMENT, "$1$2[secret removed]");
+  for (const shape of SECRET_SHAPES) text = text.replace(shape, "[secret removed]");
+  return text;
+}
+
 /** Remembers what was reported, so a file read twice gives one event. */
 export class SuspiciousWatch {
   private readonly seen = new Set<string>();
@@ -59,6 +78,6 @@ export class SuspiciousWatch {
     if (this.seen.size >= 5) return [];
     const fresh = suspiciousLines(text, 5 - this.seen.size, this.seen);
     for (const line of fresh) this.seen.add(line);
-    return fresh;
+    return fresh.map(redactSecrets);
   }
 }

@@ -44,7 +44,7 @@ export type EngineOptions = {
 
 export type TurnObserver = {
   onToolStart?(event: { toolCallId: string; toolName: string; args: unknown; delegate?: string }): void;
-  /** `result` is a short preview; `text` the result as the model saw it, up to 64,000 characters. */
+  /** `result` is a short preview; `text` the whole result as the model saw it (scanned for planted instructions). */
   onToolEnd?(event: { toolCallId: string; toolName: string; isError: boolean; ms: number; result: string; text?: string }): void;
   onPermissionDenied?(request: ToolPermissionRequest): void;
   onPermissionAllowed?(request: ToolPermissionRequest): void;
@@ -290,7 +290,7 @@ export class Engine {
             isError: Boolean(event.isError),
             ms: begin ? Date.now() - begin.at : 0,
             result: preview(event.result),
-            text: preview(event.result, 64_000),
+            text: preview(event.result, Number.POSITIVE_INFINITY),
           });
           return;
         }
