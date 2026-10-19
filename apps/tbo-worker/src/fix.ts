@@ -355,6 +355,7 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
     workspace = await prepareWorkspace(job, {
       ...deps.workspaceOptions(),
       writable: { app: chosen.app.app, branch: fix.branch, email: fix.commit_email, token: key.token },
+      fetchFile: (fileUrl) => hub.ticketFile(run, job.lease_token, fileUrl),
     });
     const target = workspace.writable;
     if (!target) return await fail(`${chosen.repo} could not be cloned: ${workspace.problems.join("; ") || "no reason given"}`);

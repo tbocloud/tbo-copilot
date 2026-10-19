@@ -216,7 +216,11 @@ export class Worker {
         await this.fail(job, outbox, reason);
         return report("failed", reason);
       }
-      workspace = await prepareWorkspace(job, this.workspaceOptions());
+      workspace = await prepareWorkspace(job, {
+        ...this.workspaceOptions(),
+        // the ticket's pictures and videos, through the hub while the lease holds
+        fetchFile: (fileUrl) => this.hub.ticketFile(job.run, job.lease_token, fileUrl),
+      });
       outbox.push("workspace", {
         apps: workspace.apps.map(({ app, repository, commit, source, note }) => ({ app, repository, commit, source, note })),
         problems: workspace.problems,

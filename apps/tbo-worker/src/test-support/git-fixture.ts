@@ -63,3 +63,6 @@ export function makeRedTeamRepo(outside: string): FixtureRepo {
   git(dir, "commit", "--quiet", "-m", "red team fixture");
   return { dir, commits: [git(dir, "rev-parse", "HEAD")] };
 }
+
+/** A one-pixel PNG, for tests that hand the model a picture. */
+export const TINY_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
