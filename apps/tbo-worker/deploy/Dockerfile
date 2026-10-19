@@ -27,9 +27,10 @@ RUN cargo build --release -p host-core \
     && rm -rf target
 
 FROM node:22-bookworm-slim
-# git: the worker clones the customer's apps; ssh: the sandbox runner on the fix server (Phase 1c-2).
+# git: the worker clones the customer's apps; ssh: the sandbox runner on the fix server (Phase 1c-2);
+# ffmpeg: a ticket's video becomes frames the model can look at (Phase 6).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
+    && apt-get install -y --no-install-recommends git ca-certificates openssh-client ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/bin/pi-desktop-host-core /usr/local/bin/pi-desktop-host-core
 COPY --from=build --chown=node:node /src /opt/tbo-copilot

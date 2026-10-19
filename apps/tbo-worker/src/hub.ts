@@ -25,6 +25,8 @@ export type FixContext = {
   max_usd: number;
   commit_email: string;
   repositories: string[];
+  /** What people asked for when they rejected earlier fixes of this run (newest first). */
+  guidance?: string[];
 };
 
 export type Diagnosis = {
@@ -59,12 +61,15 @@ export type RunContext = {
   site?: { registry?: string; environment?: string; site_url?: string; apps: SiteApp[] } | null;
   connection?: string | null;
   conversation?: Array<{ kind?: string; direction?: string; sender?: string; content?: string; at?: string }>;
-  files?: Array<Record<string, unknown>>;
+  /** The ticket's attachments; the worker downloads the pictures and videos (`HubClient.ticketFile`). */
+  files?: Array<{ file_name?: string; file_url?: string; is_private?: number; file_size?: number }>;
   previous_runs?: Array<Record<string, unknown>>;
   /** An agent asked for the correction of the customer's own mistake (Phase 3). */
   prepare_correction?: boolean;
   /** This ticket's corrections so far: a new look prepares only the records they missed. */
   corrections?: Array<{ change_set: string; status: string; summary?: string; found_by?: string; applied_at?: string; records?: number }>;
+  /** The pilot's per-run caps from TBO Support (HDS Copilot Settings); a fix has its own in `fix.max_usd`. */
+  limits?: { max_usd?: number };
   /** Each worker job's models in TBO Support's order (main, then fallback), with USD per million tokens; never a key. */
   models?: Partial<Record<"investigate" | "fix" | "review", Array<{ section: string; model: string; price_in?: number; price_out?: number; price_cached?: number }>>>;
 };
@@ -180,6 +185,47 @@ export class HubClient {
   /** A fix job's one-hour key to clone and push one of the site's repositories (the hub's GitHub App). */
   async repoToken(run: string, leaseToken: string, repository: string): Promise<{ token: string; expires_at: string; repository: string }> {
     return this.method("helpdesk.api.copilot_worker.repo_token", { run, lease_token: leaseToken, repository }, this.worker);
+  }
+
+  /** One picture or video of the run's ticket, as bytes, while the lease holds; never more than `maxBytes` read. */
+  async ticketFile(run: string, leaseToken: string, fileUrl: string, maxBytes = 50 * 1024 * 1024): Promise<Buffer> {
+    const response = await this.fetchImpl(this.url + METHOD + "helpdesk.api.copilot_worker.ticket_file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `token ${this.worker.apiKey}:${this.worker.apiSecret}` },
+      body: JSON.stringify({ run, lease_token: leaseToken, file_url: fileUrl }),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    if (response.status >= 400) {
+      const text = await response.text();
+      let parsed: unknown = text;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        // not JSON
+      }
+      const { message, excType } = frappeError(parsed, `ticket_file failed with HTTP ${response.status}`);
+      throw new HubError(message, response.status, excType);
+    }
+    const tooLarge = () => new Error(`larger than ${Math.round(maxBytes / (1024 * 1024))} MB`);
+    if (Number(response.headers.get("content-length") || 0) > maxBytes) {
+      await response.body?.cancel();
+      throw tooLarge();
+    }
+    // counted while reading: a missing or wrong length never lets more in
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw tooLarge();
+      }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks);
   }
 
   async heartbeat(run: string, leaseToken: string, stage: string): Promise<{ action: string }> {

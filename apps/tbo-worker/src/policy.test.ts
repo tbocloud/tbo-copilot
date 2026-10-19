@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { EventOutbox, boundPayload } from "./events.js";
-import { INPUT_ANSWER, PERMISSION_DECISION, RunBudget, answersFor } from "./policy.js";
+import { INPUT_ANSWER, PERMISSION_DECISION, RunBudget, answersFor, smallestCap } from "./policy.js";
 
 describe("the read-only policy", () => {
   it("refuses every permission prompt and answers every question itself", () => {
@@ -62,6 +62,13 @@ describe("RunBudget", () => {
       stages: [{ job: "investigate", model: "gpt-5.6-luna", section: "OpenAI", fallback: false, tokens_in: 2_000_000, tokens_cached: 0, tokens_out: 1_000_000, usd: 3.7 }],
     });
     expect(budget.exceeded()).toContain("tokens");
+  });
+
+  it("takes the smallest dollar cap that is set", () => {
+    expect(smallestCap(2, 1)).toBe(1);
+    expect(smallestCap(0, 1)).toBe(1);
+    expect(smallestCap(2, undefined)).toBe(2);
+    expect(smallestCap(0, null, "x")).toBe(0);
   });
 
   it("counts the input a provider reports as written to its cache as fresh input", () => {

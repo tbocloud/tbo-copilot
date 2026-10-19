@@ -63,4 +63,13 @@ describe("frappeError", () => {
     expect(frappeError({ exception: "Traceback\nfrappe.exceptions.PermissionError: nope" }, "x").message).toBe("frappe.exceptions.PermissionError: nope");
     expect(frappeError("not json", "fallback").message).toBe("fallback");
   });
+
+  it("reads a ticket's file only up to its limit, whatever the length header says", async () => {
+    const body = (size: number, length?: number) =>
+      (async () => new Response(new Uint8Array(size), { status: 200, headers: length === undefined ? {} : { "content-length": String(length) } })) as unknown as typeof fetch;
+    const client = (size: number, length?: number) => new HubClient("https://hub.example.com", { apiKey: "k", apiSecret: "s" }, { fetch: body(size, length) });
+    expect((await client(8).ticketFile("r", "t", "/f.png", 10)).length).toBe(8);
+    await expect(client(20).ticketFile("r", "t", "/f.png", 10)).rejects.toThrow("larger than");
+    await expect(client(5, 20).ticketFile("r", "t", "/f.png", 10)).rejects.toThrow("larger than");
+  });
 });

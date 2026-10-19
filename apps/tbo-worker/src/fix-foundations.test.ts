@@ -215,3 +215,14 @@ describe("the sandbox runner's client", () => {
     }
   });
 });
+
+describe("the fix prompt", () => {
+  it("carries what people asked for when they rejected an earlier fix", async () => {
+    const { fixPrompt } = await import("./fix-prompt.js");
+    const context = { run: "r", kind: "fix", ticket: { name: "0312" }, fix: { task: "TASK-1", closes: "", branch: "copilot/x", attempt: 2, max_usd: 3, commit_email: "c@x", repositories: [], guidance: ["use the price list rate", " "] } };
+    const prompt = fixPrompt(context, "alpha", "copilot/x", "a sandbox");
+    expect(prompt).toContain("An earlier fix was rejected");
+    expect(prompt).toContain("- use the price list rate");
+    expect(fixPrompt({ ...context, fix: { ...context.fix, guidance: [] } }, "alpha", "copilot/x", "a sandbox")).not.toContain("rejected");
+  });
+});
