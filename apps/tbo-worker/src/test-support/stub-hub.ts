@@ -14,6 +14,8 @@ export class StubHub {
   readonly calls: HubCall[] = [];
   readonly jobs: Job[] = [];
   readonly erpReplies: Record<string, string> = {};
+  /** The ticket's files the worker may download (`copilot_worker.ticket_file`), by file URL. */
+  readonly ticketFiles: Record<string, Buffer> = {};
   heartbeatAction = "continue";
   /** Makes the MCP endpoint answer 200 with this raw body (a broken proxy, an HTML page). */
   rawMcpReply: string | undefined;
@@ -64,6 +66,13 @@ export class StubHub {
       if (!job) return this.send(res, 200, { message: {} });
       this.leases.set(job.run, job.lease_token);
       return this.send(res, 200, { message: job });
+    }
+    if (path.endsWith("copilot_worker.ticket_file")) {
+      if (!this.leaseOk(String(body.run), String(body.lease_token))) return refused();
+      const file = this.ticketFiles[String(body.file_url)];
+      if (!file) return refused();
+      res.writeHead(200, { "Content-Type": "image/png" });
+      return void res.end(file);
     }
     if (path.endsWith("copilot_worker.repo_token")) {
       if (!this.leaseOk(String(body.run), String(body.lease_token))) return refused();

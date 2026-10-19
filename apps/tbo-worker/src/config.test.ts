@@ -81,6 +81,7 @@ describe("loadConfig", () => {
         apiStyle: "responses",
         contextWindow: 256_000,
         maxOutputTokens: 16_000,
+        supportsImages: true,
       },
     ]);
     expect(cfg.model).toBeUndefined();
@@ -100,6 +101,16 @@ describe("loadConfig", () => {
     const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
     expect(() => loadConfig({ dir, env: { ...required, TBO_MODEL_PROVIDER_NAME: "TBO Worker · OpenAI" } })).toThrow("TBO_MODEL_PROVIDER_NAME must not be");
     expect(loadConfig({ dir, env: { ...required, TBO_MODEL_PROVIDER_NAME: "Kimi" } }).model?.providerName).toBe("Kimi");
+  });
+
+  it("knows which models read images: OpenAI's yes, Moonshot's only when set", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
+    const cfg = loadConfig({ dir, env: { ...required, TBO_PROVIDER_OPENAI_API_KEY: "sk-o", TBO_PROVIDER_MOONSHOT_API_KEY: "sk-m" } });
+    expect(cfg.providers.map((provider) => [provider.section, provider.supportsImages])).toEqual([["OpenAI", true], ["Anthropic-compatible", false]]);
+    expect(cfg.model?.supportsImages).toBe(false); // the older model on Moonshot's address
+    const set = loadConfig({ dir, env: { ...required, TBO_PROVIDER_MOONSHOT_API_KEY: "sk-m", TBO_PROVIDER_MOONSHOT_IMAGES: "1", TBO_MODEL_BASE_URL: "https://api.openai.com/v1" } });
+    expect(set.providers[0]!.supportsImages).toBe(true);
+    expect(set.model?.supportsImages).toBe(true);
   });
 
   it("sends a key only over https, or plain http to this machine", () => {

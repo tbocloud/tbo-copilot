@@ -100,7 +100,7 @@ export function preview(value: unknown, limit = 600): string {
  */
 export class Engine {
   /** Each provider's models so far: a provider keeps every model a run may still use. */
-  private readonly providerModels = new Map<string, Map<string, { id: string; contextWindow: number; maxTokens: number }>>();
+  private readonly providerModels = new Map<string, Map<string, { id: string; contextWindow: number; maxTokens: number; supportsImages: boolean }>>();
 
   private constructor(
     private readonly host: HostProcess,
@@ -193,8 +193,8 @@ export class Engine {
    * already has, and makes it the default; permission mode `ask` by default too.
    */
   async configureModel(model: ModelConfig): Promise<{ providerId: string; modelId: string }> {
-    const known = this.providerModels.get(model.providerName) ?? new Map<string, { id: string; contextWindow: number; maxTokens: number }>();
-    known.set(model.modelId, { id: model.modelId, contextWindow: model.contextWindow, maxTokens: model.maxOutputTokens });
+    const known = this.providerModels.get(model.providerName) ?? new Map<string, { id: string; contextWindow: number; maxTokens: number; supportsImages: boolean }>();
+    known.set(model.modelId, { id: model.modelId, contextWindow: model.contextWindow, maxTokens: model.maxOutputTokens, supportsImages: Boolean(model.supportsImages) });
     this.providerModels.set(model.providerName, known);
     const { providers } = await this.host.call<{ providers: Array<{ id: string; name: string }> }>("providers.list", { includeDisabled: true });
     const fields = {

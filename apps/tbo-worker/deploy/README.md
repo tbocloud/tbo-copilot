@@ -31,6 +31,7 @@ sudo nano /var/lib/tbo-worker/env
 | `TBO_PROVIDER_OPENAI_API_KEY` | The worker's own OpenAI key (a project key with a monthly limit), for TBO Support's OpenAI section. Its API style defaults to `responses`: through Chat Completions, OpenAI's GPT-5.6 models refuse tools together with reasoning (found on the first run, 16 Oct 2026) |
 | `TBO_PROVIDER_MOONSHOT_API_KEY` | The Moonshot (Kimi) key, for TBO Support's Anthropic-compatible section; leave it out until Moonshot is topped up |
 | `TBO_PROVIDER_<OPENAI or MOONSHOT>_BASE_URL`, `_API_STYLE` | Only to change the defaults (`https://api.openai.com/v1`, `https://api.moonshot.ai/v1`) |
+| `TBO_PROVIDER_<OPENAI or MOONSHOT>_IMAGES` | Whether the model reads pictures (a ticket's screenshots and video frames): `1` or `0`. Default on for OpenAI, off for Moonshot; the older `TBO_MODEL_IMAGES` likewise (on for an OpenAI address) |
 
 Each stage (investigate, fix, review) takes its model and prices from TBO Support (Settings → AI providers, Models per
 job), main first; on a key, billing, wrong-model, server, network or timeout failure it restarts once on the other

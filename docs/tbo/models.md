@@ -40,6 +40,7 @@ address the worker's own file names, and a section the worker has no key for is 
 | `TBO_PROVIDER_OPENAI_API_KEY` | TBO Support's OpenAI section. Address `https://api.openai.com/v1`, API format OpenAI Responses (GPT-5.6 refuses tools with reasoning through Chat Completions) |
 | `TBO_PROVIDER_MOONSHOT_API_KEY` | TBO Support's Anthropic-compatible section (Kimi). Address `https://api.moonshot.ai/v1`, Chat Completions |
 | `TBO_PROVIDER_<OPENAI or MOONSHOT>_BASE_URL`, `_API_STYLE` | Only to change those defaults |
+| `TBO_PROVIDER_<OPENAI or MOONSHOT>_IMAGES` | Whether the model reads pictures: on for OpenAI, off for Moonshot unless set to `1` |
 | `TBO_MODEL_*` | The older single model for every stage; used when TBO Support names no model the worker has a key for |
 
 - **Each stage on its own model:** the investigation, the fix and the review each take their job's main model.

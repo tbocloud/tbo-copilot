@@ -1,6 +1,7 @@
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 
 import type { Job, RunContext, SiteApp } from "./hub.js";
 import { gitEnv, runGit } from "./repo-git.js";
@@ -47,7 +48,89 @@ export type WorkspaceOptions = {
   log?: (message: string, data?: Record<string, unknown>) => void;
   /** A fix job: this app is cloned with `token`, onto `branch`, left writable, committing as TBO Copilot. */
   writable?: { app: string; branch: string; email: string; token?: string };
+  /** Downloads one of the ticket's files from the hub (its pictures and videos go into `context/`). */
+  fetchFile?: (fileUrl: string) => Promise<Buffer>;
+  /** The ffmpeg binary that turns a ticket's video into frames (default `ffmpeg` on the PATH). */
+  ffmpeg?: string;
 };
+
+const PICTURE = /\.(png|jpe?g|gif|webp)$/i;
+const VIDEO = /\.(mp4|webm|mov|mkv)$/i;
+export const MAX_TICKET_FILES = 10;
+export const MAX_TICKET_FILE_BYTES = 50 * 1024 * 1024;
+export const MAX_FRAMES = 12;
+
+/** A file name safe on disk and in INDEX.md, unique among `taken`. */
+export function safeFileName(name: string, taken: Set<string>): string {
+  const base = basename(name || "file").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "").slice(0, 80) || "file";
+  let candidate = base;
+  for (let n = 2; taken.has(candidate.toLowerCase()); n += 1) candidate = base.replace(/(\.[^.]*)?$/, `-${n}$1`);
+  taken.add(candidate.toLowerCase());
+  return candidate;
+}
+
+/** Up to MAX_FRAMES frames of a video at scene changes (one every 5 seconds for a still screen). */
+export async function videoFrames(video: string, outDir: string, stem: string, ffmpeg = "ffmpeg"): Promise<string[]> {
+  await mkdir(outDir, { recursive: true });
+  const scale = "scale='min(1280,iw)':-2";
+  const run = (filter: string) =>
+    new Promise<void>((resolveRun, reject) => {
+      execFile(
+        ffmpeg,
+        ["-hide_banner", "-loglevel", "error", "-i", video, "-vf", filter, "-fps_mode", "vfr", "-frames:v", String(MAX_FRAMES), join(outDir, `${stem}-%02d.jpg`)],
+        { timeout: 120_000 },
+        (error) => (error ? reject(error) : resolveRun()),
+      );
+    });
+  const made = async () => (await readdir(outDir)).filter((name) => name.startsWith(`${stem}-`) && name.endsWith(".jpg")).sort();
+  await run(`select='eq(n,0)+gt(scene,0.3)',${scale}`);
+  if ((await made()).length < 2) await run(`fps=1/5,${scale}`);
+  return made();
+}
+
+/** The ticket's pictures into `context/files/` and its videos as frames into `context/frames/`; lines for INDEX.md. */
+async function ticketFiles(context: RunContext, root: string, contextDir: string, options: WorkspaceOptions, problems: string[]): Promise<string[]> {
+  const files = (context.files ?? []).filter((file) => file.file_url && (PICTURE.test(file.file_name ?? "") || VIDEO.test(file.file_name ?? "")));
+  if (!options.fetchFile || !files.length) return [];
+  const taken = new Set<string>();
+  const pictures: string[] = [];
+  const frames: string[] = [];
+  for (const file of files.slice(0, MAX_TICKET_FILES)) {
+    const label = file.file_name ?? "a file";
+    if ((file.file_size ?? 0) > MAX_TICKET_FILE_BYTES) {
+      problems.push(`${label}: larger than 50 MB, not read`);
+      continue;
+    }
+    try {
+      const content = await options.fetchFile(String(file.file_url));
+      const name = safeFileName(label, taken);
+      if (PICTURE.test(label)) {
+        await mkdir(join(contextDir, "files"), { recursive: true });
+        await writeFile(join(contextDir, "files", name), content);
+        pictures.push(name);
+        continue;
+      }
+      const scratch = join(root, ".video");
+      await mkdir(scratch, { recursive: true });
+      const video = join(scratch, name);
+      await writeFile(video, content);
+      try {
+        const made = await videoFrames(video, join(contextDir, "frames"), name.replace(/\.[^.]*$/, ""), options.ffmpeg);
+        frames.push(...made);
+        if (!made.length) problems.push(`${label}: no frames could be taken from the video`);
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    } catch (error) {
+      problems.push(`${label}: not read (${String((error as Error).message ?? error).slice(0, 160)})`);
+    }
+  }
+  if (files.length > MAX_TICKET_FILES) problems.push(`${files.length - MAX_TICKET_FILES} more pictures or videos on the ticket were not read`);
+  const lines: string[] = [];
+  if (pictures.length) lines.push(`- \`context/files/\`: the ticket's pictures (${pictures.join(", ")}); look at them with Read`);
+  if (frames.length) lines.push(`- \`context/frames/\`: ${frames.length} frames from the ticket's videos, in order; look at them with Read`);
+  return lines;
+}
 
 /** A fix job's branch: always Copilot's own. */
 export const COPILOT_BRANCH = /^copilot\/[A-Za-z0-9][A-Za-z0-9._/-]{0,190}$/;
@@ -215,7 +298,7 @@ function conversationMarkdown(context: RunContext): string {
   return parts.join("\n");
 }
 
-function indexMarkdown(context: RunContext, apps: AppCheckout[], problems: string[], writable?: string): string {
+function indexMarkdown(context: RunContext, apps: AppCheckout[], problems: string[], writable?: string, extra: string[] = []): string {
   const lines = [
     `# Run ${context.run}: ticket ${context.ticket.name}`,
     "",
@@ -228,6 +311,7 @@ function indexMarkdown(context: RunContext, apps: AppCheckout[], problems: strin
     "- `context/triage.json`: the hub's first guess (category, priority, summary); a guess, not a finding",
     "- `context/site.json`: the customer's site and the apps below",
     "- `context/previous_runs.json`: earlier Copilot runs on this ticket",
+    ...extra,
     "",
     "## Code",
     "",
@@ -344,7 +428,8 @@ export async function prepareWorkspace(job: Job, options: WorkspaceOptions): Pro
   await writeFile(join(contextDir, "site.json"), JSON.stringify(site, null, 1));
   await writeFile(join(contextDir, "previous_runs.json"), JSON.stringify(context.previous_runs ?? [], null, 1));
   if (context.diagnosis) await writeFile(join(contextDir, "diagnosis.json"), JSON.stringify(context.diagnosis, null, 1));
-  await writeFile(join(root, "INDEX.md"), indexMarkdown(context, apps, problems, changing?.app));
+  const media = await ticketFiles(context, root, contextDir, options, problems);
+  await writeFile(join(root, "INDEX.md"), indexMarkdown(context, apps, problems, changing?.app, media));
   // every clone is read-only but the one a fix job changes
   for (const app of apps) if (app !== changing) await setReadOnly(app.dir);
   await chmod(appsRoot, 0o555);

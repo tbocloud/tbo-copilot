@@ -18,6 +18,8 @@ export type ModelConfig = {
   /** Input tokens the provider served from its cache, usually much cheaper; defaults to the input price. */
   priceCachedPerMillion?: number;
   priceOutPerMillion: number;
+  /** The model reads images (a ticket's pictures and video frames), so the engine sends them. */
+  supportsImages?: boolean;
 };
 
 /**
@@ -32,9 +34,9 @@ export type ProviderConfig = Omit<ModelConfig, "modelId" | "priceInPerMillion" |
 
 /** The providers the settings file may name: `<prefix>_API_KEY` turns one on, the rest have defaults. */
 export const PROVIDERS = [
-  { prefix: "TBO_PROVIDER_OPENAI", section: "OpenAI", providerName: "TBO Worker · OpenAI", baseUrl: "https://api.openai.com/v1", apiStyle: "responses" },
+  { prefix: "TBO_PROVIDER_OPENAI", section: "OpenAI", providerName: "TBO Worker · OpenAI", baseUrl: "https://api.openai.com/v1", apiStyle: "responses", images: true },
   // Kimi: TBO Support reaches it through its Anthropic-compatible section, the engine through Moonshot's OpenAI-compatible address
-  { prefix: "TBO_PROVIDER_MOONSHOT", section: "Anthropic-compatible", providerName: "TBO Worker · Moonshot", baseUrl: "https://api.moonshot.ai/v1", apiStyle: "chat_completions" },
+  { prefix: "TBO_PROVIDER_MOONSHOT", section: "Anthropic-compatible", providerName: "TBO Worker · Moonshot", baseUrl: "https://api.moonshot.ai/v1", apiStyle: "chat_completions", images: false },
 ] as const;
 
 export type Limits = {
@@ -178,6 +180,14 @@ function modelUrl(raw: string, name: string): string {
   return value;
 }
 
+/** "1", "true" or "yes" (any case) is on, "0", "false" or "no" off; blank keeps `fallback`. */
+function flag(value: string | undefined, fallback: boolean): boolean {
+  const text = (value ?? "").trim().toLowerCase();
+  if (["1", "true", "yes"].includes(text)) return true;
+  if (["0", "false", "no"].includes(text)) return false;
+  return fallback;
+}
+
 /** The env file's path inside the worker's folder. */
 export function envFilePath(dir: string): string {
   return join(dir, "env");
@@ -225,6 +235,7 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
         apiStyle: value("API_STYLE") || provider.apiStyle,
         contextWindow: positive(value("CONTEXT_WINDOW"), 256_000, `${provider.prefix}_CONTEXT_WINDOW`),
         maxOutputTokens: positive(value("MAX_OUTPUT_TOKENS"), 16_000, `${provider.prefix}_MAX_OUTPUT_TOKENS`),
+        supportsImages: flag(value("IMAGES"), provider.images),
       },
     ];
   });
@@ -262,6 +273,8 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
             modelId: env.TBO_MODEL_ID?.trim() || DEFAULT_MODEL_ID,
             apiKey,
             apiStyle: env.TBO_MODEL_API_STYLE?.trim() || "chat_completions",
+            // OpenAI's models read images; another provider's only when TBO_MODEL_IMAGES=1
+            supportsImages: flag(env.TBO_MODEL_IMAGES, /^https:\/\/api\.openai\.com\//.test(env.TBO_MODEL_BASE_URL?.trim() || DEFAULT_MODEL_BASE_URL)),
             contextWindow: positive(env.TBO_MODEL_CONTEXT_WINDOW, 256_000, "TBO_MODEL_CONTEXT_WINDOW"),
             maxOutputTokens: positive(env.TBO_MODEL_MAX_OUTPUT_TOKENS, 16_000, "TBO_MODEL_MAX_OUTPUT_TOKENS"),
             priceInPerMillion: nonNegative(env.TBO_MODEL_PRICE_IN, 0, "TBO_MODEL_PRICE_IN"),
