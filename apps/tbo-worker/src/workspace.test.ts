@@ -153,6 +153,9 @@ describe("the ticket's pictures and videos", () => {
     expect(safeFileName("../../etc/Screen shot 1.png", taken)).toBe("Screen_shot_1.png");
     expect(safeFileName("Screen shot 1.png", taken)).toBe("Screen_shot_1-2.png");
     expect(safeFileName(".hidden", taken)).toBe("hidden");
+    const long = safeFileName(`${"x".repeat(120)}.png`, taken);
+    expect(long.endsWith(".png")).toBe(true);
+    expect(long.length).toBeLessThanOrEqual(80);
   });
 
   it("downloads the pictures, refuses what is too large, and records a video it cannot turn into frames", async () => {

@@ -95,4 +95,13 @@ describe("checkReport", () => {
   ])("refuses %j", (args, word) => expect(checkReport(args)).toContain(word));
 
   it("accepts a complete report", () => expect(checkReport(report)).toBeUndefined());
+
+  it("needs a kind message for a customization request; its hours are optional but must be hours", () => {
+    const request = { ...report, root_cause_category: "customization_request", customer_message: "This is a change, not a fault." };
+    expect(checkReport({ ...request, customer_message: " " })).toContain("customer_message");
+    expect(checkReport({ ...request, proposal: { estimate_hours: "four" } })).toContain("estimate_hours");
+    expect(checkReport({ ...request, proposal: { estimate_hours: -2 } })).toContain("estimate_hours");
+    expect(checkReport({ ...request, proposal: { estimate_hours: 4 } })).toBeUndefined();
+    expect(checkReport({ ...request, proposal: {} })).toBeUndefined();
+  });
 });

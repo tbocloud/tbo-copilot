@@ -34,13 +34,18 @@ function readable(text: string): string {
   }
 }
 
-/** The lines of `text` that look like an instruction to the AI, each cut to 200 characters; at most `limit`. */
-export function suspiciousLines(text: string, limit = 3): string[] {
+/**
+ * The different lines of `text` that look like an instruction to the AI, each cut to 200
+ * characters; at most `limit`, never one in `skip` (already reported), so repeats of one line
+ * never hide another.
+ */
+export function suspiciousLines(text: string, limit = 3, skip: ReadonlySet<string> = new Set()): string[] {
   const found: string[] = [];
   for (const line of readable(text).split(/\r?\n/)) {
     if (found.length >= limit) break;
-    const trimmed = line.trim().replace(/^\d+:/, ""); // Read numbers its lines
-    if (trimmed && SUSPICIOUS_PATTERNS.some((pattern) => pattern.test(trimmed))) found.push(trimmed.slice(0, 200));
+    const trimmed = line.trim().replace(/^\d+:/, "").slice(0, 200); // Read numbers its lines
+    if (!trimmed || skip.has(trimmed) || found.includes(trimmed)) continue;
+    if (SUSPICIOUS_PATTERNS.some((pattern) => pattern.test(trimmed))) found.push(trimmed);
   }
   return found;
 }
@@ -51,13 +56,9 @@ export class SuspiciousWatch {
 
   /** The new suspicious lines in a tool's result, at most 5 a run. */
   check(text: string): string[] {
-    const fresh: string[] = [];
-    for (const line of suspiciousLines(text, 10)) {
-      if (this.seen.size >= 5) break;
-      if (this.seen.has(line)) continue;
-      this.seen.add(line);
-      fresh.push(line);
-    }
+    if (this.seen.size >= 5) return [];
+    const fresh = suspiciousLines(text, 5 - this.seen.size, this.seen);
+    for (const line of fresh) this.seen.add(line);
     return fresh;
   }
 }

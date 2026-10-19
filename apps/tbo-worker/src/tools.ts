@@ -91,7 +91,7 @@ export const TOOL_DEFINITIONS: PluginToolDef[] = [
             properties: { type: { type: "string" }, ref: { type: "string" }, note: { type: "string" } },
           },
         },
-        proposal: { type: "object", properties: { action: { type: "string" }, files: { type: "array", items: { type: "string" } }, risk: { type: "string" }, notes: { type: "string" } } },
+        proposal: { type: "object", properties: { action: { type: "string" }, files: { type: "array", items: { type: "string" } }, risk: { type: "string" }, notes: { type: "string" }, estimate_hours: { type: "number" } } },
         customer_message: { type: "string", maxLength: 4000 },
         questions: { type: "array", maxItems: 10, items: { type: "string" } },
         change_set: {
@@ -240,6 +240,16 @@ export function checkReport(args: Record<string, unknown>, prepareCorrection = f
     }
     if (category === "customer_mistake" && !prepareCorrection) {
       return "a customer's mistake is explained, not corrected, unless an agent asked for the correction (prepare_correction in the run context): leave change_set out";
+    }
+  }
+  if (args.root_cause_category === "customization_request") {
+    if (typeof args.customer_message !== "string" || !args.customer_message.trim()) {
+      return "customer_message is required for customization_request: say kindly that it is a change, not a fault";
+    }
+    // an estimate the model cannot make does not block the report: the agent fills it in on the estimate card
+    const hours = record(args.proposal).estimate_hours;
+    if (hours !== undefined && !(typeof hours === "number" && Number.isFinite(hours) && hours > 0)) {
+      return "proposal.estimate_hours must be a positive number of hours, or left out";
     }
   }
   return checkChangeSet(args.change_set);

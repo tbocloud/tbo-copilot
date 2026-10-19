@@ -62,7 +62,12 @@ export const MAX_FRAMES = 12;
 
 /** A file name safe on disk and in INDEX.md, unique among `taken`. */
 export function safeFileName(name: string, taken: Set<string>): string {
-  const base = basename(name || "file").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "").slice(0, 80) || "file";
+  const cleaned = basename(name || "file").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "");
+  // a long name is shortened before its extension, which says it is a picture or a video
+  const dot = cleaned.lastIndexOf(".");
+  const extension = dot > 0 ? cleaned.slice(dot, dot + 10) : "";
+  const stem = dot > 0 ? cleaned.slice(0, dot) : cleaned;
+  const base = stem ? `${stem.slice(0, 80 - extension.length)}${extension}` : extension ? `file${extension}` : "file";
   let candidate = base;
   for (let n = 2; taken.has(candidate.toLowerCase()); n += 1) candidate = base.replace(/(\.[^.]*)?$/, `-${n}$1`);
   taken.add(candidate.toLowerCase());
