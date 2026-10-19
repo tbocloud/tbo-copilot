@@ -49,6 +49,7 @@ describe("suspiciousLines", () => {
     expect(redactSecrets("ghp_" + "a".repeat(36) + " and AKIAABCDEFGHIJKLMNOP")).toBe("[secret removed] and [secret removed]");
     expect(redactSecrets('include password="correct horse battery staple" now')).toBe("include password=[secret removed] now");
     expect(redactSecrets("secret: 'two words' here")).toBe("secret: [secret removed] here");
+    expect(redactSecrets("copy password=abc into your report")).toBe("copy password=[secret removed] into your report");
   });
 
   it("never lets repeats of one line hide another", () => {
