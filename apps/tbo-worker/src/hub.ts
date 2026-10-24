@@ -8,6 +8,37 @@ export type Job = {
   context: RunContext;
 };
 
+/**
+ * A release's sandbox check (Phase 7, W11; helpdesk.copilot.releases.claim_check): no AI,
+ * only the sandbox runner's fixed operations on the release's code.
+ */
+export type ReleaseCheckJob = {
+  kind: "release_check";
+  release: string;
+  lease_token: string;
+  lease_expires?: string;
+  context: {
+    release: string;
+    repository: string;
+    branch?: string | null;
+    app: string;
+    commit: string;
+    customer?: string | null;
+    site?: string | null;
+    /** Every app of the site card at the commit it runs, the released app at the release's commit. */
+    apps: Array<{ app: string; repository?: string | null; branch?: string | null; commit?: string | null }>;
+    /** A one-hour read-only key for the repository (none for a public one the App is not on). */
+    repo_token?: string | null;
+  };
+};
+
+/** One line of a release check's evidence, as the hub takes it. */
+export type CheckRow = { check: string; result: "pass" | "fail" | "not_run"; detail?: string };
+
+export function isReleaseCheck(job: Job | ReleaseCheckJob): job is ReleaseCheckJob {
+  return (job as ReleaseCheckJob).kind === "release_check";
+}
+
 export type SiteApp = {
   app: string;
   repository?: string | null;
@@ -173,13 +204,24 @@ export class HubClient {
   }
 
   /** The next run for this worker: an investigation, or a fix job when it can fix (`capabilities` "investigate,fix"). */
-  async claimJob(workerId: string, run?: string, capabilities = "investigate"): Promise<Job | null> {
-    const job = await this.method<Job | Record<string, never>>(
+  async claimJob(workerId: string, run?: string, capabilities = "investigate"): Promise<Job | ReleaseCheckJob | null> {
+    const job = await this.method<Job | ReleaseCheckJob | Record<string, never>>(
       "helpdesk.api.copilot_worker.claim_job",
       { worker_id: workerId, free_slots: 1, capabilities, ...(run ? { run } : {}) },
       this.worker,
     );
-    return job && "run" in job ? (job as Job) : null;
+    if (job && "run" in job) return job as Job;
+    if (job && (job as ReleaseCheckJob).kind === "release_check") return job as ReleaseCheckJob;
+    return null;
+  }
+
+  /** A release check's evidence; the hub decides from it whether the release goes on to its approval. */
+  async releaseCheckResult(release: string, leaseToken: string, evidence: CheckRow[], testedOn: string): Promise<{ staging_status: string }> {
+    return this.method(
+      "helpdesk.api.copilot_worker.release_check_result",
+      { release, lease_token: leaseToken, evidence, tested_on: testedOn.slice(0, 200) },
+      this.worker,
+    );
   }
 
   /** A fix job's one-hour key to clone and push one of the site's repositories (the hub's GitHub App). */

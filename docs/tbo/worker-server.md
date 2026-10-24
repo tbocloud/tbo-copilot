@@ -8,7 +8,7 @@ For whoever looks after TBO Copilot during the pilot. How to install and update 
 
 | Part | Where | What it does |
 |---|---|---|
-| The worker | Worker server, Docker container `tbo-worker` (restarts by itself) | Claims runs from TBO Support, investigates, writes fixes, opens pull requests |
+| The worker | Worker server, Docker container `tbo-worker` (restarts by itself) | Claims runs from TBO Support, investigates, writes fixes, opens pull requests; checks releases on the sandbox before their approval |
 | The sandbox relay | Worker server, systemd service `tbo-sandbox-relay` | Starts the fix server when a fix needs it and passes the worker's sandbox requests to it |
 | The sandbox runner | Fix server | Builds a throwaway copy of the customer's site per fix and runs the checks; the server powers off after 20 idle minutes |
 | The settings file | Worker server, `/var/lib/tbo-worker/env` (mode 600) | TBO Support's address and the worker's key, the AI providers' keys, the GitHub token |
@@ -94,6 +94,16 @@ a senior approves it.
 
 TBO Support's `docs/tbo-copilot.md`, "Deploying through Press": Press rolls the site back itself; the card links
 the deploy and the backup.
+
+### A release's sandbox check failed or did not run
+
+With the sandbox, the worker also offers `release_check`: for a release of anyone's merge (TBO Support's
+`docs/tbo-copilot.md`, "Releases of every merge") it checks out the app at the release's commit, starts a fresh site
+with the site's apps, and runs migrate, the app's tests and the new-errors check. No AI is used. The release's
+**Staging checks** show each line. A failed line is the code's: the people who wrote it fix it with new commits.
+When every line says *not run*, the check could not be done (the runner or GitHub unreachable): look at
+`docker logs tbo-worker` for "release check could not run" and at the relay below; a senior can let the release
+through with a reason meanwhile.
 
 ### The fix server does not start
 

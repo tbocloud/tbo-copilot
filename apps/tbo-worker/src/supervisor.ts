@@ -5,10 +5,11 @@ import { preview, type Engine, type TurnObserver, type TurnResult } from "./engi
 import { EventOutbox } from "./events.js";
 import { runFixJob } from "./fix.js";
 import { runFixTool, type FixToolState } from "./fix-tools.js";
-import { HubError, type HubClient, type Job } from "./hub.js";
+import { HubError, isReleaseCheck, type HubClient, type Job, type ReleaseCheckJob } from "./hub.js";
 import type { Logger } from "./log.js";
 import { StageModels, noModelReason, stageModels, type StageModel } from "./models.js";
 import { RunBudget, smallestCap } from "./policy.js";
+import { runReleaseCheck, type ReleaseCheckReport } from "./release-check.js";
 import { NUDGE, finalPrompt, turnPrompt } from "./prompt.js";
 import type { Sandbox } from "./sandbox.js";
 import { SuspiciousWatch } from "./suspicious.js";
@@ -104,9 +105,9 @@ export class Worker {
     private readonly sandbox?: Sandbox,
   ) {}
 
-  /** What the worker tells the hub it can do when claiming. */
+  /** What the worker tells the hub it can do when claiming; with the sandbox, fixes and releases' checks too. */
   capabilities(): string {
-    return this.sandbox ? "investigate,fix" : "investigate";
+    return this.sandbox ? "investigate,fix,release_check" : "investigate";
   }
 
   workspaceOptions(): WorkspaceOptions {
@@ -135,11 +136,16 @@ export class Worker {
       ...(this.cfg.model ? { model: this.cfg.model.modelId } : {}),
     });
     while (!signal.aborted && !this.stopping) {
-      let job: Job | null = null;
+      let job: Job | ReleaseCheckJob | null = null;
       try {
         job = await this.hub.claimJob(this.cfg.workerId, undefined, this.capabilities());
       } catch (error) {
         this.log("warn", "claim failed", { error: String(error) });
+      }
+      if (job && isReleaseCheck(job)) {
+        const report = await this.processReleaseCheck(job);
+        this.log("info", "release check finished", report as unknown as Record<string, unknown>);
+        continue;
       }
       if (job) {
         const report = await this.process(job);
@@ -153,8 +159,28 @@ export class Worker {
 
   /** Claims one run (the named one, when given and queued) and investigates it; null when there is none. */
   async runOnce(run?: string): Promise<RunReport | null> {
-    const job = await this.hub.claimJob(this.cfg.workerId, run, this.capabilities());
-    return job ? this.process(job) : null;
+    // runs only: releases' checks are taken by the worker's loop (`start`)
+    const job = await this.hub.claimJob(this.cfg.workerId, run, this.capabilities().replace(",release_check", ""));
+    if (!job) return null;
+    if (isReleaseCheck(job)) {
+      await this.processReleaseCheck(job);
+      return null;
+    }
+    return this.process(job);
+  }
+
+  /** A release's check on the sandbox: no model, only the runner's fixed operations. */
+  async processReleaseCheck(job: ReleaseCheckJob): Promise<ReleaseCheckReport> {
+    if (!this.sandbox) {
+      // never asked for without the sandbox; the hub's lease expires and another worker takes it
+      return { release: job.release, outcome: "not_reported", rows: [] };
+    }
+    return runReleaseCheck(job, {
+      hub: this.hub,
+      sandbox: this.sandbox,
+      workspaceOptions: () => this.workspaceOptions(),
+      log: this.log,
+    });
   }
 
   /** The engine's provider and model for a stage's model, set up once. A provider name has one address and key (config.ts). */
