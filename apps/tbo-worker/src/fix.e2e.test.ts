@@ -243,8 +243,9 @@ describe.skipIf(!ready)("a fix job end to end", () => {
     expect(verified.payload.evidence).toEqual([["the bug shows before the fix (demo_app.tests.test_copilot_margin)", "fail"]]);
     expect(report.outcome).toBe("failed");
     expect(() => git("rev-parse", "--verify", `refs/heads/${branch}`)).toThrow();
-    // a crash that is the bug itself: the model is told how to show it (and not to mock it away)
-    expect(JSON.stringify(model.requests.at(-1)!.messages)).toContain("self.fail with the exception");
+    // a crash that is the bug itself: the round's feedback says how to show it (and not to mock it
+    // away); only that message is read, since the fix rules say the same and would always match
+    expect(againFeedback(model)).toContain("self.fail with the exception");
   }, 180_000);
 
   it("opens no pull request when the review gives no verdict", async () => {
@@ -304,13 +305,22 @@ describe.skipIf(!ready)("a fix job end to end", () => {
     // the bug was never shown: another round is asked for (here the scripted model has nothing more to say)
     const events = stub.calls.slice(before).filter((call) => call.path.endsWith("post_events")).flatMap((call) => call.body.events as Array<{ type: string; payload: Record<string, unknown> }>);
     expect(events.find((event) => event.type === "verified")!.payload.evidence).toEqual([["the bug shows before the fix", "fail"]]);
-    const again = JSON.stringify(model.requests.at(-1)!.messages);
+    const again = againFeedback(model);
     expect(again).toContain("the bug does not show before the fix");
     expect(again).toContain("a mock, stub or patch of that code hides the bug");
     expect(report.outcome).toBe("failed");
     expect(() => git("rev-parse", "--verify", `refs/heads/${branch}`)).toThrow();
   }, 180_000);
 });
+
+/** The worker's feedback for another round (againPrompt), as the model got it: that message only. */
+function againFeedback(model: FakeModel): string {
+  const texts = model.requests
+    .flatMap((request) => request.messages)
+    .filter((message) => message.role === "user")
+    .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)));
+  return texts.find((text) => text.includes("Your fix needs another round")) ?? "";
+}
 
 describe("the pull request client", () => {
   it("speaks GitHub's REST API with the push key", async () => {
