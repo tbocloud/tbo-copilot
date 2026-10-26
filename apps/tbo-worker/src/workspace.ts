@@ -348,6 +348,24 @@ async function setReadOnly(path: string): Promise<void> {
 }
 
 /** Gives back write access to the folders only (files may be hard links into a mirror), then removes the run's folder. */
+/**
+ * One app at one commit, for a release check: cloned from the mirror (fetched again when the
+ * commit is newer than it) into `dir`, detached, without a remote. Throws when it cannot.
+ */
+export async function checkoutCommit(repository: string, commit: string, dir: string, options: WorkspaceOptions): Promise<void> {
+  if (!COMMIT.test(commit)) throw new Error(`"${commit.slice(0, 60)}" is not a commit id`);
+  const mirror = await ensureMirror(repository, options);
+  if (!(await hasCommit(mirror, commit, options.homeDir))) {
+    await runGit(mirror, ["fetch", "--quiet", "--prune", "origin"], fetchEnv(options, repository), 600_000);
+  }
+  if (!(await hasCommit(mirror, commit, options.homeDir))) throw new Error(`${commit} is not in ${repository}`);
+  const env = gitEnv(options.homeDir);
+  await mkdir(resolve(dir, ".."), { recursive: true, mode: 0o700 });
+  await runGit(resolve(dir, ".."), ["clone", "--quiet", "--no-checkout", mirror, dir], env);
+  await runGit(dir, ["checkout", "--quiet", "--detach", commit], env);
+  await runGit(dir, ["remote", "remove", "origin"], env);
+}
+
 export async function removeWorkspace(root: string): Promise<void> {
   if (!existsSync(root)) return;
   const reopen = async (path: string): Promise<void> => {
