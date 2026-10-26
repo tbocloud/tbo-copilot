@@ -248,6 +248,27 @@ describe.skipIf(!ready)("a fix job end to end", () => {
     expect(againFeedback(model)).toContain("self.fail with the exception");
   }, 180_000);
 
+  it("stops at once, without a check round, when Copilot says it cannot fix it, and hands its explanation on", async () => {
+    const sandbox = new FakeSandbox();
+    const before = stub.calls.length;
+    const why = "No test fails on the unchanged code: the margin is already right for every invoice I tried; the reported invoice may have been edited by hand.";
+    const script: ModelStep[] = [
+      fixScript()[0]!,
+      { tool: { name: "fix_done", arguments: { summary: "", test_module: "", explanation: why, cannot_fix: true } } },
+      { text: "Stopped." },
+    ];
+    const { report, run, branch } = await runFix(script, sandbox);
+
+    expect(report.outcome).toBe("failed");
+    expect(report.reason).toBe(`it stopped by itself and explains: ${why}`);
+    const events = stub.calls.slice(before).filter((call) => call.path.endsWith("post_events")).flatMap((call) => call.body.events as Array<{ type: string }>);
+    expect(events.some((event) => event.type === "verified")).toBe(false); // no check round spent
+    expect(sandbox.calls.filter((call) => call.startsWith("check"))).toEqual([]);
+    const failure = stub.callsTo("submit_result").find((call) => call.body.run === run)!;
+    expect(String((failure.body.result as { reason: string }).reason)).toContain("the reported invoice may have been edited by hand");
+    expect(() => git("rev-parse", "--verify", `refs/heads/${branch}`)).toThrow();
+  }, 180_000);
+
   it("opens no pull request when the review gives no verdict", async () => {
     const sandbox = new FakeSandbox();
     const pulls = github.calls.filter((call) => call.path.endsWith("/pulls")).length;

@@ -434,6 +434,13 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
       if (!state.done) {
         return await fail(turn.reason === "error" ? `the model failed (${turn.errorCode ?? "unknown error"})` : "the model ended without saying the fix is ready");
       }
+      // Copilot could not show the bug, or could not fix it: no check round is spent, and the
+      // developer gets its explanation
+      // (the hub prefixes "Copilot could not fix it:")
+      // fix_done fills state.done from a tool call, out of TypeScript's sight
+      const said = state.done as FixDone | undefined;
+      // whole: fix_done keeps it within CANNOT_FIX_CHARS, so with these words it fits TBO Support's 1,000
+      if (said?.cannot_fix) return await fail(`it stopped by itself and explains: ${said.explanation}`);
       const checked = await verify(state, target.commit, since);
       evidence = checked.evidence;
       failures = checked.failures;
