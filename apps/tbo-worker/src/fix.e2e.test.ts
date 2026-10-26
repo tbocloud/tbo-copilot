@@ -234,7 +234,7 @@ describe.skipIf(!ready)("a fix job end to end", () => {
     const sandbox = new FakeSandbox();
     sandbox.errorsBefore = true;
     const before = stub.calls.length;
-    const { report, branch } = await runFix(fixScript().slice(0, 9), sandbox);
+    const { report, branch, model } = await runFix(fixScript().slice(0, 9), sandbox);
 
     // the round's own check found it, and the model is sent back to its test (here the
     // scripted model has nothing more to say); nothing is pushed
@@ -243,6 +243,8 @@ describe.skipIf(!ready)("a fix job end to end", () => {
     expect(verified.payload.evidence).toEqual([["the bug shows before the fix (demo_app.tests.test_copilot_margin)", "fail"]]);
     expect(report.outcome).toBe("failed");
     expect(() => git("rev-parse", "--verify", `refs/heads/${branch}`)).toThrow();
+    // a crash that is the bug itself: the model is told how to show it (and not to mock it away)
+    expect(JSON.stringify(model.requests.at(-1)!.messages)).toContain("self.fail with the exception");
   }, 180_000);
 
   it("opens no pull request when the review gives no verdict", async () => {
@@ -293,16 +295,20 @@ describe.skipIf(!ready)("a fix job end to end", () => {
     ]);
   }, 180_000);
 
-  it("refuses a fix whose test passes on the code the site runs: the bug was never shown", async () => {
+  it("does not take a fix whose test passes on the code the site runs, and sends the model back to its test", async () => {
     const sandbox = new FakeSandbox();
     sandbox.alwaysPasses = true;
-    const { report, run, branch } = await runFix(fixScript().slice(0, 9), sandbox);
+    const before = stub.calls.length;
+    const { report, branch, model } = await runFix(fixScript().slice(0, 9), sandbox);
 
+    // the bug was never shown: another round is asked for (here the scripted model has nothing more to say)
+    const events = stub.calls.slice(before).filter((call) => call.path.endsWith("post_events")).flatMap((call) => call.body.events as Array<{ type: string; payload: Record<string, unknown> }>);
+    expect(events.find((event) => event.type === "verified")!.payload.evidence).toEqual([["the bug shows before the fix", "fail"]]);
+    const again = JSON.stringify(model.requests.at(-1)!.messages);
+    expect(again).toContain("the bug does not show before the fix");
+    expect(again).toContain("a mock, stub or patch of that code hides the bug");
     expect(report.outcome).toBe("failed");
-    expect(report.reason).toContain("the bug does not show before the fix");
     expect(() => git("rev-parse", "--verify", `refs/heads/${branch}`)).toThrow();
-    const failure = stub.callsTo("submit_result").find((call) => call.body.run === run)!;
-    expect(String((failure.body.result as { reason: string }).reason)).toContain("does not show before the fix");
   }, 180_000);
 });
 

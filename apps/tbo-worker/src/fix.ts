@@ -136,10 +136,12 @@ export async function verify(
     await restore();
   }
   if (before.ok) {
+    // another round may still show it: a test that mocked away the code the diagnosis names passes too
     return {
       evidence: [row("the bug shows before the fix", before, false)],
-      failures: [],
-      fatal: `the bug does not show before the fix: ${module} passes on the code the site runs`,
+      failures: [
+        `the bug does not show before the fix: ${module} passes on the code the site runs. Make it call the real code the diagnosis names and fail there; a mock, stub or patch of that code hides the bug`,
+      ],
     };
   }
   if (before.failure !== "assertion") {
@@ -149,7 +151,7 @@ export async function verify(
     return {
       evidence: [{ check: `the bug shows before the fix (${module})`, result: "fail", detail: `${how}: ${firstLines(before.output)}` }],
       failures: [
-        `${module} ${how} on the code the site runs instead of failing an assertion: it must run on that code and fail on the wrong result, so it shows the bug`,
+        `${module} ${how} on the code the site runs instead of failing an assertion: it must run on that code and fail on the wrong result, so it shows the bug. When the bug is itself an exception in the app's code, keep calling that code and turn the exception into a failed assertion (try/except, then self.fail with the exception); do not mock it away`,
       ],
     };
   }
