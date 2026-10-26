@@ -436,10 +436,11 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
       }
       // Copilot could not show the bug, or could not fix it: no check round is spent, and the
       // developer gets its explanation
-      // (the hub prefixes "Copilot could not fix it:" and keeps 1,000 characters)
+      // (the hub prefixes "Copilot could not fix it:")
       // fix_done fills state.done from a tool call, out of TypeScript's sight
       const said = state.done as FixDone | undefined;
-      if (said?.cannot_fix) return await fail(`it stopped by itself and explains: ${said.explanation}`.slice(0, 1000));
+      // whole: fix_done keeps it within CANNOT_FIX_CHARS, so with these words it fits TBO Support's 1,000
+      if (said?.cannot_fix) return await fail(`it stopped by itself and explains: ${said.explanation}`);
       const checked = await verify(state, target.commit, since);
       evidence = checked.evidence;
       failures = checked.failures;

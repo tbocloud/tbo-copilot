@@ -7,6 +7,10 @@ import { TOOL_DEFINITIONS } from "./tools.js";
 
 /** The fix session's four tools (ToolSearch activates at most four per query). */
 export const FIX_TOOL_NAMES = ["sandbox", "my_changes", "repo_git", "fix_done"] as const;
+
+/** With cannot_fix the explanation is the failure's reason, which TBO Support keeps up to 1,000 characters
+ * after its own words ("Copilot could not fix it:") and the worker's ("it stopped by itself and explains:"). */
+export const CANNOT_FIX_CHARS = 900;
 export const FIX_TOOL_SEARCH_QUERY = FIX_TOOL_NAMES.join(" ");
 /** The review session's two tools. */
 export const REVIEW_TOOL_NAMES = ["my_changes", "review_done"] as const;
@@ -48,7 +52,7 @@ export const FIX_TOOL_DEFINITIONS: PluginToolDef[] = [
         summary: { type: "string", maxLength: 200, description: "One line: what the fix does, for the pull request's title." },
         test_module: { type: "string", description: "The test module that reproduces the bug: it fails without your change and passes with it. Empty with cannot_fix when you have none." },
         explanation: { type: "string", maxLength: 3000, description: "What was wrong and what you changed, for the pull request; with cannot_fix, what you tried, what you found and what a developer should do." },
-        cannot_fix: { type: "boolean", description: "True only when, after a real effort, no test you can write fails on the unchanged code, or you cannot fix the bug. The fix stops and your explanation goes to the developer." },
+        cannot_fix: { type: "boolean", description: `True only when, after a real effort, no test you can write fails on the unchanged code, or you cannot fix the bug. The fix stops and your explanation (at most ${CANNOT_FIX_CHARS} characters then) goes to the developer.` },
         people_checks: { type: "array", maxItems: 10, items: { type: "string" }, description: "What a person should still check before approving." },
         risk_notes: { type: "string", maxLength: 2000 },
       },
@@ -167,10 +171,13 @@ export async function runFixTool(state: FixToolState, name: string, input: unkno
         const explanation = String(args.explanation ?? "").trim();
         if (args.cannot_fix === true) {
           if (!explanation) return result(false, "Not recorded: say in explanation what you tried, what you found and what a developer should do.");
+          if (explanation.length > CANNOT_FIX_CHARS) {
+            return result(false, `Not recorded: with cannot_fix, keep the explanation within ${CANNOT_FIX_CHARS} characters (it has ${explanation.length}), so the developer gets all of it.`);
+          }
           state.done = {
             summary: (summary || "Copilot could not fix this").slice(0, 200),
             test_module: module ?? "",
-            explanation: explanation.slice(0, 3000),
+            explanation,
             people_checks: [],
             risk_notes: "",
             cannot_fix: true,
