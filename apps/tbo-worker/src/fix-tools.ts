@@ -46,8 +46,9 @@ export const FIX_TOOL_DEFINITIONS: PluginToolDef[] = [
       type: "object",
       properties: {
         summary: { type: "string", maxLength: 200, description: "One line: what the fix does, for the pull request's title." },
-        test_module: { type: "string", description: "The test module that reproduces the bug: it fails without your change and passes with it." },
-        explanation: { type: "string", maxLength: 3000, description: "What was wrong and what you changed, for the pull request." },
+        test_module: { type: "string", description: "The test module that reproduces the bug: it fails without your change and passes with it. Empty with cannot_fix when you have none." },
+        explanation: { type: "string", maxLength: 3000, description: "What was wrong and what you changed, for the pull request; with cannot_fix, what you tried, what you found and what a developer should do." },
+        cannot_fix: { type: "boolean", description: "True only when, after a real effort, no test you can write fails on the unchanged code, or you cannot fix the bug. The fix stops and your explanation goes to the developer." },
         people_checks: { type: "array", maxItems: 10, items: { type: "string" }, description: "What a person should still check before approving." },
         risk_notes: { type: "string", maxLength: 2000 },
       },
@@ -87,7 +88,7 @@ export const REVIEW_TOOL_DEFINITIONS: PluginToolDef[] = [
   },
 ];
 
-export type FixDone = { summary: string; test_module: string; explanation: string; people_checks: string[]; risk_notes: string };
+export type FixDone = { summary: string; test_module: string; explanation: string; people_checks: string[]; risk_notes: string; cannot_fix?: boolean };
 export type Finding = { severity: "must_fix" | "note"; file?: string; note: string };
 export type CheckRecord = { action: string; module?: string; ok: boolean; at: number };
 
@@ -164,6 +165,18 @@ export async function runFixTool(state: FixToolState, name: string, input: unkno
         const summary = String(args.summary ?? "").replace(/\s+/g, " ").trim();
         const module = checkModule(state.app, args.test_module);
         const explanation = String(args.explanation ?? "").trim();
+        if (args.cannot_fix === true) {
+          if (!explanation) return result(false, "Not recorded: say in explanation what you tried, what you found and what a developer should do.");
+          state.done = {
+            summary: (summary || "Copilot could not fix this").slice(0, 200),
+            test_module: module ?? "",
+            explanation: explanation.slice(0, 3000),
+            people_checks: [],
+            risk_notes: "",
+            cannot_fix: true,
+          };
+          return result(true, "Recorded: the fix stops here and your explanation goes to the developer. Stop here.");
+        }
         if (!summary || !module || !explanation) {
           return result(false, `Not recorded: summary, explanation and test_module (a test module inside ${state.app}) are required.`);
         }
