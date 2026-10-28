@@ -1,7 +1,8 @@
 # Models: which AI does which job
 
 TASK-2026-00012. TBO Support (the `helpdesk` app) and the TBO Copilot worker share one rule: every job runs on
-**GPT-5.6 Luna** (`gpt-5.6-luna`, OpenAI) first, with **Kimi** (`kimi-k2.6`, Moonshot) as the fallback. A job that
+**GPT-5.6 Luna** (`gpt-5.6-luna`, OpenAI) for every job. **Kimi** (`kimi-k2.6`, Moonshot) was the fallback; since
+28 Oct 2026 it gets no customer data, so the fallback is off (see Data terms). A job that
 needs another model gets its own row; nothing else changes.
 
 ## Where it is set
@@ -75,6 +76,15 @@ What the providers' own pages say about the data we send. Read them again before
 
 So: before tickets with customer ERP data go to Kimi, TBO either obtains Moonshot's written restriction on training,
 or keeps Kimi to jobs without customer data (a row in Models per job), or leaves the fallback off.
+
+**Decision (28 Oct 2026): the fallback is off.** No customer data goes to Kimi:
+
+- On the hubs, **Fall back to the other provider** is off, and the Anthropic-compatible section has no key.
+- The worker has no `TBO_PROVIDER_MOONSHOT_API_KEY`.
+
+Every job runs on OpenAI; when OpenAI fails, the job waits or goes to a person as before. Kimi comes back as the
+fallback only after Moonshot restricts training in writing. Kimi may still review TBO's own code, which holds no
+customer data.
 
 ## The desktop app
 
