@@ -38,3 +38,63 @@ describe("fix_done with cannot_fix", () => {
     expect(s.done).toBeUndefined();
   });
 });
+
+describe("fix_done for a build covers every Done-when check", () => {
+  const build = {
+    scope: "A Sales Invoice cannot be submitted without a Sales Team row.",
+    checks: ["an invoice without a Sales Team row is refused", "a credit note without one is not", "submitting tells the user what to add"],
+  };
+  const done = (check_results: unknown) => ({
+    summary: "require a Sales Team row",
+    test_module: "demo_app.tests.test_copilot_sales_team",
+    explanation: "A validate hook refuses the submit.",
+    check_results,
+  });
+  const built = () => ({ ...state(), build });
+
+  it("records each check with its test module, or why it cannot be tested", async () => {
+    const s = built();
+    const reply = await runFixTool(
+      s,
+      "fix_done",
+      done([
+        { check: "An invoice without a Sales Team row is refused ", test_module: "demo_app.tests.test_copilot_sales_team" },
+        { check: "a credit note without one is not", test_module: "demo_app.tests.test_copilot_sales_team" },
+        { check: "submitting tells the user what to add", not_testable: "the message is only shown in the browser" },
+      ]),
+    );
+
+    expect(reply.ok).toBe(true);
+    expect(s.done?.check_results).toEqual([
+      { check: build.checks[0], test_module: "demo_app.tests.test_copilot_sales_team" },
+      { check: build.checks[1], test_module: "demo_app.tests.test_copilot_sales_team" },
+      { check: build.checks[2], test_module: "", not_testable: "the message is only shown in the browser" },
+    ]);
+  });
+
+  it.each([
+    [[{ check: "an invoice without a Sales Team row is refused", test_module: "demo_app.tests.t" }], "no row for"],
+    [
+      [
+        ...build.checks.map((check) => ({ check, test_module: "demo_app.tests.t" })),
+        { check: "POS invoices are refused too", test_module: "demo_app.tests.t" },
+      ],
+      "not a Done-when check",
+    ],
+    [build.checks.map((check) => ({ check, test_module: "other_app.tests.t" })), "needs test_module"],
+    [build.checks.map((check) => ({ check, not_testable: "manual" })), "at least one check needs a test"],
+  ])("refuses %j", async (rows, word) => {
+    const s = built();
+    const reply = await runFixTool(s, "fix_done", done(rows));
+
+    expect(reply.ok).toBe(false);
+    expect(String(reply.ok ? "" : reply.content)).toContain(word);
+    expect(s.done).toBeUndefined();
+  });
+
+  it("leaves a fix without check results", async () => {
+    const s = state();
+    expect((await runFixTool(s, "fix_done", done(undefined))).ok).toBe(true);
+    expect(s.done?.check_results).toBeUndefined();
+  });
+});

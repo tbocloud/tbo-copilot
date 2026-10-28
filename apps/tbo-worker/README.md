@@ -67,6 +67,17 @@ A worker started with `TBO_SANDBOX_SOCKET` (the sandbox runner on the worker ser
 
 Limits: `TBO_FIX_MAX_TOOL_CALLS` (120), `TBO_FIX_MAX_MINUTES` (60), `TBO_FIX_MAX_TOKENS` (8 million), `TBO_FIX_MAX_ROUNDS` (3), and the hub's dollar cap per fix.
 
+### Builds of approved customizations (Phase 8)
+
+A fix job whose context carries `fix.build` (the scope and the Done-when checks the customer approved) is a build. It runs the same steps with these differences:
+
+- **Its own rules** (the `build` profile, `BUILD_RULES`): build only the scope, in the customer's app (Python, hooks, Custom Fields and Property Setters as fixtures); one test per Done-when check; stop with `cannot_fix` instead of building when the scope needs a change to Frappe or ERPNext, a new integration, keys, more than a small change, or is unclear.
+- **`fix_done` covers the scope:** `check_results` has one row per Done-when check, worded as the scope words it, with its test module inside the app, or `not_testable` with the reason. A missing check, a check the scope does not have, or no tested check at all is refused (`checkBuildResults`).
+- **Its own checks** (`verifyBuild`): every test module passes on the change; at least one fails on an assertion on the code the site runs (the change was missing), and none errors there. A check that holds already (for example "a return is not affected") passes before and after, and is reported so. Then migrate, the app's tests, no new errors and no secrets, as for a fix.
+- **The review** gets the scope: anything beyond it is must-fix, and so is a check without a test.
+- **The pull request** carries the scope and a Done-when table (each check, its test, before and after); the commit is a `feat:`. `submit_change` reports `check_results` (check, test, before, after, note), which TBO Support shows next to the scope on the approval.
+- The investigation's report may draft a customization's scope (`proposal.scope`) and checks (`proposal.done_when`), which TBO Support puts into the estimate for people to correct with the customer.
+
 ## Setting it up on a Mac
 
 1. Build the engine once:

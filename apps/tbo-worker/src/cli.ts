@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { ConfigError, envFilePath, envFileWarning, githubTokenFromGh, loadConfig, type WorkerConfig } from "./config.js";
 import { Engine } from "./engine.js";
 import { loadCases, reportMarkdown, runEvaluation } from "./evaluate.js";
-import { FIX_PERSONA, FIX_RULES, REVIEW_PERSONA, REVIEW_RULES } from "./fix-prompt.js";
+import { BUILD_PERSONA, BUILD_RULES, FIX_PERSONA, FIX_RULES, REVIEW_PERSONA, REVIEW_RULES } from "./fix-prompt.js";
 import { FIX_TOOL_DEFINITIONS, REVIEW_TOOL_DEFINITIONS } from "./fix-tools.js";
 import { HubClient } from "./hub.js";
 import { createLogger, type Logger, type LogLevel } from "./log.js";
@@ -46,6 +46,8 @@ async function startEngine(cfg: WorkerConfig, router: RunToolRouter, log: Logger
     rules: RULES,
     profiles: {
       fix: { tools: FIX_TOOL_DEFINITIONS, persona: FIX_PERSONA, rules: FIX_RULES },
+      // a build of an approved customization: the fix's tools, its own rules
+      build: { tools: FIX_TOOL_DEFINITIONS, persona: BUILD_PERSONA, rules: BUILD_RULES },
       review: { tools: REVIEW_TOOL_DEFINITIONS, persona: REVIEW_PERSONA, rules: REVIEW_RULES },
     },
   });

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,10 +8,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { findHostCore, findSidecar, type ProviderConfig, type WorkerConfig } from "./config.js";
 import { Engine } from "./engine.js";
 import { repoName } from "./fix.js";
-import { FIX_PERSONA, FIX_RULES, REVIEW_PERSONA, REVIEW_RULES } from "./fix-prompt.js";
+import { BUILD_PERSONA, BUILD_RULES, FIX_PERSONA, FIX_RULES, REVIEW_PERSONA, REVIEW_RULES } from "./fix-prompt.js";
 import { FIX_TOOL_DEFINITIONS, FIX_TOOL_SEARCH_QUERY, REVIEW_TOOL_DEFINITIONS, REVIEW_TOOL_SEARCH_QUERY } from "./fix-tools.js";
 import { GitHubRest } from "./github.js";
-import { HubClient, type Job, type RunContext } from "./hub.js";
+import { HubClient, type BuildScope, type Job, type RunContext } from "./hub.js";
 import { silentLogger } from "./log.js";
 import { PERSONA, RULES } from "./prompt.js";
 import { RunToolRouter, Worker } from "./supervisor.js";
@@ -94,6 +94,7 @@ describe.skipIf(!ready)("a fix job end to end", () => {
       rules: RULES,
       profiles: {
         fix: { tools: FIX_TOOL_DEFINITIONS, persona: FIX_PERSONA, rules: FIX_RULES },
+        build: { tools: FIX_TOOL_DEFINITIONS, persona: BUILD_PERSONA, rules: BUILD_RULES },
         review: { tools: REVIEW_TOOL_DEFINITIONS, persona: REVIEW_PERSONA, rules: REVIEW_RULES },
       },
     });
@@ -109,7 +110,11 @@ describe.skipIf(!ready)("a fix job end to end", () => {
   });
 
   /** `providers`: the worker's own providers, each at a scripted model; the run context then names `models`. */
-  async function runFix(script: ModelStep[], sandbox: FakeSandbox, options: { models?: RunContext["models"]; providers?: Array<{ section: string; script: ModelStep[] }> } = {}) {
+  async function runFix(
+    script: ModelStep[],
+    sandbox: FakeSandbox,
+    options: { models?: RunContext["models"]; providers?: Array<{ section: string; script: ModelStep[] }>; build?: BuildScope } = {},
+  ) {
     const model = await new FakeModel(script).start();
     models.push(model);
     runNumber += 1;
@@ -155,6 +160,7 @@ describe.skipIf(!ready)("a fix job end to end", () => {
           max_usd: 0,
           commit_email: "copilot@example.com",
           repositories: [repoName(repo.dir, true)!],
+          ...(options.build ? { build: options.build } : {}),
         },
         ...(options.models ? { models: options.models } : {}),
       },
@@ -332,7 +338,78 @@ describe.skipIf(!ready)("a fix job end to end", () => {
     expect(report.outcome).toBe("failed");
     expect(() => git("rev-parse", "--verify", `refs/heads/${branch}`)).toThrow();
   }, 180_000);
+
+  it("builds an approved customization to its scope: a test per check, its own rules, the scope in the pull request", async () => {
+    const build: BuildScope = {
+      scope: "A Sales Invoice cannot be submitted without a Sales Team row. Returns are not affected.",
+      checks: ["an invoice without a Sales Team row is refused", "a return without one is not", "the message says what to add"],
+      hours: 4,
+      hash: "h",
+    };
+    const sandbox = new FakeSandbox();
+    // the new rule's tests pass once invoice.py requires the row; the return's hold already
+    sandbox.judge = (module, mount) => {
+      const built = readFileSync(join(mount, "demo_app", "invoice.py"), "utf8").includes("sales_team");
+      const ok = module.endsWith("test_copilot_returns") || built;
+      return ok
+        ? { ok: true, exit_code: 0, output: "Ran 2 tests\nOK", ms: 100 }
+        : { ok: false, exit_code: 1, output: "AssertionError: ValidationError not raised\nFAILED (failures=1)", ms: 100, failure: "assertion" };
+    };
+    const { report, branch, model } = await runFix(buildScript(build), sandbox, { build });
+
+    expect(report.outcome).toBe("submitted");
+    expect(git("log", "-1", "--format=%s", branch)).toBe("feat: a Sales Invoice needs a Sales Team row");
+    // the build's own rules and the customer's scope reached the model
+    const first = JSON.stringify(model.requests[0]!.messages);
+    expect(first).toContain("How this build works");
+    expect(first).toContain("Returns are not affected.");
+    const body = String(github.calls.filter((call) => call.path.endsWith("/pulls")).at(-1)!.body.body);
+    expect(body).toContain("## Scope the customer approved");
+    expect(body).toContain("| an invoice without a Sales Team row is refused | `demo_app.tests.test_copilot_sales_team` | fail | pass |");
+    expect(body).toContain("| a return without one is not | `demo_app.tests.test_copilot_returns` | pass | pass |");
+    expect(body).toContain("not testable: the message is shown in the browser");
+    const args = (stub.callsTo("submit_change").at(-1)!.body.params as { arguments: Record<string, unknown> }).arguments;
+    expect(args.check_results).toEqual([
+      { check: build.checks[0], test: "demo_app.tests.test_copilot_sales_team", before: "fail", after: "pass", note: "" },
+      { check: build.checks[1], test: "demo_app.tests.test_copilot_returns", before: "pass", after: "pass", note: "" },
+      { check: build.checks[2], test: "", before: "not_testable", after: "not_testable", note: "the message is shown in the browser" },
+    ]);
+  }, 180_000);
 });
+
+function buildScript(build: BuildScope): ModelStep[] {
+  const write = (path: string, content: string): ModelStep => ({ tool: { name: "Write", arguments: { path, content } } });
+  const check = (module: string): ModelStep => ({ tool: { name: "sandbox", arguments: { action: "check", module } } });
+  return [
+    { tool: { name: "ToolSearch", arguments: { query: FIX_TOOL_SEARCH_QUERY } } },
+    write("apps/demo_app/demo_app/tests/test_copilot_sales_team.py", "from frappe.tests.utils import FrappeTestCase\n"),
+    write("apps/demo_app/demo_app/tests/test_copilot_returns.py", "from frappe.tests.utils import FrappeTestCase\n"),
+    check("demo_app.tests.test_copilot_sales_team"),
+    write("apps/demo_app/demo_app/invoice.py", "def validate(doc, method=None):\n    if not doc.is_return and not doc.sales_team:\n        raise ValueError('Add at least one Sales Person in the Sales Team table.')\n"),
+    check("demo_app.tests.test_copilot_sales_team"),
+    check("demo_app.tests.test_copilot_returns"),
+    { tool: { name: "sandbox", arguments: { action: "migrate" } } },
+    {
+      tool: {
+        name: "fix_done",
+        arguments: {
+          summary: "a Sales Invoice needs a Sales Team row",
+          test_module: "demo_app.tests.test_copilot_sales_team",
+          explanation: "validate() refuses an invoice without a Sales Team row; returns are left alone.",
+          check_results: [
+            { check: build.checks[0], test_module: "demo_app.tests.test_copilot_sales_team" },
+            { check: build.checks[1], test_module: "demo_app.tests.test_copilot_returns" },
+            { check: build.checks[2], not_testable: "the message is shown in the browser" },
+          ],
+        },
+      },
+    },
+    { text: "Done." },
+    { tool: { name: "ToolSearch", arguments: { query: REVIEW_TOOL_SEARCH_QUERY } } },
+    { tool: { name: "review_done", arguments: { findings: [] } } },
+    { text: "Reviewed." },
+  ];
+}
 
 /** The worker's feedback for another round (againPrompt), as the model got it: that message only. */
 function againFeedback(model: FakeModel): string {

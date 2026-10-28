@@ -5,10 +5,10 @@ import { basename, dirname, join } from "node:path";
 import type { FixLimits, ModelConfig, WorkerConfig } from "./config.js";
 import { preview, type Engine, type TurnObserver, type TurnResult } from "./engine.js";
 import { EventOutbox } from "./events.js";
-import { againPrompt, FIX_NUDGE, fixPrompt, restartPrompt, REVIEW_NUDGE, reviewPrompt } from "./fix-prompt.js";
+import { againPrompt, BUILD_NUDGE, FIX_NUDGE, fixPrompt, restartPrompt, REVIEW_NUDGE, reviewPrompt } from "./fix-prompt.js";
 import type { Finding, FixDone, FixToolState } from "./fix-tools.js";
 import { GitHubRest } from "./github.js";
-import { HubError, type HubClient, type Job, type RunContext, type SiteApp } from "./hub.js";
+import { HubError, type BuildScope, type HubClient, type Job, type RunContext, type SiteApp } from "./hub.js";
 import type { Logger } from "./log.js";
 import { StageModels, noModelReason, stageModels, type StageModel } from "./models.js";
 import { RunBudget, editsInside } from "./policy.js";
@@ -26,6 +26,8 @@ export const SECRET =
   /-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{40,}|sk-[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|(password|passwd|secret|api_key|apikey|token)\s*[:=]\s*["'][^"'\s]{8,}["']/i;
 
 export type EvidenceRow = { check: string; result: "pass" | "fail" | "not_run"; detail: string };
+/** A build's Done-when check as TBO Support keeps it (helpdesk.copilot.fixes): its test before and after the change. */
+export type CheckResult = { check: string; test: string; before: "pass" | "fail" | "not_testable"; after: "pass" | "fail" | "not_testable"; note: string };
 
 /** The router's view of the sessions a fix job opens. */
 export type FixSessions = { fixSessions: Map<string, FixToolState> };
@@ -172,6 +174,84 @@ export async function verify(
   return { evidence, failures };
 }
 
+/** The changed files of the app, and those that are not tests. */
+async function changedSources(state: FixToolState): Promise<string[]> {
+  const env = gitEnv(state.homeDir);
+  await runGit(state.dir, ["add", "--intent-to-add", "--all"], env);
+  const changed = (await runGit(state.dir, ["diff", "--no-ext-diff", "--name-only"], env)).split("\n").map((line) => line.trim()).filter(Boolean);
+  return changed.filter((path) => !TEST_PATH.test(path));
+}
+
+/**
+ * A build's own checks, from the sandbox's results: every Done-when test module
+ * passes on the change; at least one fails on an assertion on the code the site
+ * runs (the change was missing) and none errors there; a check that holds
+ * already passes before and after. Then migrate, the app's tests, no new
+ * errors and no secrets, as for a fix.
+ */
+export async function verifyBuild(
+  state: FixToolState,
+  base: string,
+  since: string,
+): Promise<{ evidence: EvidenceRow[]; failures: string[]; fatal?: string; checkResults: CheckResult[] }> {
+  const sources = await changedSources(state);
+  if (!sources.length) return { evidence: [], failures: [], fatal: "the change touches no code, only tests", checkResults: [] };
+  const rows = state.done!.check_results ?? [];
+  const modules = [...new Set(rows.filter((item) => !item.not_testable).map((item) => item.test_module))];
+  const before = new Map<string, SandboxResult>();
+  const restore = await codeAsTheSiteRunsIt(state.dir, base, sources, state.homeDir);
+  try {
+    for (const module of modules) before.set(module, await state.sandbox.check(state.sandboxId, state.app, module));
+  } finally {
+    await restore();
+  }
+  const after = new Map<string, SandboxResult>();
+  for (const module of modules) after.set(module, await state.sandbox.check(state.sandboxId, state.app, module));
+
+  const failures: string[] = [];
+  for (const module of modules) {
+    const was = before.get(module)!;
+    if (!was.ok && was.failure !== "assertion") {
+      const how = was.failure === "error" ? "errored" : "failed without a test report saying how";
+      failures.push(
+        `${module} ${how} on the code the site runs instead of failing an assertion: a test of what is not built yet must still import and run the real code, and fail on the behaviour that is missing`,
+      );
+    }
+    if (!after.get(module)!.ok) {
+      const checks = rows.filter((item) => item.test_module === module).map((item) => `"${item.check}"`);
+      failures.push(`${checks.join(", ")} still fails after the change (${module}): ${firstLines(after.get(module)!.output)}`);
+    }
+  }
+  if (modules.length && ![...before.values()].some((run) => !run.ok && run.failure === "assertion")) {
+    failures.push(
+      "none of the Done-when tests fails on the code the site runs, so none shows the change: the tests of what is new must call the real code and fail on it until the change is built",
+    );
+  }
+  const checkResults: CheckResult[] = rows.map((item) => {
+    if (item.not_testable) return { check: item.check, test: "", before: "not_testable", after: "not_testable", note: item.not_testable };
+    const was = before.get(item.test_module)!;
+    const now = after.get(item.test_module)!;
+    return { check: item.check, test: item.test_module, before: was.ok ? "pass" : "fail", after: now.ok ? "pass" : "fail", note: "" };
+  });
+  const migrate = await state.sandbox.migrate(state.sandboxId);
+  const tests = await state.sandbox.tests(state.sandboxId, state.app);
+  const errors = await state.sandbox.errorsSince(state.sandboxId, since);
+  const secret = SECRET.test(await runGit(state.dir, ["diff", "--no-ext-diff"], gitEnv(state.homeDir)));
+  const evidence: EvidenceRow[] = [
+    ...checkResults.map((item): EvidenceRow => {
+      if (item.after === "not_testable") return { check: `Done when: ${item.check}`, result: "not_run", detail: `not testable: ${item.note}` };
+      const shown = item.before === "fail" ? "fails before the change, passes after" : "holds before and after the change";
+      return { check: `Done when: ${item.check}`, result: item.after === "pass" ? "pass" : "fail", detail: `${shown} (${item.test})` };
+    }),
+    row("bench migrate", migrate),
+    row("the app's own tests", tests),
+    { check: "no new errors on the copy", result: errors.length ? "fail" : "pass", detail: errors.slice(0, 3).join("; ").slice(0, 300) },
+    { check: "no secrets in the change", result: secret ? "fail" : "pass", detail: secret ? "a secret-shaped value is in the diff" : "" },
+  ];
+  failures.push(...evidence.slice(checkResults.length).filter((item) => item.result === "fail").map((item) => `${item.check}${item.detail ? `: ${item.detail}` : ""}`));
+  return { evidence, failures, checkResults };
+}
+
 const MARK: Record<EvidenceRow["result"], string> = { pass: "✅", fail: "❌", not_run: "–" };
 
 export function pullBody(input: {
@@ -180,19 +260,43 @@ export function pullBody(input: {
   evidence: EvidenceRow[];
   findings: Finding[];
   testedOn: string;
+  checkResults?: CheckResult[];
 }): string {
   const { context, done, evidence, findings, testedOn } = input;
   const cell = (text: string) => text.replace(/\|/g, "\\|").replace(/\n/g, " ");
-  const lines = [
-    "## Summary",
-    "",
-    done.summary,
-    "",
-    "## Root cause",
-    "",
-    String(context.diagnosis?.summary ?? "").slice(0, 2000) || "See the ticket.",
-    "",
-    "## The change",
+  const build = context.fix?.build;
+  const lines = build
+    ? [
+        "## Summary",
+        "",
+        done.summary,
+        "",
+        "## Scope the customer approved",
+        "",
+        build.scope,
+        "",
+        "## Done when",
+        "",
+        "| Check | Test | Before the change | After |",
+        "|---|---|---|---|",
+        ...(input.checkResults ?? []).map((item) =>
+          item.after === "not_testable"
+            ? `| ${cell(item.check)} | – | not testable: ${cell(item.note)} | |`
+            : `| ${cell(item.check)} | \`${item.test}\` | ${item.before} | ${item.after} |`,
+        ),
+        "",
+      ]
+    : [
+        "## Summary",
+        "",
+        done.summary,
+        "",
+        "## Root cause",
+        "",
+        String(context.diagnosis?.summary ?? "").slice(0, 2000) || "See the ticket.",
+        "",
+      ];
+  lines.push(
     "",
     done.explanation,
     "",
@@ -202,7 +306,7 @@ export function pullBody(input: {
     "|---|---|---|",
     ...evidence.map((item) => `| ${cell(item.check)} | ${MARK[item.result]} | ${cell(item.detail)} |`),
     "",
-  ];
+  );
   if (findings.length) {
     lines.push("## Review", "", ...findings.map((finding) => `- ${finding.severity === "must_fix" ? "**Must fix:** " : ""}${finding.file ? `\`${finding.file}\`: ` : ""}${finding.note}`), "");
   }
@@ -228,10 +332,10 @@ function pushEnv(homeDir: string, repository: string, token: string): NodeJS.Pro
   });
 }
 
-async function commitAndPush(target: AppCheckout, branch: string, done: FixDone, task: string, token: string, homeDir: string): Promise<string> {
+async function commitAndPush(target: AppCheckout, branch: string, done: FixDone, task: string, token: string, homeDir: string, kind: "fix" | "feat" = "fix"): Promise<string> {
   const env = gitEnv(homeDir);
   await runGit(target.dir, ["add", "--all"], env);
-  await runGit(target.dir, ["commit", "--quiet", "-m", `fix: ${done.summary}`, "-m", `${done.explanation}\n\nRefs ${task}`], env);
+  await runGit(target.dir, ["commit", "--quiet", "-m", `${kind}: ${done.summary}`, "-m", `${done.explanation}\n\nRefs ${task}`], env);
   const head = (await runGit(target.dir, ["rev-parse", "HEAD"], env)).trim();
   await runGit(target.dir, ["push", "--quiet", "--end-of-options", target.repository, `HEAD:refs/heads/${branch}`], pushEnv(homeDir, target.repository, token), 300_000);
   return head;
@@ -375,6 +479,8 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
     const since = new Date().toISOString();
     outbox.push("sandbox", { id: started.id, tested_on: testedOn, ...(started.note ? { note: started.note } : {}) });
 
+    // a build of an approved customization: its own rules, fix_done covers the scope's checks
+    const build: BuildScope | undefined = fix.build && fix.build.checks?.length ? fix.build : undefined;
     const state: FixToolState = {
       app: target.app,
       dir: target.dir,
@@ -383,10 +489,14 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
       sandbox,
       sandboxId: started.id,
       checks: [],
+      ...(build ? { build } : {}),
     };
     const root = workspace.root;
     const openFix = async (plan: StageModel): Promise<string> => {
-      const id = await engine.openSession(root, `Copilot fix ${run}`, await deps.engineModel(plan), { profile: "fix", decide: editsInside(root, target.dir) });
+      const id = await engine.openSession(root, `Copilot ${build ? "build" : "fix"} ${run}`, await deps.engineModel(plan), {
+        profile: build ? "build" : "fix",
+        decide: editsInside(root, target.dir),
+      });
       sessions.push(id);
       router.fixSessions.set(id, state);
       return id;
@@ -395,7 +505,7 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
     const fixTurns = async (session: string, prompt: string): Promise<TurnResult> => {
       budget.use(fixModels.current!);
       let turn: TurnResult = mayGoOn() ? await engine.runTurn(session, prompt, observer) : { reason: "aborted", text: "" };
-      if (!state.done && mayGoOn() && !flags.budgetReason && turn.reason === "completed") turn = await engine.runTurn(session, FIX_NUDGE, observer);
+      if (!state.done && mayGoOn() && !flags.budgetReason && turn.reason === "completed") turn = await engine.runTurn(session, build ? BUILD_NUDGE : FIX_NUDGE, observer);
       return turn;
     };
     // a review in a fresh session: its turn and, without a verdict, one reminder
@@ -405,7 +515,7 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
       const session = await engine.openSession(root, `Copilot review ${run}`, await deps.engineModel(plan), { profile: "review" });
       sessions.push(session);
       router.fixSessions.set(session, state);
-      let review = await engine.runTurn(session, reviewPrompt(target.app, String(context.diagnosis?.summary ?? "")), observer);
+      let review = await engine.runTurn(session, reviewPrompt(target.app, String(context.diagnosis?.summary ?? ""), build), observer);
       if (!state.findings && mayGoOn() && !flags.budgetReason && review.reason === "completed") review = await engine.runTurn(session, REVIEW_NUDGE, observer);
       return review;
     };
@@ -416,6 +526,7 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
     let fixSession = await openFix(fixModels.current);
 
     let evidence: EvidenceRow[] = [];
+    let checkResults: CheckResult[] = [];
     let findings: Finding[] = [];
     let failures: string[] = [];
     for (let round = 1; round <= limits.maxRounds; round += 1) {
@@ -441,9 +552,10 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
       const said = state.done as FixDone | undefined;
       // whole: fix_done keeps it within CANNOT_FIX_CHARS, so with these words it fits TBO Support's 1,000
       if (said?.cannot_fix) return await fail(`it stopped by itself and explains: ${said.explanation}`);
-      const checked = await verify(state, target.commit, since);
+      const checked = build ? await verifyBuild(state, target.commit, since) : { ...(await verify(state, target.commit, since)), checkResults: [] };
       evidence = checked.evidence;
       failures = checked.failures;
+      checkResults = checked.checkResults;
       outbox.push("verified", { round, evidence: evidence.map((item) => [item.check, item.result]) });
       if (checked.fatal) return await fail(checked.fatal);
       findings = [];
@@ -475,13 +587,13 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
     }
 
     const done = state.done!;
-    await commitAndPush(target, fix.branch, done, fix.task, key.token, cfg.homeDir);
+    await commitAndPush(target, fix.branch, done, fix.task, key.token, cfg.homeDir, build ? "feat" : "fix");
     const github = deps.github ?? new GitHubRest(cfg.githubApi ?? "https://api.github.com");
     const pull = await github.createPull(chosen.repo, key.token, {
       title: `${fix.task}: ${done.summary}`.slice(0, 250),
       head: fix.branch,
       base: chosen.app.branch || "main",
-      body: pullBody({ context, done, evidence, findings, testedOn }),
+      body: pullBody({ context, done, evidence, findings, testedOn, checkResults }),
     });
     try {
       await github.addLabels(chosen.repo, key.token, pull.number, ["copilot", "no-auto-merge"]);
@@ -500,6 +612,7 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
       people_checks: done.people_checks,
       risk_notes: [done.risk_notes, ...findings.map((item) => `${item.severity}: ${item.note}`)].filter(Boolean).join("\n").slice(0, 2000),
       cost: budget.cost(),
+      ...(build ? { check_results: checkResults } : {}),
     });
     if (reply.isError) return await fail(`TBO Support refused the change: ${reply.text.slice(0, 300)}`);
     outbox.close();
