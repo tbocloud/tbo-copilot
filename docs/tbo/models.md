@@ -10,7 +10,8 @@ needs another model gets its own row; nothing else changes.
 TBO Support → **Settings → AI providers**:
 
 - **OpenAI** and **Anthropic-compatible** sections: each with its model, address and key. Luna is in the OpenAI
-  section, Kimi in the Anthropic-compatible one (`https://api.moonshot.ai/anthropic`).
+  section, Kimi in the Anthropic-compatible one (`https://api.moonshot.ai/anthropic`), which has had no key since
+  28 Oct 2026 (see Data terms).
 - **Primary provider** and **Fall back to the other provider**: the order, for every job.
 - **Models per job**: one optional row per job, with its own model in either section. Blank uses the section's
   model, so with no rows every job uses the two sections as they are. A change applies from the job's next call,
@@ -39,7 +40,7 @@ address the worker's own file names, and a section the worker has no key for is 
 | Setting | For |
 |---|---|
 | `TBO_PROVIDER_OPENAI_API_KEY` | TBO Support's OpenAI section. Address `https://api.openai.com/v1`, API format OpenAI Responses (GPT-5.6 refuses tools with reasoning through Chat Completions) |
-| `TBO_PROVIDER_MOONSHOT_API_KEY` | TBO Support's Anthropic-compatible section (Kimi). Address `https://api.moonshot.ai/v1`, Chat Completions |
+| `TBO_PROVIDER_MOONSHOT_API_KEY` | TBO Support's Anthropic-compatible section (Kimi). Address `https://api.moonshot.ai/v1`, Chat Completions. Not set since 28 Oct 2026 (see Data terms) |
 | `TBO_PROVIDER_<OPENAI or MOONSHOT>_BASE_URL`, `_API_STYLE` | Only to change those defaults |
 | `TBO_PROVIDER_<OPENAI or MOONSHOT>_IMAGES` | Whether the model reads pictures: on for OpenAI, off for Moonshot unless set to `1` |
 | `TBO_MODEL_*` | The older single model for every stage; used when TBO Support names no model the worker has a key for |
