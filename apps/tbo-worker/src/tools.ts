@@ -14,6 +14,8 @@ export const MAX_SET_ASIDE = 200;
 /** A customization's draft scope, as TBO Support keeps it in the estimate (helpdesk api.customization). */
 export const MAX_SCOPE_CHARS = 4000;
 export const MAX_DONE_WHEN = 15;
+/** At most this many site errors a report names (Phase 9: they link the ticket to Copilot's known issues). */
+export const MAX_ERROR_SIGNATURES = 10;
 /** The causes a correction belongs to (customer_mistake only when an agent asked for it). */
 export const CORRECTED_CATEGORIES = ["wrong_setting", "data_damaged_by_bug", "customer_mistake"];
 /** Never corrected by Copilot; the hub and the customer's site refuse them too. */
@@ -150,6 +152,13 @@ export const TOOL_DEFINITIONS: PluginToolDef[] = [
             },
           },
         },
+        error_signatures: {
+          type: "array",
+          maxItems: MAX_ERROR_SIGNATURES,
+          items: { type: "string", maxLength: 600 },
+          description:
+            "The site errors the finding rests on, each as 'app | method | the error's last line', from get_error_log (its app, method and the last line of error). TBO Support keeps only errors the site gave this run.",
+        },
       },
       required: ["root_cause_category", "confidence", "summary", "evidence"],
       additionalProperties: false,
@@ -252,6 +261,17 @@ export function checkReport(args: Record<string, unknown>, prepareCorrection = f
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) return "confidence must be a number from 0 to 1";
   if (typeof args.summary !== "string" || !args.summary.trim()) return "summary is required";
   if (args.evidence !== undefined && !Array.isArray(args.evidence)) return "evidence must be a list";
+  const signatures = args.error_signatures;
+  if (
+    signatures !== undefined &&
+    !(
+      Array.isArray(signatures) &&
+      signatures.length <= MAX_ERROR_SIGNATURES &&
+      signatures.every((item) => typeof item === "string" && item.trim() && item.length <= 600)
+    )
+  ) {
+    return `error_signatures must be a list of at most ${MAX_ERROR_SIGNATURES} texts, each "app | method | the error's last line", or left out`;
+  }
   if (args.change_set !== undefined && args.change_set !== null) {
     const category = String(args.root_cause_category);
     if (!CORRECTED_CATEGORIES.includes(category)) {

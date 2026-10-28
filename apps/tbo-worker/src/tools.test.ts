@@ -56,6 +56,13 @@ describe("the run's tools", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("send the errors the finding rests on to TBO Support", async () => {
+    const { hub, calls } = fakeHub(() => ({ text: "Run CPR-1 is now Preparing Fix.", isError: false }));
+    const signatures = ["alpha_trading | alpha_trading.accounts.margin.validate | AttributeError: no get_minimum_margin"];
+    await runTool(hub, runTools(), "hub_submit_investigation", { ...report, error_signatures: signatures });
+    expect(calls[0]!.args.error_signatures).toEqual(signatures);
+  });
+
   it("tell the model what to fix in a report before sending it", async () => {
     const { hub, calls } = fakeHub(() => ({ text: "", isError: false }));
     const result = await runTool(hub, runTools(), "hub_submit_investigation", { ...report, root_cause_category: "maybe" });
@@ -95,6 +102,18 @@ describe("checkReport", () => {
   ])("refuses %j", (args, word) => expect(checkReport(args)).toContain(word));
 
   it("accepts a complete report", () => expect(checkReport(report)).toBeUndefined());
+
+  it("takes the errors the finding rests on, as a short list of texts (Phase 9)", () => {
+    const schema = TOOL_DEFINITIONS.find((tool) => tool.name === "hub_submit_investigation")!.parameters as {
+      properties: Record<string, { type?: string }>;
+    };
+    expect(schema.properties.error_signatures?.type).toBe("array");
+    const signature = "alpha_trading | alpha_trading.accounts.margin.validate | AttributeError: no get_minimum_margin";
+    expect(checkReport({ ...report, error_signatures: [signature] })).toBeUndefined();
+    expect(checkReport({ ...report, error_signatures: signature })).toContain("error_signatures");
+    expect(checkReport({ ...report, error_signatures: Array(11).fill(signature) })).toContain("at most 10");
+    expect(checkReport({ ...report, error_signatures: [" "] })).toContain("error_signatures");
+  });
 
   it("needs a kind message for a customization request; its hours are optional but must be hours", () => {
     const request = { ...report, root_cause_category: "customization_request", customer_message: "This is a change, not a fault." };
