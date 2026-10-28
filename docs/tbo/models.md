@@ -14,8 +14,9 @@ TBO Support → **Settings → AI providers**:
   28 Oct 2026 (see Data terms).
 - **Primary provider** and **Fall back to the other provider**: the order, for every job.
 - **Models per job**: one optional row per job, with its own model in either section. Blank uses the section's
-  model, so with no rows every job uses the two sections as they are. A change applies from the job's next call,
-  with no deploy.
+  model, so with no rows every job uses the primary section, and the other one only when the fallback is on. A
+  change applies from the job's next call, with no deploy. Since 28 Oct 2026 that is OpenAI alone; a row with a Kimi
+  model would send that job's customer data to Moonshot, so none is added while the Data terms decision stands.
 
 | Job | What it does | Where it runs |
 |---|---|---|
@@ -83,9 +84,16 @@ or keeps Kimi to jobs without customer data (a row in Models per job), or leaves
 - On the hubs, **Fall back to the other provider** is off, and the Anthropic-compatible section has no key.
 - The worker has no `TBO_PROVIDER_MOONSHOT_API_KEY`.
 
-Every job runs on OpenAI; when OpenAI fails, the job waits or goes to a person as before. Kimi comes back as the
-fallback only after Moonshot restricts training in writing. Kimi may still review TBO's own code, which holds no
-customer data.
+Every job runs on OpenAI, and nothing moves to Kimi when OpenAI fails:
+
+- TBO Support's own AI features (triage, suggested replies) stop, and TBO Support sends its alert that no other
+  provider is set up.
+- A Copilot investigation that cannot reach a model ends as Failed. The customer sees "With our team", and the people
+  following the ticket are told.
+- A fix that fails is marked Failed on the ticket, and a person can start it again.
+
+Kimi comes back as the fallback only after Moonshot restricts training in writing. Kimi may still review TBO's own
+code, which holds no customer data.
 
 ## The desktop app
 
