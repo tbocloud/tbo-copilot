@@ -44,7 +44,7 @@ address the worker's own file names, and a section the worker has no key for is 
 | `TBO_PROVIDER_MOONSHOT_API_KEY` | TBO Support's Anthropic-compatible section (Kimi). Address `https://api.moonshot.ai/v1`, Chat Completions. Not set since 28 Oct 2026 (see Data terms) |
 | `TBO_PROVIDER_<OPENAI or MOONSHOT>_BASE_URL`, `_API_STYLE` | Only to change those defaults |
 | `TBO_PROVIDER_<OPENAI or MOONSHOT>_IMAGES` | Whether the model reads pictures: on for OpenAI, off for Moonshot unless set to `1` |
-| `TBO_MODEL_*` | The older single model for every stage; used when TBO Support names no model the worker has a key for |
+| `TBO_MODEL_*` | The older single model for every stage; used when TBO Support names no model the worker has a key for. Without `TBO_MODEL_BASE_URL` and `TBO_MODEL_ID` it is Kimi (`https://api.moonshot.ai/v1`, `kimi-k2.6`), and a bare `MOONSHOT_API_KEY` counts as its key, so while the Data terms decision stands both are set to OpenAI and no Moonshot setting is present |
 
 - **Each stage on its own model:** the investigation, the fix and the review each take their job's main model.
 - **Fallback:** when a turn fails on a key, billing or quota, a wrong model, a server error, the network or a
@@ -82,7 +82,7 @@ or keeps Kimi to jobs without customer data (a row in Models per job), or leaves
 **Decision (28 Oct 2026): the fallback is off.** No customer data goes to Kimi:
 
 - On the hubs, **Fall back to the other provider** is off, and the Anthropic-compatible section has no key.
-- The worker has no `TBO_PROVIDER_MOONSHOT_API_KEY`.
+- The worker has no `TBO_PROVIDER_MOONSHOT_API_KEY` and no `MOONSHOT_API_KEY`. Its older single model, which a stage falls back to when TBO Support names no model the worker has a key for, is OpenAI too: `TBO_MODEL_BASE_URL=https://api.openai.com/v1`, `TBO_MODEL_ID=gpt-5.6-luna`, `TBO_MODEL_API_STYLE=responses`. It must not be left on its defaults, which are Kimi (checked on the worker server on 28 Oct 2026).
 
 Every job runs on OpenAI, and nothing moves to Kimi when OpenAI fails:
 
