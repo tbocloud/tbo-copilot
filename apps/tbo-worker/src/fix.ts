@@ -125,11 +125,9 @@ export async function verify(
   since: string,
 ): Promise<{ evidence: EvidenceRow[]; failures: string[]; fatal?: string }> {
   const env = gitEnv(state.homeDir);
-  await runGit(state.dir, ["add", "--intent-to-add", "--all"], env);
-  const changed = (await runGit(state.dir, ["diff", "--no-ext-diff", "--name-only"], env)).split("\n").map((line) => line.trim()).filter(Boolean);
-  const sources = changed.filter((path) => !TEST_PATH.test(path));
-  if (!sources.length) return { evidence: [], failures: [], fatal: "the change touches no code, only tests" };
   const module = state.done!.test_module;
+  const sources = await changedSources(state, [module]);
+  if (!sources.length) return { evidence: [], failures: [], fatal: "the change touches no code, only tests" };
   const restore = await codeAsTheSiteRunsIt(state.dir, base, sources, state.homeDir);
   let before: SandboxResult;
   try {
@@ -174,12 +172,30 @@ export async function verify(
   return { evidence, failures };
 }
 
-/** The changed files of the app, and those that are not tests. */
-async function changedSources(state: FixToolState): Promise<string[]> {
+/**
+ * The app's changed files that are not tests: what is put back as the site runs it for the run before
+ * the change. A declared test module stays wherever it lives (demo_app.checks.done_when too), so its
+ * check runs on the code the site runs instead of failing to import.
+ */
+export async function changedSources(state: FixToolState, testModules: string[] = []): Promise<string[]> {
   const env = gitEnv(state.homeDir);
   await runGit(state.dir, ["add", "--intent-to-add", "--all"], env);
   const changed = (await runGit(state.dir, ["diff", "--no-ext-diff", "--name-only"], env)).split("\n").map((line) => line.trim()).filter(Boolean);
-  return changed.filter((path) => !TEST_PATH.test(path));
+  const tests = new Set(testModules.filter(Boolean).flatMap((module) => [`${module.replace(/\./g, "/")}.py`, `${module.replace(/\./g, "/")}/__init__.py`]));
+  return changed.filter((path) => !TEST_PATH.test(path) && !tests.has(path));
+}
+
+/** A build's scope as TBO Support sent it: none for a fix, the scope when usable, else why not. */
+export function usableBuild(build: unknown): BuildScope | undefined | string {
+  if (build === undefined || build === null) return undefined;
+  const { scope, checks } = (typeof build === "object" ? build : {}) as Record<string, unknown>;
+  const usable =
+    typeof scope === "string" &&
+    scope.trim() &&
+    Array.isArray(checks) &&
+    checks.length > 0 &&
+    checks.every((check) => typeof check === "string" && check.trim());
+  return usable ? (build as BuildScope) : "the approved build has no scope text or no Done-when checks";
 }
 
 /**
@@ -194,10 +210,10 @@ export async function verifyBuild(
   base: string,
   since: string,
 ): Promise<{ evidence: EvidenceRow[]; failures: string[]; fatal?: string; checkResults: CheckResult[] }> {
-  const sources = await changedSources(state);
-  if (!sources.length) return { evidence: [], failures: [], fatal: "the change touches no code, only tests", checkResults: [] };
   const rows = state.done!.check_results ?? [];
   const modules = [...new Set(rows.filter((item) => !item.not_testable).map((item) => item.test_module))];
+  const sources = await changedSources(state, modules);
+  if (!sources.length) return { evidence: [], failures: [], fatal: "the change touches no code, only tests", checkResults: [] };
   const before = new Map<string, SandboxResult>();
   const restore = await codeAsTheSiteRunsIt(state.dir, base, sources, state.homeDir);
   try {
@@ -479,8 +495,10 @@ export async function runFixJob(job: Job, deps: FixDeps): Promise<RunReport> {
     const since = new Date().toISOString();
     outbox.push("sandbox", { id: started.id, tested_on: testedOn, ...(started.note ? { note: started.note } : {}) });
 
-    // a build of an approved customization: its own rules, fix_done covers the scope's checks
-    const build: BuildScope | undefined = fix.build && fix.build.checks?.length ? fix.build : undefined;
+    // a build of an approved customization: its own rules, fix_done covers the scope's checks; a build
+    // TBO Support sent without a usable scope never runs as an ordinary fix
+    const build = usableBuild(fix.build);
+    if (typeof build === "string") return await fail(build);
     const state: FixToolState = {
       app: target.app,
       dir: target.dir,
