@@ -65,6 +65,28 @@ export type FixContext = {
 /** The written scope a customer approved: what will be built, and the checks that show it is done. */
 export type BuildScope = { scope: string; checks: string[]; hours?: number | null; hash?: string | null };
 
+/** What Copilot remembers about one error (Phase 9). Another customer's issue comes as code facts only: no signature. */
+export type KnownIssue = {
+  name: string;
+  title?: string | null;
+  status?: string | null;
+  app?: string | null;
+  error_type?: string | null;
+  method?: string | null;
+  root_cause_category?: string | null;
+  fix?: { pull_request?: string | null; title?: string | null; files?: string[]; merge_commit?: string | null; fixed_at?: string | null } | null;
+  /** True: this site runs a commit with the fix; false: it does not; null: unknown or not fixed. */
+  this_site_has_the_fix?: boolean | null;
+  came_back?: number;
+  sites_seen?: number;
+  /** Only for this customer's own errors: app | method | the error's last line, digits as #. */
+  signature?: string;
+  seen_here?: { first?: string; last?: string; count?: number };
+};
+
+/** A deploy of the site through TBO Support: when it finished and each app's commit. */
+export type SiteDeploy = { finished_at?: string; apps?: Array<{ app?: string; commit?: string }> };
+
 export type Diagnosis = {
   root_cause_category?: string | null;
   confidence?: number | null;
@@ -94,12 +116,16 @@ export type RunContext = {
   };
   triage?: Record<string, unknown>;
   customer?: Record<string, unknown> | null;
-  site?: { registry?: string; environment?: string; site_url?: string; apps: SiteApp[] } | null;
+  site?: { registry?: string; environment?: string; site_url?: string; apps: SiteApp[]; deploys?: SiteDeploy[] } | null;
   connection?: string | null;
   conversation?: Array<{ kind?: string; direction?: string; sender?: string; content?: string; at?: string }>;
   /** The ticket's attachments; the worker downloads the pictures and videos (`HubClient.ticketFile`). */
   files?: Array<{ file_name?: string; file_url?: string; is_private?: number; file_size?: number }>;
   previous_runs?: Array<Record<string, unknown>>;
+  /** Errors Copilot already knows for this ticket and site (Phase 9): check them first. */
+  known_issues?: KnownIssue[];
+  /** "Error watch" when Copilot raised the ticket itself, from the site's error log. */
+  raised_by_copilot?: string | null;
   /** An agent asked for the correction of the customer's own mistake (Phase 3). */
   prepare_correction?: boolean;
   /** This ticket's corrections so far: a new look prepares only the records they missed. */

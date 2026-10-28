@@ -299,6 +299,45 @@ function ticketMarkdown(context: RunContext): string {
   ].join("\n");
 }
 
+/** The known issues as the investigation reads them; the signature and titles come from the site, so they are data. */
+export function knownIssuesMarkdown(context: RunContext): string {
+  const issues = context.known_issues ?? [];
+  if (!issues.length) return "";
+  const parts = [
+    "# Errors Copilot already knows",
+    "",
+    "Each one is an error Copilot met before on this or another customer's site. Check whether this ticket is one of them before you look further.",
+    "",
+  ];
+  for (const issue of issues) {
+    const fix = issue.fix;
+    const hasFix = issue.this_site_has_the_fix;
+    parts.push(
+      `## ${issue.name}: ${issue.status ?? "Open"}`,
+      "",
+      untrusted(
+        [
+          `Title: ${issue.title ?? ""}`,
+          `App: ${issue.app ?? "?"}; method: ${issue.method ?? "?"}; error type: ${issue.error_type ?? "?"}`,
+          issue.signature ? `Signature: ${issue.signature}` : "",
+          issue.root_cause_category ? `Root cause found before: ${issue.root_cause_category}` : "",
+          fix
+            ? `Fixed by: ${fix.title ?? ""} ${fix.pull_request ?? ""} (merge ${String(fix.merge_commit ?? "").slice(0, 12)}, ${fix.fixed_at ?? ""}); files: ${(fix.files ?? []).join(", ") || "?"}`
+            : "",
+          `This site has the fix: ${hasFix === true ? "yes" : hasFix === false ? "no" : "unknown"}`,
+          issue.seen_here ? `Seen on this site: ${issue.seen_here.count ?? 0} times, ${issue.seen_here.first ?? "?"} to ${issue.seen_here.last ?? "?"}` : "",
+          `Sites it was seen on: ${issue.sites_seen ?? 0}${issue.came_back ? `; came back ${issue.came_back} time(s) after a fix` : ""}`,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        3000,
+      ),
+      "",
+    );
+  }
+  return parts.join("\n");
+}
+
 function conversationMarkdown(context: RunContext): string {
   const messages = context.conversation ?? [];
   if (!messages.length) return "# Conversation\n\nNo messages yet.\n";
@@ -323,6 +362,11 @@ function indexMarkdown(context: RunContext, apps: AppCheckout[], problems: strin
     "- `context/triage.json`: the hub's first guess (category, priority, summary); a guess, not a finding",
     "- `context/site.json`: the customer's site and the apps below",
     "- `context/previous_runs.json`: earlier Copilot runs on this ticket",
+    ...(context.known_issues?.length ? ["- `context/known_issues.md`: errors Copilot already knows for this ticket and site; check them first"] : []),
+    ...(context.site?.deploys?.length ? ["- `context/site.json` `deploys`: the site's latest deploys through TBO Support; an error logged before the latest one may be fixed already"] : []),
+    ...(context.raised_by_copilot === "Error watch"
+      ? ["", "Copilot's error watch raised this ticket from the site's error log, not the customer: the description holds the samples. The customer has not written anything yet."]
+      : []),
     ...extra,
     "",
     "## Code",
@@ -451,6 +495,7 @@ export async function prepareWorkspace(job: Job, options: WorkspaceOptions): Pro
     environment: context.site?.environment ?? null,
     apps: apps.map(({ app, repository, commit, source, branch, note }) => ({ app, repository, commit, source, branch, note })),
     other_apps: (context.site?.apps ?? []).filter((app) => !apps.some((read) => read.app === app.app)).map((app) => app.app),
+    deploys: context.site?.deploys ?? [],
   };
   await writeFile(join(contextDir, "ticket.md"), ticketMarkdown(context));
   await writeFile(join(contextDir, "conversation.md"), conversationMarkdown(context));
@@ -458,6 +503,8 @@ export async function prepareWorkspace(job: Job, options: WorkspaceOptions): Pro
   await writeFile(join(contextDir, "site.json"), JSON.stringify(site, null, 1));
   await writeFile(join(contextDir, "previous_runs.json"), JSON.stringify(context.previous_runs ?? [], null, 1));
   if (context.diagnosis) await writeFile(join(contextDir, "diagnosis.json"), JSON.stringify(context.diagnosis, null, 1));
+  const known = knownIssuesMarkdown(context);
+  if (known) await writeFile(join(contextDir, "known_issues.md"), known);
   const media = await ticketFiles(context, root, contextDir, options, problems);
   await writeFile(join(root, "INDEX.md"), indexMarkdown(context, apps, problems, changing?.app, media));
   // every clone is read-only but the one a fix job changes
