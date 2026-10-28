@@ -58,7 +58,12 @@ export type FixContext = {
   repositories: string[];
   /** What people asked for when they rejected earlier fixes of this run (newest first). */
   guidance?: string[];
+  /** A build of a customization the customer approved (Phase 8): Copilot builds exactly this. */
+  build?: BuildScope | null;
 };
+
+/** The written scope a customer approved: what will be built, and the checks that show it is done. */
+export type BuildScope = { scope: string; checks: string[]; hours?: number | null; hash?: string | null };
 
 export type Diagnosis = {
   root_cause_category?: string | null;

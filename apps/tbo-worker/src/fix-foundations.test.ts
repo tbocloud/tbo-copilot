@@ -225,4 +225,21 @@ describe("the fix prompt", () => {
     expect(prompt).toContain("- use the price list rate");
     expect(fixPrompt({ ...context, fix: { ...context.fix, guidance: [] } }, "alpha", "copilot/x", "a sandbox")).not.toContain("rejected");
   });
+
+  it("asks a build for exactly the scope the customer approved, and its review compares with it", async () => {
+    const { fixPrompt, reviewPrompt } = await import("./fix-prompt.js");
+    const build = { scope: "Require a Sales Team row on Sales Invoice.", checks: ["an invoice without one is refused", "a return is not"] };
+    const context = { run: "r", kind: "fix", ticket: { name: "0004" }, fix: { task: "TASK-1", closes: "", branch: "copilot/x", attempt: 1, max_usd: 3, commit_email: "c@x", repositories: [], build } };
+
+    const prompt = fixPrompt(context, "alpha", "copilot/x", "a sandbox");
+    expect(prompt).toContain("Build the customization the customer approved on ticket 0004");
+    expect(prompt).toContain("Require a Sales Team row on Sales Invoice.");
+    expect(prompt).toContain("- a return is not");
+    expect(prompt).toContain("check_results");
+
+    const review = reviewPrompt("alpha", "", build);
+    expect(review).toContain("Anything beyond this scope is must_fix");
+    expect(review).toContain("- an invoice without one is refused");
+    expect(reviewPrompt("alpha", "the margin is wrong")).toContain("The bug it should fix");
+  });
 });

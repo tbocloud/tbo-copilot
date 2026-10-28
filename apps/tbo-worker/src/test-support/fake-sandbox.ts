@@ -15,6 +15,8 @@ export class FakeSandbox implements Sandbox {
   alwaysPasses = false;
   /** The check errors on the unchanged code (an import error) instead of failing an assertion. */
   errorsBefore = false;
+  /** A build's judge: a module's result from the mounted app's code (the fix's margin rule when unset). */
+  judge?: (module: string, mount: string) => SandboxResult;
   private mount = "";
 
   async start(spec: SandboxSpec): Promise<{ id: string; tested_on: string }> {
@@ -29,6 +31,7 @@ export class FakeSandbox implements Sandbox {
 
   async check(_id: string, _app: string, module: string): Promise<SandboxResult> {
     this.calls.push(`check ${module}`);
+    if (this.judge) return this.judge(module, this.mount);
     const code = readFileSync(join(this.mount, "demo_app", "invoice.py"), "utf8");
     const fixed = this.alwaysPasses || code.includes("(doc.selling - doc.buying) / doc.selling");
     if (fixed) return this.run(true, "Ran 1 test\nOK");

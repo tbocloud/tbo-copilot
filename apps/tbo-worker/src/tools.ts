@@ -11,6 +11,9 @@ export const RUN_TOOL_NAMES = ["hub_get_run_context", "hub_customer_erp_read", "
 export const MAX_CHANGE_RECORDS = 1000;
 /** At most this many records left to a person in one report. */
 export const MAX_SET_ASIDE = 200;
+/** A customization's draft scope, as TBO Support keeps it in the estimate (helpdesk api.customization). */
+export const MAX_SCOPE_CHARS = 4000;
+export const MAX_DONE_WHEN = 15;
 /** The causes a correction belongs to (customer_mistake only when an agent asked for it). */
 export const CORRECTED_CATEGORIES = ["wrong_setting", "data_damaged_by_bug", "customer_mistake"];
 /** Never corrected by Copilot; the hub and the customer's site refuse them too. */
@@ -91,7 +94,23 @@ export const TOOL_DEFINITIONS: PluginToolDef[] = [
             properties: { type: { type: "string" }, ref: { type: "string" }, note: { type: "string" } },
           },
         },
-        proposal: { type: "object", properties: { action: { type: "string" }, files: { type: "array", items: { type: "string" } }, risk: { type: "string" }, notes: { type: "string" }, estimate_hours: { type: "number" } } },
+        proposal: {
+          type: "object",
+          properties: {
+            action: { type: "string" },
+            files: { type: "array", items: { type: "string" } },
+            risk: { type: "string" },
+            notes: { type: "string" },
+            estimate_hours: { type: "number" },
+            scope: { type: "string", maxLength: MAX_SCOPE_CHARS, description: "customization_request: what would be built, in plain words the customer can approve." },
+            done_when: {
+              type: "array",
+              maxItems: MAX_DONE_WHEN,
+              items: { type: "string", maxLength: 300 },
+              description: "customization_request: the checks that show it is done, one behaviour each, each one a test can show.",
+            },
+          },
+        },
         customer_message: { type: "string", maxLength: 4000 },
         questions: { type: "array", maxItems: 10, items: { type: "string" } },
         change_set: {
@@ -247,9 +266,21 @@ export function checkReport(args: Record<string, unknown>, prepareCorrection = f
       return "customer_message is required for customization_request: say kindly that it is a change, not a fault";
     }
     // an estimate the model cannot make does not block the report: the agent fills it in on the estimate card
-    const hours = record(args.proposal).estimate_hours;
+    const proposal = record(args.proposal);
+    const hours = proposal.estimate_hours;
     if (hours !== undefined && !(typeof hours === "number" && Number.isFinite(hours) && hours > 0)) {
       return "proposal.estimate_hours must be a positive number of hours, or left out";
+    }
+    // the draft of the scope the customer approves (Phase 8): optional, but well formed when given
+    if (proposal.scope !== undefined && (typeof proposal.scope !== "string" || proposal.scope.length > MAX_SCOPE_CHARS)) {
+      return `proposal.scope must be text of at most ${MAX_SCOPE_CHARS} characters, or left out`;
+    }
+    const doneWhen = proposal.done_when;
+    if (
+      doneWhen !== undefined &&
+      !(Array.isArray(doneWhen) && doneWhen.length <= MAX_DONE_WHEN && doneWhen.every((item) => typeof item === "string" && item.trim() && item.length <= 300))
+    ) {
+      return `proposal.done_when must be a list of at most ${MAX_DONE_WHEN} checks, each a short sentence, or left out`;
     }
   }
   return checkChangeSet(args.change_set);

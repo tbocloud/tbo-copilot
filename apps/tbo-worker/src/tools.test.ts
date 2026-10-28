@@ -104,4 +104,13 @@ describe("checkReport", () => {
     expect(checkReport({ ...request, proposal: { estimate_hours: 4 } })).toBeUndefined();
     expect(checkReport({ ...request, proposal: {} })).toBeUndefined();
   });
+
+  it("takes a customization's draft scope and Done-when checks, well formed", () => {
+    const request = { ...report, root_cause_category: "customization_request", customer_message: "This is a change, not a fault." };
+    expect(checkReport({ ...request, proposal: { scope: "Require a Sales Team row.", done_when: ["an invoice without one is refused"] } })).toBeUndefined();
+    expect(checkReport({ ...request, proposal: { scope: 4 } })).toContain("proposal.scope");
+    expect(checkReport({ ...request, proposal: { done_when: "an invoice without one is refused" } })).toContain("done_when");
+    expect(checkReport({ ...request, proposal: { done_when: [" "] } })).toContain("done_when");
+    expect(checkReport({ ...request, proposal: { done_when: Array.from({ length: 16 }, (_, i) => `check ${i}`) } })).toContain("done_when");
+  });
 });
