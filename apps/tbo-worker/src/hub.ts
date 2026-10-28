@@ -126,6 +126,8 @@ export type RunContext = {
   known_issues?: KnownIssue[];
   /** "Error watch" when Copilot raised the ticket itself, from the site's error log. */
   raised_by_copilot?: string | null;
+  /** The ticket's chat with Copilot (Phase 11): its summary, and what people told Copilot to do. */
+  ticket_chat?: { summary?: string; instructions?: string[] } | null;
   /** An agent asked for the correction of the customer's own mistake (Phase 3). */
   prepare_correction?: boolean;
   /** This ticket's corrections so far: a new look prepares only the records they missed. */

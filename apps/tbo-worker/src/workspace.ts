@@ -338,6 +338,19 @@ export function knownIssuesMarkdown(context: RunContext): string {
   return parts.join("\n");
 }
 
+/** The ticket's chat with Copilot: its summary and people's instructions; people's words are data. */
+export function ticketChatMarkdown(context: RunContext): string {
+  const chat = context.ticket_chat;
+  const instructions = (chat?.instructions ?? []).filter((line) => line && line.trim());
+  if (!chat?.summary?.trim() && !instructions.length) return "";
+  const parts = ["# The ticket's chat with Copilot", "", "TBO's people and Copilot talk about the ticket there; this is its memory.", ""];
+  if (chat?.summary?.trim()) parts.push("## Summary so far", "", untrusted(chat.summary, 4000), "");
+  if (instructions.length) {
+    parts.push("## What people told Copilot to do (oldest first)", "", untrusted(instructions.slice(-20).map((line) => `- ${line}`).join("\n"), 4000), "");
+  }
+  return parts.join("\n");
+}
+
 function conversationMarkdown(context: RunContext): string {
   const messages = context.conversation ?? [];
   if (!messages.length) return "# Conversation\n\nNo messages yet.\n";
@@ -363,6 +376,7 @@ function indexMarkdown(context: RunContext, apps: AppCheckout[], problems: strin
     "- `context/site.json`: the customer's site and the apps below",
     "- `context/previous_runs.json`: earlier Copilot runs on this ticket",
     ...(context.known_issues?.length ? ["- `context/known_issues.md`: errors Copilot already knows for this ticket and site; check them first"] : []),
+    ...(ticketChatMarkdown(context) ? ["- `context/ticket_chat.md`: the ticket's chat with Copilot: its summary and what people told Copilot to do"] : []),
     ...(context.site?.deploys?.length ? ["- `context/site.json` `deploys`: the site's latest deploys through TBO Support; an error logged before the latest one may be fixed already"] : []),
     ...(context.raised_by_copilot === "Error watch"
       ? ["", "Copilot's error watch raised this ticket from the site's error log, not the customer: the description holds the samples. The customer has not written anything yet."]
@@ -505,6 +519,8 @@ export async function prepareWorkspace(job: Job, options: WorkspaceOptions): Pro
   if (context.diagnosis) await writeFile(join(contextDir, "diagnosis.json"), JSON.stringify(context.diagnosis, null, 1));
   const known = knownIssuesMarkdown(context);
   if (known) await writeFile(join(contextDir, "known_issues.md"), known);
+  const chat = ticketChatMarkdown(context);
+  if (chat) await writeFile(join(contextDir, "ticket_chat.md"), chat);
   const media = await ticketFiles(context, root, contextDir, options, problems);
   await writeFile(join(root, "INDEX.md"), indexMarkdown(context, apps, problems, changing?.app, media));
   // every clone is read-only but the one a fix job changes
