@@ -175,7 +175,7 @@ describe("what Copilot already knows (Phase 9)", () => {
     const known = readFileSync(join(ws.contextDir, "known_issues.md"), "utf8");
     expect(known).toContain("## TBO-KI-2026-00001: Fixed");
     expect(known).toContain("This site has the fix: no");
-    expect(known).toContain("Restore get_minimum_margin https://github.com/tbocloud/demo-alpha-app/pull/5");
+    expect(known).toContain("Fixed by: https://github.com/tbocloud/demo-alpha-app/pull/5 (merge deaeeaada797, 2026-10-28 15:16) Restore get_minimum_margin");
     expect(known).toContain("Seen on this site: 3 times");
     // the site's text cannot close the wrapper it is in
     expect(known.match(/<\/untrusted_ticket_content>/g)?.length).toBe(2);
@@ -218,19 +218,29 @@ describe("what Copilot already knows (Phase 9)", () => {
     expect(left_out).toBe(31 - kept.length); // the ones left out are counted, not lost silently
   });
 
-  it("skips an instruction too long to fit and still keeps the earlier ones", () => {
-    const { kept, left_out } = staffInstructions(["Arun: first", "Arun: second", `Sanika: ${"z".repeat(5000)}`], 4000);
-    expect(kept).toEqual(["Arun: first", "Arun: second"]);
-    expect(left_out).toBe(1);
+  it("never lists an older instruction while a newer one is missing", () => {
+    // the newest is too long: its start is kept with a marker, and the older ones are left out
+    const { kept, left_out } = staffInstructions(["Arun: use price list A", "Arun: second", `Sanika: do not use price list A ${"z".repeat(5000)}`], 4000);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).toMatch(/^Sanika: do not use price list A z+ \[cut here: see the ticket's chat\]$/);
+    expect(kept[0]!.length).toBeLessThanOrEqual(4000);
+    expect(left_out).toBe(2);
+    // with no room even for its start, it and everything older are left out, never skipped over
+    const tight = staffInstructions(["Arun: older", `Sanika: ${"z".repeat(200)}`], 100);
+    expect(tight).toEqual({ kept: [], left_out: 2 });
   });
 
-  it("puts each known issue's deciding facts before its free text", async () => {
-    const long = { ...fixedHere, title: "T".repeat(4000) };
+  it("keeps every known issue's facts, identity and fix, even with a huge title", async () => {
+    const long = { ...fixedHere, title: "T".repeat(4000), signature: "S".repeat(4000) };
     const ws = await prepareWorkspace(job({ known_issues: [long] }), options());
     const known = readFileSync(join(ws.contextDir, "known_issues.md"), "utf8");
     expect(known).toContain("This site has the fix: no");
     expect(known).toContain("Seen on this site: 3 times");
-    expect(known.indexOf("This site has the fix")).toBeLessThan(known.indexOf("Title:"));
+    expect(known).toContain("method: alpha_trading.accounts.margin.validate");
+    expect(known).toContain("https://github.com/tbocloud/demo-alpha-app/pull/5");
+    expect(known).toContain("merge deaeeaada797");
+    expect(known).not.toContain("[cut at");
+    expect(known.indexOf("Fixed by:")).toBeLessThan(known.indexOf("Title:"));
   });
 
   it("says when older staff instructions did not fit", async () => {
@@ -238,7 +248,7 @@ describe("what Copilot already knows (Phase 9)", () => {
     const ws = await prepareWorkspace(job({ ticket_chat: { instructions } }), options());
     const chat = readFileSync(join(ws.contextDir, "ticket_chat.md"), "utf8");
     expect(chat).toContain("instruction 12");
-    expect(chat).toMatch(/\(\d+ staff instruction\(s\) did not fit here/);
+    expect(chat).toMatch(/\(\d+ older staff instruction\(s\) did not fit here/);
   });
 
   it("writes nothing extra when Copilot knows nothing", async () => {

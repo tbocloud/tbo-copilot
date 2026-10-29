@@ -300,6 +300,12 @@ function ticketMarkdown(context: RunContext): string {
 }
 
 /** The known issues as the investigation reads them; the signature and titles come from the site, so they are data. */
+/** `value` as one line of at most `limit` characters, cut with an ellipsis. */
+function clip(value: unknown, limit: number): string {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
 export function knownIssuesMarkdown(context: RunContext): string {
   const issues = context.known_issues ?? [];
   if (!issues.length) return "";
@@ -316,19 +322,20 @@ export function knownIssuesMarkdown(context: RunContext): string {
       `## ${issue.name}: ${issue.status ?? "Open"}`,
       "",
       untrusted(
+        // every field has its own limit, so the block stays under the wrapper's cut and nothing is
+        // lost; the facts that decide "deploy the existing fix" or "it came back", then what
+        // identifies the issue and its fix, come before the free text
         [
-          // the facts that decide "deploy the existing fix" or "it came back" first: a long title or
-          // file list may be cut at the end of the block, never these
           `This site has the fix: ${hasFix === true ? "yes" : hasFix === false ? "no" : "unknown"}`,
-          issue.seen_here ? `Seen on this site: ${issue.seen_here.count ?? 0} times, ${issue.seen_here.first ?? "?"} to ${issue.seen_here.last ?? "?"}` : "",
+          issue.seen_here ? `Seen on this site: ${issue.seen_here.count ?? 0} times, ${clip(issue.seen_here.first, 30)} to ${clip(issue.seen_here.last, 30)}` : "",
           `Sites it was seen on: ${issue.sites_seen ?? 0}${issue.came_back ? `; came back ${issue.came_back} time(s) after a fix` : ""}`,
-          `Title: ${issue.title ?? ""}`,
-          `App: ${issue.app ?? "?"}; method: ${issue.method ?? "?"}; error type: ${issue.error_type ?? "?"}`,
-          issue.signature ? `Signature: ${issue.signature}` : "",
-          issue.root_cause_category ? `Root cause found before: ${issue.root_cause_category}` : "",
+          `App: ${clip(issue.app, 140) || "?"}; method: ${clip(issue.method, 200) || "?"}; error type: ${clip(issue.error_type, 140) || "?"}`,
+          issue.root_cause_category ? `Root cause found before: ${clip(issue.root_cause_category, 60)}` : "",
           fix
-            ? `Fixed by: ${fix.title ?? ""} ${fix.pull_request ?? ""} (merge ${String(fix.merge_commit ?? "").slice(0, 12)}, ${fix.fixed_at ?? ""}); files: ${(fix.files ?? []).join(", ") || "?"}`
+            ? `Fixed by: ${clip(fix.pull_request, 200)} (merge ${String(fix.merge_commit ?? "").slice(0, 12)}, ${clip(fix.fixed_at, 30)}) ${clip(fix.title, 200)}; files: ${clip((fix.files ?? []).slice(0, 10).join(", "), 600) || "?"}`
             : "",
+          `Title: ${clip(issue.title, 200)}`,
+          issue.signature ? `Signature: ${clip(issue.signature, 1000)}` : "",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -340,15 +347,15 @@ export function knownIssuesMarkdown(context: RunContext): string {
   return parts.join("\n");
 }
 
-/** The ticket's chat with Copilot: its summary and people's instructions; people's words are data. */
 /** At most this many characters of staff instructions reach the run; the newest are kept. */
 export const STAFF_INSTRUCTIONS_CHARS = 4000;
 
 /**
- * The staff's instructions that fit the budget, whole: chosen newest first (one too long to fit is
- * skipped and the earlier ones still tried), then listed oldest first; `left_out` counts those
- * skipped. Each is one line with its angle brackets escaped, so "margin >= 10%" keeps its meaning
- * and nothing can pose as a wrapper tag.
+ * The newest staff instructions, without a gap: whole while they fit the budget, then the next one
+ * cut with a marker when there is room for its start, then nothing older. So an older instruction
+ * is never listed while a newer one that may supersede it is missing. Listed oldest first;
+ * `left_out` counts the older ones not listed. Each is one line with its angle brackets escaped,
+ * so "margin >= 10%" keeps its meaning and nothing can pose as a wrapper tag.
  */
 export function staffInstructions(lines: string[], budget = STAFF_INSTRUCTIONS_CHARS): { kept: string[]; left_out: number } {
   const kept: string[] = [];
@@ -357,13 +364,22 @@ export function staffInstructions(lines: string[], budget = STAFF_INSTRUCTIONS_C
     .filter(Boolean);
   let used = 0;
   let left_out = 0;
-  for (const line of [...cleaned].reverse()) {
-    if (used + line.length + 3 > budget) {
-      left_out += 1; // skipped; an earlier, shorter one may still fit
+  const newestFirst = [...cleaned].reverse();
+  for (const [index, line] of newestFirst.entries()) {
+    const room = budget - used - 3;
+    if (line.length <= room) {
+      kept.unshift(line);
+      used += line.length + 3;
       continue;
     }
-    kept.unshift(line);
-    used += line.length + 3;
+    const marker = " [cut here: see the ticket's chat]";
+    if (room >= 80 + marker.length) {
+      kept.unshift(line.slice(0, room - marker.length) + marker);
+      left_out = newestFirst.length - index - 1; // only older ones
+    } else {
+      left_out = newestFirst.length - index; // this one and every older one
+    }
+    break;
   }
   return { kept, left_out };
 }
@@ -393,7 +409,7 @@ export function ticketChatMarkdown(context: RunContext): string {
   }
   if (left_out) {
     parts.push(
-      `(${left_out} staff instruction(s) did not fit here; those listed above count. Say in the report when a missing one may matter.)`,
+      `(${left_out} older staff instruction(s) did not fit here; the newer ones above come first. When an older one may matter, say so in the report instead of guessing.)`,
       "",
     );
   }
