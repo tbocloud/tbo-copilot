@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { Job, RunContext } from "./hub.js";
 import { gitEnv, runGit } from "./repo-git.js";
 import { TINY_PNG, makeFixtureRepo } from "./test-support/git-fixture.js";
-import { MAX_FRAMES, MAX_TICKET_FILE_BYTES, appsToRead, htmlToText, normalizeRepository, prepareWorkspace, removeWorkspace, safeFileName, untrusted, videoFrames } from "./workspace.js";
+import { MAX_FRAMES, MAX_TICKET_FILE_BYTES, appsToRead, htmlToText, normalizeRepository, prepareWorkspace, removeWorkspace, safeFileName, staffInstructions, untrusted, videoFrames } from "./workspace.js";
 
 function job(context: Partial<RunContext>, run = "CPR-2026-00001"): Job {
   return {
@@ -198,10 +198,23 @@ describe("what Copilot already knows (Phase 9)", () => {
       options(),
     );
     const chat = readFileSync(join(ws.contextDir, "ticket_chat.md"), "utf8");
-    expect(chat).toContain("use the price list rate instead");
     expect(chat).toContain("The margin check failed");
-    expect(chat.match(/<\/untrusted_ticket_content>/g)?.length).toBe(2); // one wrapper each, never closed early
+    // the summary is data in its wrapper, never closed early; the staff's instructions stand outside it
+    expect(chat.match(/<\/untrusted_ticket_content>/g)?.length).toBe(1);
+    const staff = chat.slice(chat.indexOf("## Instructions from TBO's staff"));
+    expect(staff).toContain("- 2026-10-28 22:10 Arun: use the price list rate instead");
+    expect(staff).not.toContain("untrusted_ticket_content");
     expect(readFileSync(join(ws.root, "INDEX.md"), "utf8")).toContain("context/ticket_chat.md");
+  });
+
+  it("keeps the newest staff instructions within the budget, oldest first, without tags", () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `2026-10-${String(i + 1).padStart(2, "0")} Arun: step ${i + 1} ${"x".repeat(200)}`);
+    const kept = staffInstructions([...lines, "Sanika: <b>last</b> one"], 1000);
+    expect(kept.at(-1)).toBe("Sanika: blast/b one");
+    expect(kept.join("").length).toBeLessThanOrEqual(1000);
+    expect(kept[0]!.localeCompare(kept[1]!)).toBeLessThan(0); // oldest first
+    expect(kept.some((line) => line.includes("step 30"))).toBe(true);
+    expect(kept.some((line) => line.includes("step 1 "))).toBe(false); // the oldest went first
   });
 
   it("writes nothing extra when Copilot knows nothing", async () => {
