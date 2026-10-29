@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { Job, RunContext } from "./hub.js";
 import { gitEnv, runGit } from "./repo-git.js";
 import { TINY_PNG, makeFixtureRepo } from "./test-support/git-fixture.js";
-import { MAX_FRAMES, MAX_TICKET_FILE_BYTES, appsToRead, htmlToText, normalizeRepository, prepareWorkspace, removeWorkspace, safeFileName, staffInstructions, untrusted, videoFrames } from "./workspace.js";
+import { CUT_INSTRUCTION, MAX_FRAMES, MAX_TICKET_FILE_BYTES, appsToRead, htmlToText, normalizeRepository, prepareWorkspace, removeWorkspace, safeFileName, staffInstructions, untrusted, videoFrames } from "./workspace.js";
 
 function job(context: Partial<RunContext>, run = "CPR-2026-00001"): Job {
   return {
@@ -241,6 +241,36 @@ describe("what Copilot already knows (Phase 9)", () => {
     expect(known).toContain("merge deaeeaada797");
     expect(known).not.toContain("[cut at");
     expect(known.indexOf("Fixed by:")).toBeLessThan(known.indexOf("Title:"));
+  });
+
+  it("keeps the whole signature when every other field is at its limit", async () => {
+    const huge = "x".repeat(4000);
+    const widest = {
+      ...fixedHere,
+      app: huge,
+      method: huge,
+      error_type: huge,
+      root_cause_category: huge,
+      title: huge,
+      came_back: 999999,
+      sites_seen: 999999,
+      seen_here: { first: huge, last: huge, count: 999999 },
+      fix: { pull_request: huge, title: huge, merge_commit: huge, fixed_at: huge, files: Array.from({ length: 50 }, () => huge) },
+      signature: "S".repeat(4000),
+    };
+    const ws = await prepareWorkspace(job({ known_issues: [widest] }), options());
+    const known = readFileSync(join(ws.contextDir, "known_issues.md"), "utf8");
+    expect(known).not.toContain("[cut at");
+    expect(known).toContain(`Signature: ${"S".repeat(999)}…`);
+  });
+
+  it("tells the run not to act on a staff instruction that was cut", async () => {
+    const whole = await prepareWorkspace(job({ ticket_chat: { instructions: ["Arun: check credit notes too"] } }), options());
+    expect(readFileSync(join(whole.contextDir, "ticket_chat.md"), "utf8")).not.toContain("lost its end");
+    const ws = await prepareWorkspace(job({ ticket_chat: { instructions: [`Sanika: ${"z".repeat(5000)}`] } }), options());
+    const chat = readFileSync(join(ws.contextDir, "ticket_chat.md"), "utf8");
+    expect(chat).toContain(`${CUT_INSTRUCTION}\n`);
+    expect(chat).toContain("lost its end, which may change what it asks: do not act on it");
   });
 
   it("says when older staff instructions did not fit", async () => {
