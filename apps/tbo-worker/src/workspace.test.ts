@@ -207,14 +207,23 @@ describe("what Copilot already knows (Phase 9)", () => {
     expect(readFileSync(join(ws.root, "INDEX.md"), "utf8")).toContain("context/ticket_chat.md");
   });
 
-  it("keeps the newest staff instructions within the budget, oldest first, without tags", () => {
-    const lines = Array.from({ length: 30 }, (_, i) => `2026-10-${String(i + 1).padStart(2, "0")} Arun: step ${i + 1} ${"x".repeat(200)}`);
-    const kept = staffInstructions([...lines, "Sanika: <b>last</b> one"], 1000);
-    expect(kept.at(-1)).toBe("Sanika: blast/b one");
-    expect(kept.join("").length).toBeLessThanOrEqual(1000);
+  it("keeps the newest staff instructions whole within the budget, oldest first, tags escaped", () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `2026-10-${String(i + 1).padStart(2, "0")} Arun: step ${i + 1} ${"x".repeat(600)}`);
+    const { kept, left_out } = staffInstructions([...lines, "Sanika: keep the margin >= 10% <b>here</b>"], 2000);
+    expect(kept.at(-1)).toBe("Sanika: keep the margin &gt;= 10% &lt;b&gt;here&lt;/b&gt;");
+    expect(kept.slice(0, -1).every((line) => line.endsWith("x".repeat(600)))).toBe(true); // whole, not cut
+    expect(kept.join("").length).toBeLessThanOrEqual(2000);
     expect(kept[0]!.localeCompare(kept[1]!)).toBeLessThan(0); // oldest first
     expect(kept.some((line) => line.includes("step 30"))).toBe(true);
-    expect(kept.some((line) => line.includes("step 1 "))).toBe(false); // the oldest went first
+    expect(left_out).toBe(31 - kept.length); // the older ones are counted, not lost silently
+  });
+
+  it("says when older staff instructions did not fit", async () => {
+    const instructions = Array.from({ length: 12 }, (_, i) => `Arun: instruction ${i + 1} ${"y".repeat(480)}`);
+    const ws = await prepareWorkspace(job({ ticket_chat: { instructions } }), options());
+    const chat = readFileSync(join(ws.contextDir, "ticket_chat.md"), "utf8");
+    expect(chat).toContain("instruction 12");
+    expect(chat).toMatch(/\(\d+ older staff instruction\(s\) did not fit here/);
   });
 
   it("writes nothing extra when Copilot knows nothing", async () => {
