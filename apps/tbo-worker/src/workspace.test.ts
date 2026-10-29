@@ -215,7 +215,22 @@ describe("what Copilot already knows (Phase 9)", () => {
     expect(kept.join("").length).toBeLessThanOrEqual(2000);
     expect(kept[0]!.localeCompare(kept[1]!)).toBeLessThan(0); // oldest first
     expect(kept.some((line) => line.includes("step 30"))).toBe(true);
-    expect(left_out).toBe(31 - kept.length); // the older ones are counted, not lost silently
+    expect(left_out).toBe(31 - kept.length); // the ones left out are counted, not lost silently
+  });
+
+  it("skips an instruction too long to fit and still keeps the earlier ones", () => {
+    const { kept, left_out } = staffInstructions(["Arun: first", "Arun: second", `Sanika: ${"z".repeat(5000)}`], 4000);
+    expect(kept).toEqual(["Arun: first", "Arun: second"]);
+    expect(left_out).toBe(1);
+  });
+
+  it("puts each known issue's deciding facts before its free text", async () => {
+    const long = { ...fixedHere, title: "T".repeat(4000) };
+    const ws = await prepareWorkspace(job({ known_issues: [long] }), options());
+    const known = readFileSync(join(ws.contextDir, "known_issues.md"), "utf8");
+    expect(known).toContain("This site has the fix: no");
+    expect(known).toContain("Seen on this site: 3 times");
+    expect(known.indexOf("This site has the fix")).toBeLessThan(known.indexOf("Title:"));
   });
 
   it("says when older staff instructions did not fit", async () => {
@@ -223,7 +238,7 @@ describe("what Copilot already knows (Phase 9)", () => {
     const ws = await prepareWorkspace(job({ ticket_chat: { instructions } }), options());
     const chat = readFileSync(join(ws.contextDir, "ticket_chat.md"), "utf8");
     expect(chat).toContain("instruction 12");
-    expect(chat).toMatch(/\(\d+ older staff instruction\(s\) did not fit here/);
+    expect(chat).toMatch(/\(\d+ staff instruction\(s\) did not fit here/);
   });
 
   it("writes nothing extra when Copilot knows nothing", async () => {

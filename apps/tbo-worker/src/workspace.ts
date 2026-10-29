@@ -317,6 +317,11 @@ export function knownIssuesMarkdown(context: RunContext): string {
       "",
       untrusted(
         [
+          // the facts that decide "deploy the existing fix" or "it came back" first: a long title or
+          // file list may be cut at the end of the block, never these
+          `This site has the fix: ${hasFix === true ? "yes" : hasFix === false ? "no" : "unknown"}`,
+          issue.seen_here ? `Seen on this site: ${issue.seen_here.count ?? 0} times, ${issue.seen_here.first ?? "?"} to ${issue.seen_here.last ?? "?"}` : "",
+          `Sites it was seen on: ${issue.sites_seen ?? 0}${issue.came_back ? `; came back ${issue.came_back} time(s) after a fix` : ""}`,
           `Title: ${issue.title ?? ""}`,
           `App: ${issue.app ?? "?"}; method: ${issue.method ?? "?"}; error type: ${issue.error_type ?? "?"}`,
           issue.signature ? `Signature: ${issue.signature}` : "",
@@ -324,9 +329,6 @@ export function knownIssuesMarkdown(context: RunContext): string {
           fix
             ? `Fixed by: ${fix.title ?? ""} ${fix.pull_request ?? ""} (merge ${String(fix.merge_commit ?? "").slice(0, 12)}, ${fix.fixed_at ?? ""}); files: ${(fix.files ?? []).join(", ") || "?"}`
             : "",
-          `This site has the fix: ${hasFix === true ? "yes" : hasFix === false ? "no" : "unknown"}`,
-          issue.seen_here ? `Seen on this site: ${issue.seen_here.count ?? 0} times, ${issue.seen_here.first ?? "?"} to ${issue.seen_here.last ?? "?"}` : "",
-          `Sites it was seen on: ${issue.sites_seen ?? 0}${issue.came_back ? `; came back ${issue.came_back} time(s) after a fix` : ""}`,
         ]
           .filter(Boolean)
           .join("\n"),
@@ -343,9 +345,10 @@ export function knownIssuesMarkdown(context: RunContext): string {
 export const STAFF_INSTRUCTIONS_CHARS = 4000;
 
 /**
- * The staff's instructions that fit the budget, whole: the newest chosen first, then listed oldest
- * first; `left_out` counts the older ones that did not fit. Each is one line with its angle
- * brackets escaped, so "margin >= 10%" keeps its meaning and nothing can pose as a wrapper tag.
+ * The staff's instructions that fit the budget, whole: chosen newest first (one too long to fit is
+ * skipped and the earlier ones still tried), then listed oldest first; `left_out` counts those
+ * skipped. Each is one line with its angle brackets escaped, so "margin >= 10%" keeps its meaning
+ * and nothing can pose as a wrapper tag.
  */
 export function staffInstructions(lines: string[], budget = STAFF_INSTRUCTIONS_CHARS): { kept: string[]; left_out: number } {
   const kept: string[] = [];
@@ -354,10 +357,10 @@ export function staffInstructions(lines: string[], budget = STAFF_INSTRUCTIONS_C
     .filter(Boolean);
   let used = 0;
   let left_out = 0;
-  for (const [index, line] of [...cleaned].reverse().entries()) {
+  for (const line of [...cleaned].reverse()) {
     if (used + line.length + 3 > budget) {
-      left_out = cleaned.length - index; // this one and every older one
-      break;
+      left_out += 1; // skipped; an earlier, shorter one may still fit
+      continue;
     }
     kept.unshift(line);
     used += line.length + 3;
@@ -390,7 +393,7 @@ export function ticketChatMarkdown(context: RunContext): string {
   }
   if (left_out) {
     parts.push(
-      `(${left_out} older staff instruction(s) did not fit here; the newest ones above count. Ask in the report when an older one may matter.)`,
+      `(${left_out} staff instruction(s) did not fit here; those listed above count. Say in the report when a missing one may matter.)`,
       "",
     );
   }
