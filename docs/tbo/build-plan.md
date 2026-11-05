@@ -1,17 +1,30 @@
 # TBO Copilot: build plan and status
 
-Design: `system-design.md`. Phase plans: `phases/`. Section numbers continue from the design document. Updated at the end of every work session.
+Design: `system-design.md`. Phase plans: `phases/` (0 to 16). Section 7 below is the first plan for Phases 0 to 4; each later phase has its own plan, approved before it was built. Section numbers continue from the design document. Updated at the end of every work session.
 
 | Phase | Content | Status | Plan |
 |---|---|---|---|
 | 0 | Groundwork and fixes | Built; on the `tbo-copilot` branch of `helpdesk` and `helpdesk_client` since 9 Oct 2026 | `phases/phase-0.md` |
 | 1a | Hub foundation + customer stages | Built 9 Oct 2026, checkpoint passed on the local pair; on `tbo-copilot` | `phases/phase-1a.md` |
 | 1b | Hub MCP server (TASK-2026-00013) | Built and checked 9 Oct 2026; on `tbo-copilot` | `phases/phase-1b.md` |
-| 1c | Worker + sandbox, shadow mode | Built: the investigation (1c-1) in `apps/tbo-worker`; the fix stage (1c-2) in review; the sandbox runner waits for the worker server | — |
-| 1d | One approval + merge | Built; checkpoint passed 15 Oct 2026 | — |
-| 2 | Controlled production deployment | Built against a stand-in for Press; the checks on TBO's Press are under way | — |
-| 3 | Config and data changes (senior approval) | Built; checkpoint demo pending | — |
-| 4 | Pilot and hardening | Plan written, waiting for approval | — |
+| 1c | Worker + sandbox, shadow mode | Built: the investigation worker (1c-1) and the fix stage (1c-2) in `apps/tbo-worker`; the worker server and the sandbox runner run on AWS since 16–17 Oct 2026; the fix rehearsal on a demo site passed | `phases/phase-1c.md`, `phases/phase-1c-2.md` |
+| 1d | One approval + merge | Built; checkpoint passed 15 Oct 2026 (a pull request merged by TBO Support through the GitHub App after one approval) | `phases/phase-1d.md` |
+| 2 | Controlled production deployment | Built; checkpoint passed 17 Oct 2026 on a demo site through TBO's Press | `phases/phase-2.md` |
+| 3 | Config and data changes (senior approval) | Built; the checkpoint demo (a correction approved by a senior and applied) is still to do | `phases/phase-3.md` |
+| 4 | Pilot and hardening | Approved and built 17–18 Oct 2026 (pilot controls, worker hardening); left: the load test, the fix stage's red team, and going live with the first customer | `phases/phase-4.md` |
+| 5–7 | Order of the expansion | Approved 17 Oct 2026: Phase 6, then 7, then 5 | `phases/expansion-plan.md` |
+| 5 | Customer support assistant (chat in the ERP and TBO Chat) | Built 28 Oct 2026; checkpoint passed on the local pair | `phases/phase-5.md` |
+| 6 | Staff assistant in Teams and TBO Support | Built 19 Oct 2026; Teams connected 26 Oct; checkpoint in progress (approving and new work from Teams passed) | `phases/phase-6.md` |
+| 7 | CI and one release path for every merge | Built; checkpoint passed on the demo bench 28 Oct 2026 (two releases Succeeded, one approved in Teams) | `phases/phase-7.md` |
+| 8 | Copilot builds approved customizations | Built; checkpoint passed on the local pair 28 Oct 2026 | `phases/phase-8.md` |
+| 9 | Error watch and known-issue memory | Built 28 Oct 2026; checkpoint after the demo redeploy | `phases/phase-9.md` |
+| 10 | The Copilot board | Built 28 Oct 2026; checkpoint after the demo redeploy | `phases/phase-10.md` |
+| 11 | Every ticket is a chat with Copilot | Built 28 Oct 2026; checkpoint after the demo redeploy | `phases/phase-11.md` |
+| 12 | The ticket opens in the chat | Built 29 Oct 2026; checkpoint after the demo redeploy | `phases/phase-12.md` |
+| 13 | The customer's support chat, one chat per ticket | Built and pushed 31 Oct 2026; checkpoint after the demo redeploy | `phases/phase-13.md` |
+| 14 | The support chat, as in the prototype | Built and pushed 1 Nov 2026; checkpoint after the demo redeploy | `phases/phase-14.md` |
+| 15 | A cleaner ticket area in TBO Support | Built and pushed 4 Nov 2026 | `phases/phase-15.md` |
+| 16 | The ticket inbox: every ticket as one conversation | Built 5 Nov 2026; waiting for the owner's local test before it is pushed | `phases/phase-16.md` |
 | Later | §5.6 features | Not started | — |
 
 ## 7. Build plan, step by step (revised after the owner's review)

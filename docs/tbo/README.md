@@ -258,5 +258,6 @@ request into `tbo`.
 - [build-plan.md](./build-plan.md): the build plan with a status per phase.
 - [models.md](./models.md): which AI model does which job, the providers' data terms, and the desktop app's setup.
 - [worker-server.md](./worker-server.md): running the Copilot worker server, and what to do when something goes wrong.
-- One plan per phase, approved before building: [Phase 0](./phases/phase-0.md), [Phase 1a](./phases/phase-1a.md),
-  [Phase 1b](./phases/phase-1b.md).
+- One plan per phase, approved before building, with what was built at the end:
+  [Phase 0](./phases/phase-0.md), [Phase 1a](./phases/phase-1a.md), [Phase 1b](./phases/phase-1b.md), [Phase 1c](./phases/phase-1c.md), [Phase 1c-2](./phases/phase-1c-2.md), [Phase 1d](./phases/phase-1d.md), [Phase 2](./phases/phase-2.md), [Phase 3](./phases/phase-3.md), [Phase 4](./phases/phase-4.md), [Phase 5](./phases/phase-5.md), [Phase 6](./phases/phase-6.md), [Phase 7](./phases/phase-7.md), [Phase 8](./phases/phase-8.md), [Phase 9](./phases/phase-9.md), [Phase 10](./phases/phase-10.md), [Phase 11](./phases/phase-11.md), [Phase 12](./phases/phase-12.md), [Phase 13](./phases/phase-13.md), [Phase 14](./phases/phase-14.md), [Phase 15](./phases/phase-15.md), [Phase 16](./phases/phase-16.md).
+  [The expansion plan](./phases/expansion-plan.md) sets the order of Phases 5 to 7.
