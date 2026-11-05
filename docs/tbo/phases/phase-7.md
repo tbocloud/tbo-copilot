@@ -81,8 +81,9 @@ A developer's pull request on the pilot customer's app, "Closes TASK-…":
    the staging result and the sites. Someone other than the author approves.
 5. **Tonight's train:** every approved release for that release group goes out in one Press deploy in the window.
    Each site is checked after. A linked ticket's customer hears "Fix live".
-6. **On failure,** Press recovers the site, or the check after fails. Either way the release fails, a revert pull
-   request opens on its own, and the author and the approver are told.
+6. **On failure,** Press recovers the site, or the check after fails. Either way the release fails and the author and the approver are told. After a failed check, a revert pull
+   request opens on its own for each pull request in the release; a push has no pull request to revert, so the
+   author and a senior revert it by hand (or with a new pull request) through the same pipeline.
 7. **Monday's email** lists the week's releases, how long approvals waited, failures and undos, and the bypasses
    (dashboard deploys and direct pushes).
 
@@ -205,7 +206,8 @@ The same way as the earlier phases:
 
 ## What TBO must provide
 
-- **A tbocloud organisation owner:** a payment method and an Actions spending limit (decision 1).
+- ~~A tbocloud organisation owner: a payment method and an Actions spending limit~~: not needed. The owner kept CI on
+  GitHub's free runners for public repositories (decision 1, see Status).
 - **The TBO Copilot GitHub App** installed on each pilot repository, starting with the pilot customer's three.
 - **A person to merge the onboarding CI pull requests** (the App can't change workflows), and repository owners to
   make red CI green.
@@ -234,8 +236,10 @@ module at a time; worker 135 + 6 (end-to-end files run apart) and 7 new.
 - **Staging comes before the approval**, so the approver sees its result: the UAT site deploys in the next window
   (the release waits), else the worker's sandbox check runs at once. A check that could not run goes to the seniors,
   not the authors.
-- **Automatic revert only after the check after failed** (the site ran the new code). When Press fails the update it
-  puts the site back itself; a revert then would undo code that never went live, so people are told instead.
+- **Automatic revert only after the check after failed** (the site ran the new code), and only for pull requests.
+  When Press fails the update it puts the site back itself; a revert then would undo code that never went live, so
+  people are told instead. A direct push has no pull request to revert: the author and a senior are told and revert it
+  by hand.
 - **Bypasses** in the weekly email are Press builds on the pipeline's benches minus the deploys TBO Support asked
   for: an estimate, since Press does not say who started a build.
 - **The ticket** gets notes (scheduled, live, failed) rather than a release card in its Copilot dialog.

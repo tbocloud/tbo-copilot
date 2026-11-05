@@ -57,7 +57,8 @@ desktop and phone. The customer portal, Home, the board and the Copilot panel do
     saved replies, "Use Copilot's draft"), **Note to team** (the existing note editor with @mentions), **Ask Copilot**
     (a chat line with quick questions: Summarise, Draft a reply, Similar tickets, Errors on their site). People who
     may only read the Copilot chat see that instead of the Copilot box.
-- **Right, Details:** the Phase 15 panel, unchanged; beside the ticket from 1024 px (hide/show remembered), a sheet below.
+- **Right, Details:** the Phase 15 panel, unchanged; beside the ticket from 1440 px when the inbox list is beside it, otherwise from 1024 px (hide/show remembered); a
+  sheet below that.
 - **Phone:** the list full screen; a ticket full screen with a back arrow; status and assignee under the title;
   Details as a sheet. Replaces `MobileTicketAgent.vue`.
 

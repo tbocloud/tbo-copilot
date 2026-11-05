@@ -13,8 +13,8 @@ The Support button in the customer's ERP opens a chat. The assistant asks what a
 customer's permission it records the screen, shows a short summary, and raises the ticket with proper fields instead of
 one text box. The chat stays the place to talk: Copilot's progress, its questions, an agent's replies, and Confirm or
 Reopen all arrive in it, within seconds. The assistant answers simple questions from the knowledge base. It explains a
-cause on the customer's side only after an agent approves the text. It never promises dates or prices, and never changes
-data.
+cause on the customer's side only after an agent approves the text. It never promises dates or prices in its own words, and
+never changes data. Stage updates are fixed texts: "Fix scheduled" carries the deploy date the approver set.
 
 ## What exists today (checked 28 Oct)
 
@@ -58,8 +58,8 @@ data.
    #0101 is raised".
 5. The hub ticket has the structured description, the context (page, document, roles, recent errors), the recording,
    and the transcript. Triage and Copilot start as today.
-6. In the chat, minutes later: "We found what is happening and are working on it." Later: "A fix is ready and will go
-   live on Thursday." Then: "Resolved. … Please confirm this solved it", with **It's fixed** and **Still broken**.
+6. In the chat, minutes later: "We found what is happening and are working on it." Later, the fixed stage text: "A fix is ready and will go
+   live on Thursday" (the approved deploy date). Then: "Resolved. … Please confirm this solved it", with **It's fixed** and **Still broken**.
 7. A question such as "how do I cancel a submitted invoice?" gets an answer from the matching article, with its link,
    and "Did this answer it?". **No** offers to raise a ticket.
 8. When Copilot finds the customer's own mistake, an agent approves the explanation on the hub and the text appears in

@@ -4,7 +4,7 @@
 
 ## Goal
 
-After the one approval and the merge, a person presses **Deploy** on the ticket. TBO Support updates the customer's site through Press at the agreed time. It then checks that the site runs the merged fix and shows no new errors, and tells the customer "the fix is live, please confirm". When the update or the check fails, the site stays on its old code (Press restores it), the team is told, and **Undo** prepares a revert of the fix for the same one approval.
+After the one approval and the merge, a person presses **Deploy** on the ticket. TBO Support updates the customer's site through Press at the agreed time. It then checks that the site runs the merged fix and shows no new errors, and tells the customer "the fix is live, please confirm". When Press's update fails, Press puts the site back on its old code and the team is told. When the update works but the check after fails, the site runs the new code: the run is Escalated, the team is told, and **Undo** prepares a revert pull request of the fix, which goes live through the same one approval.
 
 ## What exists today, and what it means for this phase
 
@@ -129,7 +129,7 @@ After the one approval and the merge, a person presses **Deploy** on the ticket.
 
 **To confirm first on TBO's Press** (read-only, with the Copilot login), before the first real deploy:
 
-1. The Press version and the shapes: `deploy_information` (apps with `source`, `release`, `hash`, `next_release`, `next_hash`; `sites`), `deploy_and_update`'s arguments, whether Press Settings use the new deploy flow, and `client.get_list` on Site Update for the team (with `site_backup`).
+1. The Press version and the shapes: `deploy_information` (apps with `source`, `current_hash`, `next_release` and `releases`; `sites`; the names were confirmed at the checkpoint, see As built), `deploy_and_update`'s arguments, whether Press Settings use the new deploy flow, and `client.get_list` on Site Update for the team (with `site_backup`).
 2. **Which Press team owns the customers' sites.** If each customer has its own team on TBO's Press, the Copilot user must be able to act for those teams (a team per site card, or a Press administrator user); the client sends one team today.
 3. Whether Press's web server can accept the Copilot key only from the hub's address.
 

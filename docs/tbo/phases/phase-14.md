@@ -124,7 +124,7 @@ it, so a form stays visible while the user chats (decision 3).
   ticket, from the site that asks) and then links the chat. Today it waits for the next pull.
 - **H47, joining a ticket (decision 1):** a `joined` action closes the chat without raising anything and notes which
   ticket the customer joined. The site posts "… has the same problem" in that ticket's chat, which the team sees as a
-  customer message. A hub without H47 refuses `joined`; the site then keeps the chat open and only posts the message.
+  customer message. A hub without H47 refuses `joined`; the site then keeps the chat open, the user still follows the ticket on the site, and their own chat says TBO Support could not be told just now.
 
 ## Build (about 10 days; about 7½ without similar tickets)
 
@@ -175,7 +175,7 @@ On demo-alpha, signed in as a customer user, with the demo hub as the hub:
 - **Similar tickets show colleagues' ticket titles.** A title can still say too much; decision 2 limits what shows,
   and the site setting can switch the feature off.
 - **Older hubs:** each hub change has a fallback (the chat as today; the form ticket read-only until picked up; no
-  `joined`, only the message).
+  `joined`: the user follows the ticket on the site and their chat says the team could not be told).
 - **Ctrl + /** is free in Frappe (Frappe's shortcut list is Shift + /). If a customer app uses it, the shortcut is
   skipped there.
 

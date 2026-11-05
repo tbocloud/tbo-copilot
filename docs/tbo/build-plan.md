@@ -25,7 +25,7 @@ Design: `system-design.md`. Phase plans: `phases/` (0 to 16). Section 7 below is
 | 14 | The support chat, as in the prototype | Built and pushed 1 Nov 2026; checkpoint after the demo redeploy | `phases/phase-14.md` |
 | 15 | A cleaner ticket area in TBO Support | Built and pushed 4 Nov 2026 | `phases/phase-15.md` |
 | 16 | The ticket inbox: every ticket as one conversation | Built and pushed 5 Nov 2026 | `phases/phase-16.md` |
-| Later | §5.6 features | Not started | — |
+| Later | §5.6 features still open: Microsoft Entra sign-in and OAuth instead of API keys (Press UAT for customer acceptance dropped for now by the owner, 28 Oct) | Not started | — |
 
 ## 7. Build plan, step by step (revised after the owner's review)
 
@@ -83,7 +83,7 @@ Order: the **vertical slice first** (ticket → investigation → diagnosis → 
 2. W7: limits, load test (3 parallel runs, budget cut-off), runbooks, `docs/tbo/README.md` core list; H11: the Vue card on the ticket page.
 3. Weekly: cost per ticket, fix rate, false-PR rate, approval wait time; adjust prompts and the model map.
 
-**Later, not now (§5.6)**: Teams bot with buttons, Entra sign-in and OAuth instead of API keys, Press UAT for customer acceptance, the `/copilot` board, proactive error watch, known-issue memory, deploy train.
+**Later, not now (§5.6)**: Entra sign-in and OAuth instead of API keys. Since built: the Teams bot with buttons (Phase 6), the deploy train (Phase 7), the error watch and known-issue memory (Phase 9) and the `/copilot` board (Phase 10); Press UAT for customer acceptance is dropped for now (the owner, 28 Oct).
 
 ## 8. Verification
 
@@ -113,7 +113,7 @@ Open questions: which project holds Copilot tasks per customer; who is in the fi
 
 1. **Before each phase** (and each step 1a–1d): write that phase's architecture and plan as `phases/phase-<n>.md` (what changes, files, doctypes, APIs, tests, the checkpoint, risks) → the owner approves → build in small PRs → test on the local pair → report the checkpoint → update the status in `build-plan.md` and in memory.
 2. **Nothing is pushed or merged without the owner's go-ahead** (existing rule), and each repo's own rules apply (helpdesk: AGENTS.md, task reference, CodeRabbit; tbo-copilot: worktree per task, no `git add .`). **In `helpdesk` and `helpdesk_client`, Copilot work is pushed to the `tbo-copilot` branch; nothing is pushed to `main`, no pull request goes to `main`, and a branch already on GitHub is never rewritten** (owner, 9 Oct 2026). A newer `main` is merged into `tbo-copilot` and the module tests are run again before the push. **In `tbocloud/tbo-copilot`, documents and code go to `tbo` (the default branch) through a pull request (the branch rules ask for one approval and the `ai-review` and `task-reference` checks); `main` there is the frozen copy of PI-Desktop and is never touched.** The repository is public, so only a cleaned copy of these documents goes there. In `helpdesk` and `helpdesk_client`, a pull request, if one is wanted, targets `tbo-copilot` and is opened as a draft, because helpdesk's auto-merge workflow switches auto-merge on for every non-draft pull request whatever its base.
-3. **Each phase ends with a demo on the local pair** (`tbo.localhost` ↔ `customer.localhost`), and no phase starts before the previous checkpoint passes.
+3. **Each phase ends with a demo on the local pair** (`tbo.localhost` ↔ `customer.localhost`), and nothing goes live before its checkpoint passes. Since 17 Oct 2026 the owner has approved building the next phase while earlier checkpoints wait for the demo bench; each checkpoint still runs before its phase goes live (the status table says which are open).
 4. **First actions after this plan is approved**: save the memory files (§11), store the design documents (§11), then write `phases/phase-0.md` for approval.
 
 ## 11. Where everything is stored, so nothing is lost between conversations

@@ -175,13 +175,14 @@ as on the ticket page.
   3. else the ticket of the last message they pressed or wrote about in the last 2 hours (Copilot names it in its
      answer, so a slip is visible);
   4. else Copilot asks.
-- What they write lands in that ticket's chat and shows on the ticket page. What others write on the page reaches them
-  in Teams by decision 4.
+- What they write lands in that ticket's chat and shows on the ticket page. What others write on the page is not
+  forwarded to Teams: Teams gets the ticket's status only (the owner's addition).
 - **Mute this ticket** and **Unmute** per person.
 
 ### W13 (worker): the ticket's chat in the investigation and the fix (≈ 0.5 day)
 
-- `context/ticket_chat.md` holds the chat's summary and people's instructions, inside the untrusted wrapper.
+- `context/ticket_chat.md` holds the chat's summary inside the untrusted wrapper (evidence, never instructions), and
+  TBO staff's instructions outside it, as guidance from TBO's own support engineers.
 - The prompt: follow the people's instructions unless they conflict with the rules, and say so when they do.
 
 ### H38: docs, tests, checkpoint (≈ 1.5 days)

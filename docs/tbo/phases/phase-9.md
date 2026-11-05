@@ -85,7 +85,8 @@ Microsoft sign-in and Press UAT).
      last seen, count, users, known issue, ticket. On the first check of a site, the last 14 days are recorded as
      the baseline.
   4. **A new error** (decision 2) gets up to 5 samples from `get_error_log(since, method)`: time, document, top
-     frames. Then a ticket for the customer: subject "Copilot noticed: …", the samples in the description, source
+     frames, and the user each happened to. When the count alone is not enough, the samples are fetched first, so
+     the two-user rule is decided on the users they name (as built). Then a ticket for the customer: subject "Copilot noticed: …", the samples in the description, source
      `Error watch`, no acknowledgement (decision 1). Then `runs.start_run`.
   5. **Watch news.** The people the customer's tickets go to (the assigned developer, else the Agent Managers) get
      it in Teams or the panel (`assistant.send`).
