@@ -1,8 +1,8 @@
 # Phase 16: the ticket inbox (every ticket as one conversation)
 
 Status: prototype approved and build ordered on 5 Nov 2026 (owner: "yes build"); the decisions below are the
-recommended ones. **Built 5 Nov 2026**: helpdesk `tbo-copilot`, a **local commit, not pushed** (waiting
-for the owner's local test and "push"). See As built.
+recommended ones. **Built 5 Nov 2026** and **pushed the same day** on the owner's "push": helpdesk `tbo-copilot`. See
+As built.
 
 **Owner's request (5 Nov 2026):** "create helpdesk ticket area ui, i am not satisfying, the ui is difficult to catch
 easily like our chatbots". Phase 15 made the list and the page cleaner, but a ticket still reads as three tabs (Chat,
@@ -100,7 +100,7 @@ works from the summary; Table switch and back; phone list → ticket → back; d
 
 ## As built (5 Nov 2026)
 
-helpdesk `tbo-copilot` (local; `main` had not moved, so a push needs no merge).
+helpdesk `tbo-copilot`, pushed 5 Nov 2026 as a fast-forward (`main` had not moved, so no merge was needed).
 
 - **Server:** `helpdesk.api.ticket_area.inbox(filters, start, page_length)` (agents only; the same filter handling
   as `count`, shared as `_list_filters`); `_conversations` gives each row its newest email, `waiting` and
