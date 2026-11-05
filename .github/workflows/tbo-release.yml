@@ -296,4 +296,6 @@ jobs:
 
             TBO Copilot opens on the **TBO Dark** theme. Settings → General → Theme also has **TBO Light**.
 
+            **TBO Support** is included: press Cmd/Ctrl+K, run "TBO Support: Sign in" and paste your own TBO Support API key. It reads tickets as you and changes nothing.
+
             Updates are off in this build: install new versions by hand.

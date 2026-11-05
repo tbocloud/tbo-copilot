@@ -1,4 +1,4 @@
 {
   "source": "tbo/plugins",
-  "plugins": ["tbo.theme"]
+  "plugins": ["tbo.theme", "tbo.support"]
 }
