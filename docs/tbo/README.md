@@ -138,7 +138,7 @@ enable updates with `TBO_UPDATES=enabled`, or by changing `tboUpdatesEnabled`.
 ## Bundled TBO plugins
 
 TBO plugins live in this repository, in `tbo/plugins/`. The installers ship
-the ones listed in `scripts/tbo/bundled-plugins.json` (today: `tbo.theme`, the TBO colours, and `tbo.support`, which reads TBO Support):
+the ones listed in `scripts/tbo/bundled-plugins.json` (today: `tbo.theme`, the TBO colours, and `tbo.support`, which signs the app in through TBO Support, gives it TBO AI and reads TBO Support):
 
 ```json
 { "source": "tbo/plugins", "plugins": ["tbo.theme", "tbo.support"] }

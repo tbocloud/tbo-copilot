@@ -54,10 +54,12 @@ TBO Copilot desktop app
  │                         ▼
  └─ Plugin process: tbo.support
       main.js ─► lib/actions.js ─► lib/helpdesk.js ─► pi.net.fetch ──HTTPS──► TBO Support
-                     │                 (read-only allow-list)    token key:secret   (helpdesk APIs,
-                     │                                                               the person's role)
+                     │                 (read-only allow-list)    Bearer token       (helpdesk APIs,
+                     │                                           (or an API key)     the person's role)
                      └─► lib/shape.js: HTML to text, size caps, marks customer text as untrusted
-      lib/credentials.js ─► macOS Keychain / Windows DPAPI   (the person's API key)
+      lib/desktop.js ─► TBO Support's desktop sign-in (tbo_desktop.api): code, Allow, tokens, renewal
+      lib/credentials.js ─► macOS Keychain / Windows DPAPI   (the sign-in session, or an API key)
+      pi.providers ─► the "TBO AI" provider row: address and key from the sign-in
       renderer/index.html: sign-in panel
 
 Later (§13):
@@ -68,13 +70,14 @@ Later (§13):
 
 | File | Job |
 |---|---|
-| `manifest.json` | Declares the tool, three commands, the sign-in panel, the site setting, permissions and the one allowed host |
+| `manifest.json` | Declares the tool, three commands, the sign-in panel, the site setting, the **TBO AI** provider (no address: the sign-in sets it), permissions and the one allowed host |
 | `main.js` | Registers the tool and commands; answers the sign-in panel; builds a helpdesk client for each call |
 | `lib/actions.js` | The actions: input checks, which helpdesk API each calls, and the shape of each result. Transport-neutral: no `pi.*` inside |
-| `lib/helpdesk.js` | A small HTTP client for Frappe: URL building, the `token` auth header, a **read-only allow-list** of API paths, and error mapping |
+| `lib/helpdesk.js` | A small HTTP client for Frappe: URL building, the auth header (the sign-in's bearer token, or `token key:secret`), a **read-only allow-list** of API paths, and error mapping |
+| `lib/desktop.js` | The Microsoft sign-in through TBO Support: start (a code and the Allow page), wait for Allow, renew, sign out |
 | `lib/shape.js` | HTML to plain text, size caps, and the untrusted-content wrapper |
-| `lib/credentials.js` | Saves, loads and removes the person's API key in the operating system's credential store |
-| `renderer/index.html` | The sign-in panel: shows the site, takes the API key and secret, tests them, then saves them |
+| `lib/credentials.js` | Saves, loads and removes the sign-in session (or an API key) in the operating system's credential store |
+| `renderer/index.html` | The sign-in panel: **Sign in with Microsoft**, the code while it waits, who is signed in and whether TBO AI is ready; an API key form for a local test site |
 
 The plugin has **no npm dependencies**: plain CommonJS and Node built-ins only. So there is nothing to bundle, and the `pi-plugin pack` output is the source as written.
 
@@ -121,35 +124,54 @@ Each write action needs its own allow-list entry in `lib/helpdesk.js` (§9), its
 
 ## 7. Sign-in and secrets
 
-**v1 uses the person's own TBO Support API key.** Every call then runs as that person and only sees what their role allows. Helpdesk's APIs also refuse non-agents (`@agent_only`).
+**People sign in with their Microsoft work account (TBO Copilot Phase 17).** Nobody types a key: TBO Support's
+desktop sign-in gives this computer what it needs, and every call still runs as that person, seeing only what
+their role allows.
 
-**Getting the key.** Frappe lets only a System Manager generate keys (`frappe.only_for("System Manager")` in `frappe/core/doctype/user/user.py`, `generate_keys`). So for v1 an admin opens the person's user → **API Access** → **Generate Keys** and hands the secret to that person directly. It is shown once. This is fine for a pilot with a few developers.
+**The flow:**
+1. **TBO Support: Sign in** opens the panel; the person presses **Sign in with Microsoft** (the panel also opens
+   by itself at start when nobody is signed in).
+2. The plugin asks TBO Support for a code (`tbo_desktop.api.start_sign_in`, sending the computer's name and
+   system) and opens the browser at TBO Support's Allow page. It opens only a page on the same site.
+3. The person logs in with Microsoft. The page shows the computer's name and the same code as the panel, and they
+   press **Allow**.
+4. The plugin waits (`finish_sign_in`, every few seconds, at most 10 minutes) and gets, once:
+   - a computer token (30 days);
+   - a TBO Support token (a Frappe bearer token, 12 hours);
+   - the person's TBO AI key and the gateway's address.
+5. The plugin puts the AI key and address into its **TBO AI** provider row (`pi.providers.setCredential` and
+   `setBaseUrl`). The app holds the key in its own secret store; the plugin cannot read it back and never stores
+   it itself.
+6. While signed in, the plugin renews the TBO Support token before it runs out (`refresh`), at start and when a
+   call is refused. TBO Support checks the person again each time.
 
-**Better sign-in, next:** "Sign in with TBO Support" through Frappe's OAuth provider.
-- The plugin opens the browser. The person logs in as usual, with Microsoft login if the site has it. The plugin receives a token.
-- It needs one **OAuth Client** record in TBO Support. That is configuration, not a helpdesk code change.
-- The OAuth endpoints are already allowed by helpdesk's request filter (`helpdesk/auth.py`).
+**When TBO Support ends the sign-in** (the person lost access, the 30 days are over, a System Manager signed the
+computer out), renewal answers 401. The plugin then removes the session and clears the TBO AI key, and tells the
+person why.
 
-The other route is a small helpdesk PR: a "Connect TBO Copilot" button that generates the agent's own key. That is simpler code, but it is a change to the helpdesk app.
+**Sign out** tells TBO Support (which revokes the token and removes the AI key), then removes everything locally.
 
-**Where the key lives:**
+**A local test site** (`localhost`, `127.0.0.1`, `*.localhost`) can still use an API key: the panel offers the
+form only there. Frappe lets only a System Manager generate keys (`generate_keys`). On your own site you can
+generate Administrator's key yourself.
+
+**Where the secrets live:**
 
 | Platform | Store | How |
 |---|---|---|
-| macOS | Keychain, service `tbo-copilot.tbo-support`, account = site host | `/usr/bin/security -i`, with the command sent on standard input, so the secret never appears in a process list |
-| Windows | DPAPI (encrypted for the Windows user), file `<host>.credentials.dpapi` in the plugin's private data folder | PowerShell `ConvertTo-SecureString` / `ConvertFrom-SecureString`, with the secret sent on standard input |
-| Other | Not supported in v1 | The app ships for macOS and Windows only |
+| macOS | Keychain, service `tbo-copilot.tbo-support`: account `session.<host>` for the sign-in, `<host>` for an API key | `/usr/bin/security -i`, with the command sent on standard input, so the secret never appears in a process list |
+| Windows | DPAPI (encrypted for the Windows user): files `<host>.session.dpapi` and `<host>.credentials.dpapi` in the plugin's private data folder | PowerShell `ConvertTo-SecureString` / `ConvertFrom-SecureString`, with the secret sent on standard input |
+| Other | Not supported | The app ships for macOS and Windows only |
 
-**Why not plugin settings:** PI-Desktop does not allow secrets in plugin settings yet (D018; its validator rejects `secret: true`), and the host's own secret store is closed to plugins (`docs/spec/07-plugins/04-plugin-security.md`).
+The session (computer token, TBO Support token, who is signed in) travels as one base64url word. The TBO AI key is
+never part of it: it lives only in the app's provider row.
 
-**The one deliberate exception:** `lib/credentials.js` starts `security` or `powershell` itself. That is a raw Node API rather than the host API, so the code is kept small, fixed (no input reaches the command line) and covered by tests. The proper fix is a host secret API for plugins, which we will propose upstream.
+**Why not plugin settings:** the app does not allow secrets in plugin settings (D018), and its own secret store is
+open to plugins only for the key of a provider row the plugin owns (ADR 0319).
 
-**Sign-in flow:**
-1. Run **TBO Support: Sign in**. The panel opens.
-2. Paste the key and secret.
-3. The plugin first tests them with `who_am_i`, and saves them only if the test passes.
-
-**Sign out** removes the saved key. Microsoft Entra sign-in replaces API keys later (architecture §10).
+**The one deliberate exception:** `lib/credentials.js` starts `security` or `powershell` itself. That is a raw
+Node API rather than the host API, so the code is kept small, fixed (no input reaches the command line) and covered
+by tests.
 
 ## 8. Permissions in the app
 
@@ -158,8 +180,10 @@ The other route is a small helpdesk PR: a "Connect TBO Copilot" button that gene
 | `agent.tool.register` | The `tbo_support` tool |
 | `net.fetch`, with `net.domains: ["teams.teambackoffice.com", "localhost", "*.localhost", "127.0.0.1"]` | Calls to TBO Support, or to a local test bench on the same computer. The host refuses every other host, and re-checks redirects |
 | `ui.panel` | The sign-in panel |
+| `shell.openExternal` | Opens TBO Support's Allow page in the browser (only a page on the same site) |
+| `provider.register` | The **TBO AI** provider row, and storing its key and address after the sign-in |
 
-There is no file, shell, MCP or clipboard permission. The tool is `risk: "low"` because v1 only reads. The host audits every call. The plugin also logs each action and ticket number through `ctx.log`, never the content.
+There is no file, command, MCP or clipboard permission (`shell.openExternal` only opens the Allow page). The tool is `risk: "low"` because v1 only reads. The host audits every call. The plugin also logs each action and ticket number through `ctx.log`, never the content.
 
 The **site address** is a plugin setting (`siteUrl`, default `https://teams.teambackoffice.com`). The plugin refuses an address whose host is not in `net.domains`. It also refuses plain HTTP, except for `localhost`, `127.0.0.1` and names ending in `.localhost`, which always mean this computer (RFC 6761). So a developer can test against a local bench site such as `http://tbo.localhost:8002`. The saved key is per host, so a local key and the real one never mix.
 
@@ -188,7 +212,8 @@ The **site address** is a plugin setting (`siteUrl`, default `https://teams.team
 | Situation | What the agent sees |
 |---|---|
 | Not signed in | "Not signed in to TBO Support. Run 'TBO Support: Sign in' from the command menu." |
-| 401 | "TBO Support did not accept the API key. Sign in again." |
+| 401 | "TBO Support did not accept your sign-in. Run 'TBO Support: Sign in' again." (with a sign-in, the plugin first renews once) |
+| The sign-in ended | "Your TBO sign-in ended: <TBO Support's reason>" as a notice; the session and the TBO AI key are removed |
 | 403 / `PermissionError` | "Your TBO Support account may not read this." |
 | 404 / `DoesNotExistError` | "Not found in TBO Support." followed by the shortened detail |
 | 417 / 500 with a Frappe message | The Frappe message, shortened |

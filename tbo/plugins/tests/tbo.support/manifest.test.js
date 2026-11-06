@@ -15,7 +15,13 @@ test("the manifest tool matches the code's tool exactly", () => {
 });
 
 test("the plugin asks only for the permissions it uses", () => {
-  assert.deepEqual([...manifest.permissions].sort(), ["agent.tool.register", "net.fetch", "ui.panel"]);
+  assert.deepEqual([...manifest.permissions].sort(), [
+    "agent.tool.register",
+    "net.fetch",
+    "provider.register",
+    "shell.openExternal",
+    "ui.panel",
+  ]);
 });
 
 test("the plugin may reach only the default site and a local test bench", () => {
@@ -26,4 +32,13 @@ test("the plugin may reach only the default site and a local test bench", () => 
 
 test("the plugin id starts with tbo. so the TBO build accepts it", () => {
   assert.match(manifest.id, /^tbo\./);
+});
+
+test("TBO AI is declared without an address: the sign-in sets it", () => {
+  const [provider] = manifest.contributes.providers;
+  assert.equal(manifest.contributes.providers.length, 1);
+  assert.equal(provider.id, "tbo-ai");
+  assert.equal(provider.baseUrl, undefined);
+  assert.equal(provider.authKind, "api_key");
+  assert.deepEqual(provider.models.map((m) => m.id), ["tbo-default"]);
 });

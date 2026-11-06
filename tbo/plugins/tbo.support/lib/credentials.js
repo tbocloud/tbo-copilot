@@ -1,7 +1,8 @@
 "use strict";
 
-// Keeps the person's TBO Support API key in the operating system's credential
-// store. PI-Desktop does not offer plugins a secret store yet (plugin settings
+// Keeps the person's TBO Support sign-in in the operating system's credential
+// store: the Microsoft sign-in's session (computer token and TBO Support token),
+// or an API key for a local test site. PI-Desktop does not offer plugins a secret store yet (plugin settings
 // may not hold secrets, D018), so this file is the plugin's one use of
 // child_process. Commands are fixed; the secret only ever travels on stdin.
 
@@ -11,8 +12,12 @@ const path = require("node:path");
 
 const SERVICE = "tbo-copilot.tbo-support";
 const DPAPI_FILE = "credentials.dpapi";
+const SESSION_FILE = "session.dpapi";
+const SESSION_ACCOUNT = "session.";
 const KEY_PART = /^[A-Za-z0-9]{6,64}$/;
 const HOST = /^[a-z0-9.-]{1,253}$/;
+const BLOB = /^[A-Za-z0-9_-]{1,8192}$/;
+const SESSION_FIELDS = ["computerToken", "accessToken", "accessExpiresAt", "signInExpiresAt", "user", "fullName"];
 
 function fail(code, message) {
   const err = new Error(message);
@@ -52,6 +57,25 @@ function split(value) {
   return key && secret ? { key, secret } : null;
 }
 
+// A session travels as base64url JSON: one word, safe on the Keychain's command line.
+function packSession(session) {
+  const kept = {};
+  for (const field of SESSION_FIELDS) if (session && session[field] !== undefined) kept[field] = session[field];
+  if (!kept.computerToken || !kept.accessToken) throw fail("INVALID_ARGUMENT", "A sign-in session needs its tokens.");
+  return Buffer.from(JSON.stringify(kept), "utf8").toString("base64url");
+}
+
+function unpackSession(blob) {
+  const text = String(blob || "").trim();
+  if (!BLOB.test(text)) return null;
+  try {
+    const session = JSON.parse(Buffer.from(text, "base64url").toString("utf8"));
+    return session && session.computerToken && session.accessToken ? session : null;
+  } catch {
+    return null;
+  }
+}
+
 // macOS: the login Keychain through `security -i`, which reads its commands
 // from stdin, so the secret is never part of a command line.
 function macStore(runner) {
@@ -75,6 +99,24 @@ function macStore(runner) {
       checkHost(host);
       await runner("/usr/bin/security", ["delete-generic-password", "-s", SERVICE, "-a", host], "");
     },
+    async saveSession(host, session) {
+      checkHost(host);
+      const line = `add-generic-password -U -s ${SERVICE} -a ${SESSION_ACCOUNT}${host} -w ${packSession(session)}\n`;
+      const r = await runner("/usr/bin/security", ["-i"], line);
+      if (r.code !== 0 || /error/i.test(r.stderr)) {
+        throw fail("SECRET_STORE", "Could not save the sign-in in the macOS Keychain.");
+      }
+    },
+    async loadSession(host) {
+      checkHost(host);
+      const r = await runner("/usr/bin/security", ["find-generic-password", "-s", SERVICE, "-a", `${SESSION_ACCOUNT}${host}`, "-w"], "");
+      if (r.code !== 0) return null;
+      return unpackSession(r.stdout);
+    },
+    async removeSession(host) {
+      checkHost(host);
+      await runner("/usr/bin/security", ["delete-generic-password", "-s", SERVICE, "-a", `${SESSION_ACCOUNT}${host}`], "");
+    },
   };
 }
 
@@ -91,6 +133,7 @@ const PS = ["-NoProfile", "-NonInteractive", "-Command"];
 
 function windowsStore(runner, dataDir, files) {
   const fileFor = (host) => path.join(dataDir, `${host}.${DPAPI_FILE}`);
+  const sessionFileFor = (host) => path.join(dataDir, `${host}.${SESSION_FILE}`);
   return {
     async save(host, creds) {
       checkHost(host);
@@ -117,6 +160,30 @@ function windowsStore(runner, dataDir, files) {
       checkHost(host);
       await files.rm(fileFor(host), { force: true });
     },
+    async saveSession(host, session) {
+      checkHost(host);
+      const r = await runner("powershell.exe", [...PS, PS_PROTECT], packSession(session));
+      const blob = r.stdout.trim();
+      if (r.code !== 0 || !blob) throw fail("SECRET_STORE", "Could not encrypt the sign-in with Windows DPAPI.");
+      await files.mkdir(dataDir, { recursive: true });
+      await files.writeFile(sessionFileFor(host), blob, { mode: 0o600 });
+    },
+    async loadSession(host) {
+      checkHost(host);
+      let blob;
+      try {
+        blob = (await files.readFile(sessionFileFor(host), "utf8")).trim();
+      } catch {
+        return null;
+      }
+      const r = await runner("powershell.exe", [...PS, PS_UNPROTECT], blob);
+      if (r.code !== 0) return null;
+      return unpackSession(r.stdout);
+    },
+    async removeSession(host) {
+      checkHost(host);
+      await files.rm(sessionFileFor(host), { force: true });
+    },
   };
 }
 
@@ -129,7 +196,14 @@ function createStore({ platform = process.platform, runner = run, dataDir, files
   const unsupported = async () => {
     throw fail("UNSUPPORTED", "Saving the TBO Support key is supported on macOS and Windows only.");
   };
-  return { save: unsupported, load: async () => null, remove: unsupported };
+  return {
+    save: unsupported,
+    load: async () => null,
+    remove: unsupported,
+    saveSession: unsupported,
+    loadSession: async () => null,
+    removeSession: unsupported,
+  };
 }
 
-module.exports = { createStore, SERVICE, PS_PROTECT, PS_UNPROTECT };
+module.exports = { createStore, packSession, unpackSession, SERVICE, PS_PROTECT, PS_UNPROTECT };
