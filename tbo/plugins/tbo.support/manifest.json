@@ -162,6 +162,7 @@
     "domains": [
       "teams.teambackoffice.com",
       "demo-tbo.tbocloud.in",
+      "copilot-gateway.tbocloud.in",
       "localhost",
       "*.localhost",
       "127.0.0.1"

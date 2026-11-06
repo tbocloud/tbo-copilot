@@ -28,11 +28,11 @@ function forkPluginProcess({ entry }) {
   };
 }
 
-function writePlugin({ id, permissions, main }) {
+function writePlugin({ id, permissions, main, net }) {
   const dir = mkdtempSync(join(tmpdir(), "pi-provider-plugin-"));
   writeFileSync(
     join(dir, "manifest.json"),
-    JSON.stringify({ schemaVersion: 1, id, name: id, version: "0.0.1", main: "main.js", permissions }),
+    JSON.stringify({ schemaVersion: 1, id, name: id, version: "0.0.1", main: "main.js", permissions, ...(net ? { net } : {}) }),
     "utf8",
   );
   writeFileSync(join(dir, "main.js"), main, "utf8");
@@ -77,6 +77,7 @@ test("pi.providers forwards the plugin id and the declared provider id, write on
   const dir = writePlugin({
     id: "demo.signin",
     permissions: ["provider.register"],
+    net: { domains: ["ai.example.com"] },
     main: `
       module.exports = {
         async onLoad() {
@@ -93,7 +94,8 @@ test("pi.providers forwards the plugin id and the declared provider id, write on
                 ["longId", () => pi.providers.setCredential("x".repeat(65), "sk-x")],
                 ["keyNotString", () => pi.providers.setCredential("tbo-ai", 42)],
                 ["keyTooLong", () => pi.providers.setCredential("tbo-ai", "k".repeat(4097))],
-                ["urlNotString", () => pi.providers.setBaseUrl("tbo-ai", null)]
+                ["urlNotString", () => pi.providers.setBaseUrl("tbo-ai", null)],
+                ["urlNotDeclared", () => pi.providers.setBaseUrl("tbo-ai", "https://elsewhere.example.net/v1")]
               ]) {
                 try { await call(); }
                 catch (error) { await pi.ui.showToast(name + ":" + error.code); }
@@ -120,12 +122,16 @@ test("pi.providers forwards the plugin id and the declared provider id, write on
     "keyNotString:INVALID_PARAMS",
     "keyTooLong:INVALID_PARAMS",
     "urlNotString:INVALID_PARAMS",
+    // The endpoint gets the conversation and the key: only a declared host.
+    "urlNotDeclared:PERMISSION_DENIED",
   ]);
   assert.ok(
     !JSON.stringify(audit).includes("sk-secret-value"),
     "the audit log never carries the key",
   );
   assert.ok(audit.some((entry) => entry.api === "providers.setCredential" && entry.ok === true));
+  assert.ok(audit.some((entry) => entry.api === "providers.setBaseUrl" && entry.ok === false
+    && entry.errorCode === "PERMISSION_DENIED"));
 });
 
 test("pi.providers is refused without the provider.register permission", async (t) => {

@@ -15,8 +15,14 @@ const DPAPI_FILE = "credentials.dpapi";
 const SESSION_FILE = "session.dpapi";
 const SESSION_ACCOUNT = "session.";
 const KEY_PART = /^[A-Za-z0-9]{6,64}$/;
-const HOST = /^[a-z0-9.-]{1,253}$/;
-const BLOB = /^[A-Za-z0-9_-]{1,8192}$/;
+// A site's key in the store: its host name, or scheme_host_port (main.js keyOf).
+const HOST = /^[a-z0-9._-]{1,253}$/;
+// The longest kept session, the same when saving and reading: one that could
+// not be read back is refused when it is saved.
+const MAX_BLOB_CHARS = 8192;
+const BLOB = new RegExp(`^[A-Za-z0-9_-]{1,${MAX_BLOB_CHARS}}$`);
+// `security delete-generic-password` exits 44 when there is nothing to delete.
+const MAC_NOT_FOUND = 44;
 const SESSION_FIELDS = ["computerToken", "accessToken", "accessExpiresAt", "signInExpiresAt", "user", "fullName"];
 
 function fail(code, message) {
@@ -62,7 +68,9 @@ function packSession(session) {
   const kept = {};
   for (const field of SESSION_FIELDS) if (session && session[field] !== undefined) kept[field] = session[field];
   if (!kept.computerToken || !kept.accessToken) throw fail("INVALID_ARGUMENT", "A sign-in session needs its tokens.");
-  return Buffer.from(JSON.stringify(kept), "utf8").toString("base64url");
+  const blob = Buffer.from(JSON.stringify(kept), "utf8").toString("base64url");
+  if (blob.length > MAX_BLOB_CHARS) throw fail("INVALID_ARGUMENT", "The sign-in is too large to keep on this computer.");
+  return blob;
 }
 
 function unpackSession(blob) {
@@ -97,7 +105,10 @@ function macStore(runner) {
     },
     async remove(host) {
       checkHost(host);
-      await runner("/usr/bin/security", ["delete-generic-password", "-s", SERVICE, "-a", host], "");
+      const r = await runner("/usr/bin/security", ["delete-generic-password", "-s", SERVICE, "-a", host], "");
+      if (r.code !== 0 && r.code !== MAC_NOT_FOUND) {
+        throw fail("SECRET_STORE", "Could not delete the key from the macOS Keychain.");
+      }
     },
     async saveSession(host, session) {
       checkHost(host);
@@ -115,7 +126,10 @@ function macStore(runner) {
     },
     async removeSession(host) {
       checkHost(host);
-      await runner("/usr/bin/security", ["delete-generic-password", "-s", SERVICE, "-a", `${SESSION_ACCOUNT}${host}`], "");
+      const r = await runner("/usr/bin/security", ["delete-generic-password", "-s", SERVICE, "-a", `${SESSION_ACCOUNT}${host}`], "");
+      if (r.code !== 0 && r.code !== MAC_NOT_FOUND) {
+        throw fail("SECRET_STORE", "Could not delete the sign-in from the macOS Keychain.");
+      }
     },
   };
 }
@@ -206,4 +220,4 @@ function createStore({ platform = process.platform, runner = run, dataDir, files
   };
 }
 
-module.exports = { createStore, packSession, unpackSession, SERVICE, PS_PROTECT, PS_UNPROTECT };
+module.exports = { createStore, packSession, unpackSession, SERVICE, PS_PROTECT, PS_UNPROTECT, MAX_BLOB_CHARS };

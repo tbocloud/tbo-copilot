@@ -24,11 +24,12 @@ test("the plugin asks only for the permissions it uses", () => {
   ]);
 });
 
-test("the plugin may reach only the default site, the demo hub and a local test bench", () => {
+test("the plugin may reach only the default site, the demo hub, the TBO AI gateway and a local test bench", () => {
   const setting = manifest.contributes.settings.find((s) => s.key === "siteUrl");
   assert.deepEqual(manifest.net.domains, [
     new URL(setting.default).hostname,
     "demo-tbo.tbocloud.in",
+    "copilot-gateway.tbocloud.in", // TBO AI's endpoint only, never a TBO Support address
     "localhost",
     "*.localhost",
     "127.0.0.1",

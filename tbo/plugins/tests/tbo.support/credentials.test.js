@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const os = require("node:os");
 const path = require("node:path");
 const fs = require("node:fs/promises");
-const { createStore, packSession, unpackSession, SERVICE, PS_PROTECT, PS_UNPROTECT } = require("../../tbo.support/lib/credentials");
+const { createStore, packSession, unpackSession, SERVICE, PS_PROTECT, PS_UNPROTECT, MAX_BLOB_CHARS } = require("../../tbo.support/lib/credentials");
 
 const HOST = "teams.teambackoffice.com";
 const CREDS = { key: "abc123key", secret: "def456secret" };
@@ -113,6 +113,34 @@ test("macOS keeps the session under its own account, on stdin", async () => {
   assert.equal(calls[0].input, `add-generic-password -U -s ${SERVICE} -a session.${HOST} -w ${blob}\n`);
   assert.equal((await store.loadSession(HOST)).accessToken, "bearer-1");
   assert.deepEqual(calls[1].args, ["find-generic-password", "-s", SERVICE, "-a", `session.${HOST}`, "-w"]);
+});
+
+test("a session too long to read back is refused when it is kept, not lost later", () => {
+  const big = { ...SESSION, fullName: "R".repeat(MAX_BLOB_CHARS) };
+  assert.throws(() => packSession(big), { code: "INVALID_ARGUMENT" });
+  const justFits = packSession(SESSION);
+  assert.ok(justFits.length <= MAX_BLOB_CHARS);
+  assert.ok(unpackSession(justFits)); // whatever is kept can be read
+});
+
+test("macOS delete counts 'not found' as deleted and reports any other Keychain failure", async () => {
+  const { runner } = fakeRunner([
+    { code: 44, stdout: "", stderr: "The specified item could not be found in the keychain." },
+    { code: 0, stdout: "", stderr: "" },
+    { code: 51, stdout: "", stderr: "User interaction is not allowed." },
+    { code: 51, stdout: "", stderr: "User interaction is not allowed." },
+  ]);
+  const store = createStore({ platform: "darwin", runner });
+  await store.removeSession(HOST);
+  await store.remove(HOST);
+  await assert.rejects(store.removeSession(HOST), { code: "SECRET_STORE" });
+  await assert.rejects(store.remove(HOST), { code: "SECRET_STORE" });
+});
+
+test("a local bench's store key (scheme_host_port) is accepted", async () => {
+  const { runner, calls } = fakeRunner([{ code: 0, stdout: "", stderr: "" }]);
+  await createStore({ platform: "darwin", runner }).save("http_tbo.localhost_8002", CREDS);
+  assert.match(calls[0].input, / -a http_tbo\.localhost_8002 -w /);
 });
 
 test("Windows keeps the session with DPAPI in its own file", async () => {

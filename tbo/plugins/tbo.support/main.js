@@ -5,6 +5,14 @@
 // Support (TBO Copilot Phase 17); TBO Support then gives this computer a TBO
 // Support token and the person's TBO AI key, so nobody types a key. A local test
 // site can still use an API key. See docs/tbo/tbo-support-plugin.md.
+//
+// Three rules keep the sign-in consistent when things overlap:
+// - every sign-out (and an API-key sign-in) moves `epoch` on, and a renewal or a
+//   Microsoft sign-in that started before it drops its answer;
+// - writes to the stored sign-in and to the TBO AI row run one at a time
+//   (`exclusive`), so a sign-out can never be overtaken by a save;
+// - the TBO AI row holds the key of one site's sign-in (`aiApplied.site`): it is
+//   cleared when the site changes or that sign-in ends.
 
 const os = require("node:os");
 const { createClient, normalizeSite, isLoopback } = require("./lib/helpdesk");
@@ -16,7 +24,12 @@ const DEFAULT_SITE = "https://teams.teambackoffice.com";
 const AI_PROVIDER = "tbo-ai";
 const RENEW_BEFORE_MS = 60 * 60 * 1000; // renew the TBO Support token when under an hour is left
 const CHECK_EVERY_MS = 15 * 60 * 1000;
+const AI_RETRY_MS = 5 * 60 * 1000; // a TBO AI set-up the app refused is tried again this soon
 const STARTUP_DELAY_MS = 2000;
+// Answers that say TBO Support could not be reached or had a passing problem;
+// the saved token stays usable until it runs out.
+const TRANSIENT = new Set(["NETWORK", "RATE_LIMITED", "HELPDESK_ERROR"]);
+const SETTINGS_EVENT = "plugin:settingsChanged";
 const COMMANDS = {
   signIn: "tbo-support.sign-in",
   signOut: "tbo-support.sign-out",
@@ -27,24 +40,56 @@ let store = null;
 let timer = null;
 let startupTimer = null;
 let pending = null; // a Microsoft sign-in waiting for Allow in the browser
-let aiApplied = null; // what the TBO AI provider row holds now (base URL and key)
+let aiApplied = null; // what the TBO AI provider row holds now: { site, baseUrl, key }
 let aiState = { ready: false };
+let aiRetryAt = 0; // when to fetch the TBO AI key again after the app refused it (0: not needed)
+let epoch = 0;
+let chain = Promise.resolve();
 let version = null;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function allowedHosts() {
+function fail(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+// Runs `fn` after every earlier exclusive call has finished.
+function exclusive(fn) {
+  const run = chain.then(fn, fn);
+  chain = run.catch(() => {});
+  return run;
+}
+
+// Hosts in net.domains only because TBO AI's endpoint lives there (the app
+// checks the address TBO Support hands over against net.domains). They are
+// never a TBO Support address: no sign-in token goes to them.
+const AI_ONLY_HOSTS = new Set(["copilot-gateway.tbocloud.in"]);
+
+function siteHosts() {
   const manifest = pi.plugin.getManifest();
-  return (manifest.net && manifest.net.domains) || [];
+  return ((manifest.net && manifest.net.domains) || []).filter((host) => !AI_ONLY_HOSTS.has(host));
 }
 
 async function currentSite() {
   const settings = await pi.plugin.getSettings();
-  return normalizeSite(settings.siteUrl || DEFAULT_SITE, allowedHosts());
+  return normalizeSite(settings.siteUrl || DEFAULT_SITE, siteHosts());
 }
 
 function hostOf(site) {
   return new URL(site).hostname;
+}
+
+// Where a site's sign-in is kept. A normal https site keeps its host name (as
+// before); any other origin adds its scheme and port, so two local benches on
+// one host never share a sign-in. A sign-in kept by host name alone for such a
+// bench is not read again: the person signs in once more.
+function keyOf(site) {
+  const url = new URL(site);
+  const scheme = url.protocol.replace(":", "");
+  if (scheme === "https" && !url.port) return url.hostname;
+  return `${scheme}_${url.hostname}_${url.port || (scheme === "https" ? "443" : "80")}`;
 }
 
 function request(input) {
@@ -62,67 +107,154 @@ async function clientFor(site, credentials) {
 
 // --- TBO AI -------------------------------------------------------------------
 
-async function applyAi(ai) {
+// Points the TBO AI row at this sign-in's address and key. A new address never
+// sees the old key: the row is emptied first, so a failure half way leaves no
+// key rather than a mixed pair.
+async function applyAi(site, ai) {
   if (!ai || !ai.key || !ai.base_url) {
+    if (aiApplied && aiApplied.site !== site) await clearAi();
     return { ready: false, error: ai && ai.error ? ai.error : "" };
   }
-  if (!aiApplied || aiApplied.baseUrl !== ai.base_url || aiApplied.key !== ai.key) {
-    await pi.providers.setBaseUrl(AI_PROVIDER, ai.base_url);
-    await pi.providers.setCredential(AI_PROVIDER, ai.key);
-    aiApplied = { baseUrl: ai.base_url, key: ai.key };
+  const same = aiApplied && aiApplied.site === site && aiApplied.baseUrl === ai.base_url && aiApplied.key === ai.key;
+  if (!same) {
+    const moved = !aiApplied || aiApplied.site !== site || aiApplied.baseUrl !== ai.base_url;
+    aiApplied = null;
+    try {
+      if (moved) {
+        await pi.providers.clearCredential(AI_PROVIDER);
+        await pi.providers.setBaseUrl(AI_PROVIDER, ai.base_url);
+      }
+      await pi.providers.setCredential(AI_PROVIDER, ai.key);
+    } catch (e) {
+      await pi.providers.clearCredential(AI_PROVIDER).catch(() => {});
+      throw e;
+    }
+    aiApplied = { site, baseUrl: ai.base_url, key: ai.key };
   }
   return { ready: true, models: ai.models || [], limit: ai.monthly_limit };
+}
+
+// applyAi for a sign-in that is already kept: a refusal by the app is shown and
+// tried again later, without waiting for the next token renewal.
+async function setUpAi(site, ai) {
+  try {
+    const state = await applyAi(site, ai);
+    aiRetryAt = 0;
+    return state;
+  } catch (e) {
+    aiRetryAt = Date.now() + AI_RETRY_MS;
+    return { ready: false, error: e.message };
+  }
 }
 
 async function clearAi() {
   aiApplied = null;
   aiState = { ready: false };
+  aiRetryAt = 0;
   await pi.providers.clearCredential(AI_PROVIDER).catch(() => {});
+}
+
+// The TBO AI row belongs to the current site's sign-in only.
+function reconcileAi(site) {
+  return exclusive(async () => {
+    if (aiApplied && aiApplied.site !== site) await clearAi();
+  });
+}
+
+// No Microsoft sign-in kept for `site`: no TBO AI key either. Decided in turn
+// with the saves, so a sign-in kept a moment ago is never undone. `always`
+// also clears a key the app kept from an earlier run (at start, aiApplied is
+// not known yet).
+function clearAiUnlessSignedIn(site, { always = false } = {}) {
+  return exclusive(async () => {
+    if (await store.loadSession(keyOf(site))) return;
+    if (aiApplied || always) await clearAi();
+  });
 }
 
 // --- the Microsoft sign-in's session -------------------------------------------
 
-async function endLocally(site, reason) {
-  await store.removeSession(hostOf(site)).catch(() => {});
-  await clearAi();
-  if (reason) await pi.ui.showToast(`Your TBO sign-in ended: ${reason}`, "error").catch(() => {});
+// TBO Support ended the sign-in that `computerToken` belongs to. A newer sign-in
+// kept in the meantime is left alone.
+async function endLocally(site, computerToken, reason) {
+  const ended = await exclusive(async () => {
+    const key = keyOf(site);
+    const kept = await store.loadSession(key);
+    if (kept && kept.computerToken !== computerToken) return false;
+    await clearAi();
+    await store.removeSession(key).catch(() => {});
+    return true;
+  });
+  if (ended && reason) await pi.ui.showToast(`Your TBO sign-in ended: ${reason}`, "error").catch(() => {});
 }
 
 // A TBO Support token with at least an hour left; renewed (and the AI key
-// checked) when `force` or when it runs out sooner.
+// fetched) when `force`, when it runs out sooner, or when the AI set-up is due
+// again.
 async function renew(site, session, { force = false } = {}) {
-  if (!force && session.accessExpiresAt - Date.now() > RENEW_BEFORE_MS) return session;
+  const expiring = session.accessExpiresAt - Date.now() <= RENEW_BEFORE_MS;
+  const aiDue = aiRetryAt > 0 && Date.now() >= aiRetryAt;
+  if (!force && !expiring && !aiDue) return session;
+  const gen = epoch;
+  let fresh;
   try {
-    const fresh = await desktop.refresh({
+    fresh = await desktop.refresh({
       request,
       siteUrl: site,
       computerToken: session.computerToken,
       appVersion: await appVersion(),
     });
-    await store.saveSession(hostOf(site), fresh);
-    aiState = await applyAi(fresh.ai).catch((e) => ({ ready: false, error: e.message }));
-    return fresh;
   } catch (e) {
-    if (e.code === "SIGNED_OUT") await endLocally(site, e.message);
+    if (gen !== epoch) throw fail("SIGNED_OUT", "You signed out of TBO Support.");
+    if (e.code === "SIGNED_OUT") {
+      await endLocally(site, session.computerToken, e.message);
+      throw e;
+    }
+    if (aiDue) aiRetryAt = Date.now() + AI_RETRY_MS; // not on every call while TBO Support is down
+    // TBO Support could not answer: the saved token still works until it runs out
+    if (!force && TRANSIENT.has(e.code) && session.accessExpiresAt > Date.now()) return session;
     throw e;
   }
+  return exclusive(async () => {
+    // a sign-out (or another sign-in) came first: this answer is stale
+    if (gen !== epoch) throw fail("SIGNED_OUT", "You signed out of TBO Support.");
+    await store.saveSession(keyOf(site), fresh);
+    aiState = await setUpAi(site, fresh.ai);
+    return fresh;
+  });
 }
 
 async function signedInClient() {
   const site = await currentSite();
-  const session = await store.loadSession(hostOf(site));
+  await reconcileAi(site);
+  const session = await store.loadSession(keyOf(site));
   if (session) {
     const fresh = await renew(site, session);
     return { site, session: fresh, client: await clientFor(site, { token: fresh.accessToken }) };
   }
-  const credentials = await store.load(hostOf(site));
+  const credentials = await store.load(keyOf(site));
   return { site, session: null, client: await clientFor(site, credentials) };
+}
+
+// One tool action with the current sign-in; a token refused early (revoked, or
+// the clock is off) is renewed once and the action tried again.
+async function runSignedIn(args) {
+  const { site, session, client } = await signedInClient();
+  try {
+    return await runAction(client, args, { siteUrl: site });
+  } catch (e) {
+    if (e.code !== "AUTH" || !session) throw e;
+    const fresh = await renew(site, session, { force: true });
+    return runAction(await clientFor(site, { token: fresh.accessToken }), args, { siteUrl: site });
+  }
 }
 
 async function startMicrosoft() {
   const site = await currentSite();
   if (pending) pending.cancelled = true;
+  pending = null;
   const started = await desktop.start({ request, siteUrl: site, os, appVersion: await appVersion() });
+  const gen = epoch;
   const mine = {
     site,
     code: started.code,
@@ -132,22 +264,42 @@ async function startMicrosoft() {
     error: "",
   };
   pending = mine;
-  await pi.shell.openExternal(started.verify_url);
+  try {
+    await pi.shell.openExternal(started.verify_url);
+  } catch (e) {
+    // nobody waits for an Allow that cannot be pressed: start again from the panel
+    mine.cancelled = true;
+    if (pending === mine) pending = null;
+    throw fail("BROWSER", `Could not open your browser (${e && e.message ? e.message : e}). Try again.`);
+  }
+  const over = () => mine.cancelled || gen !== epoch;
   desktop
-    .poll({ request, siteUrl: site, started, sleep, isCancelled: () => mine.cancelled })
-    .then(async (session) => {
-      if (mine.cancelled) return;
-      await store.saveSession(hostOf(site), session);
-      await store.remove(hostOf(site)).catch(() => {}); // the Microsoft sign-in replaces an API key
-      aiState = await applyAi(session.ai).catch((e) => ({ ready: false, error: e.message }));
-      if (pending === mine) pending = null;
-      const who = session.fullName || session.user;
-      await pi.ui
-        .showToast(aiState.ready ? `Signed in as ${who}. TBO AI is ready.` : `Signed in to TBO Support as ${who}.`)
-        .catch(() => {});
-    })
+    .poll({ request, siteUrl: site, started, sleep, isCancelled: over })
+    .then((session) =>
+      exclusive(async () => {
+        if (over()) return;
+        const key = keyOf(site);
+        aiState = { ready: false, configuring: true };
+        await store.saveSession(key, session);
+        if (over()) {
+          // cancelled while it was being kept: nothing else writes in the
+          // meantime, so the session in the store is this attempt's own
+          await store.removeSession(key).catch(() => {});
+          aiState = { ready: false };
+          return;
+        }
+        await store.remove(key).catch(() => {}); // the Microsoft sign-in replaces an API key
+        aiState = await setUpAi(site, session.ai);
+        if (pending === mine) pending = null;
+        const who = session.fullName || session.user;
+        await pi.ui
+          .showToast(aiState.ready ? `Signed in as ${who}. TBO AI is ready.` : `Signed in to TBO Support as ${who}.`)
+          .catch(() => {});
+      }),
+    )
     .catch((e) => {
-      if (!mine.cancelled) mine.error = e.message;
+      if (aiState.configuring) aiState = { ready: false };
+      if (!over()) mine.error = e.message;
     });
   return pendingView(mine);
 }
@@ -165,10 +317,11 @@ async function panelState() {
   } catch (e) {
     return { site: null, signedIn: false, error: e.message };
   }
+  await reconcileAi(site);
   const local = isLoopback(hostOf(site));
   const waiting = pending && pending.site === site ? pendingView(pending) : null;
   if (pending && pending.error) pending = null; // shown once
-  const session = await store.loadSession(hostOf(site));
+  const session = await store.loadSession(keyOf(site));
   if (session) {
     try {
       const fresh = await renew(site, session);
@@ -181,7 +334,8 @@ async function panelState() {
       return { site, local, signedIn: false, pending: waiting, error: e.message };
     }
   }
-  const credentials = await store.load(hostOf(site));
+  await clearAiUnlessSignedIn(site);
+  const credentials = await store.load(keyOf(site));
   if (!credentials) return { site, local, signedIn: false, pending: waiting };
   try {
     const me = await runAction(await clientFor(site, credentials), { action: "who_am_i" }, { siteUrl: site });
@@ -197,27 +351,54 @@ async function signInWithKey(payload) {
     key: String((payload && payload.key) || "").trim(),
     secret: String((payload && payload.secret) || "").trim(),
   };
+  const microsoft = () =>
+    fail("SIGNED_IN", "You are signed in with Microsoft on this site. Sign out first to use an API key.");
+  if (await store.loadSession(keyOf(site))) throw microsoft();
+  // One sign-in at a time: a Microsoft sign-in still waiting stops here.
+  epoch += 1;
+  if (pending) pending.cancelled = true;
+  pending = null;
   // Test the key before saving it, so a typo is never stored.
   const me = await runAction(await clientFor(site, credentials), { action: "who_am_i" }, { siteUrl: site });
-  if (!me.user || me.user === "Guest") {
-    const err = new Error("TBO Support did not accept the API key.");
-    err.code = "AUTH";
-    throw err;
+  if (!me.user || me.user === "Guest") throw fail("AUTH", "TBO Support did not accept the API key.");
+  return exclusive(async () => {
+    // a Microsoft sign-in kept just before the line above wins
+    if (await store.loadSession(keyOf(site))) throw microsoft();
+    await store.save(keyOf(site), credentials);
+    return { site, local: isLoopback(hostOf(site)), signedIn: true, method: "key", user: me.user, ai: aiState };
+  });
+}
+
+// Deletes a stored item, once more if the first try fails.
+async function removeStored(remove) {
+  try {
+    await remove();
+  } catch {
+    await remove();
   }
-  await store.save(hostOf(site), credentials);
-  return { site, local: isLoopback(hostOf(site)), signedIn: true, method: "key", user: me.user, ai: aiState };
 }
 
 async function signOut() {
   const site = await currentSite();
+  epoch += 1; // a renewal or sign-in still running drops its answer
   if (pending) pending.cancelled = true;
   pending = null;
-  const session = await store.loadSession(hostOf(site));
-  if (session) await desktop.signOut({ request, siteUrl: site, computerToken: session.computerToken });
-  await store.removeSession(hostOf(site)).catch(() => {});
-  await store.remove(hostOf(site));
-  await clearAi();
-  return { site, local: isLoopback(hostOf(site)), signedIn: false };
+  return exclusive(async () => {
+    const key = keyOf(site);
+    const session = await store.loadSession(key);
+    if (session) await desktop.signOut({ request, siteUrl: site, computerToken: session.computerToken });
+    await clearAi(); // the TBO AI key goes first, whatever happens below
+    try {
+      await removeStored(() => store.removeSession(key));
+      await removeStored(() => store.remove(key));
+    } catch {
+      throw fail(
+        "SECRET_STORE",
+        "Signed out of TBO Support, but this computer could not delete the saved sign-in. Choose Sign out again.",
+      );
+    }
+    return { site, local: isLoopback(hostOf(site)), signedIn: false };
+  });
 }
 
 async function onPanelInvoke(channel, payload) {
@@ -243,21 +424,25 @@ async function onPanelInvoke(channel, payload) {
 
 // --- lifecycle -----------------------------------------------------------------
 
-// At start: renew the sign-in (and the AI key), or ask the person to sign in.
-async function startup() {
+// At start, and whenever the site changes: renew this site's sign-in (and with
+// it the AI key), or clear a TBO AI key no sign-in here stands behind.
+async function syncSite({ openPanel = false } = {}) {
   let site;
   try {
     site = await currentSite();
   } catch {
+    await exclusive(clearAi);
     return;
   }
-  const session = await store.loadSession(hostOf(site));
+  await reconcileAi(site);
+  const session = await store.loadSession(keyOf(site));
   if (session) {
     await renew(site, session, { force: true }).catch(() => {});
     return;
   }
-  const credentials = await store.load(hostOf(site));
-  if (!credentials && !isLoopback(hostOf(site))) {
+  await clearAiUnlessSignedIn(site, { always: true });
+  const credentials = await store.load(keyOf(site));
+  if (openPanel && !credentials && !isLoopback(hostOf(site))) {
     await pi.ui.openPanel({ title: "TBO Support" }).catch(() => {});
   }
 }
@@ -265,11 +450,17 @@ async function startup() {
 async function check() {
   try {
     const site = await currentSite();
-    const session = await store.loadSession(hostOf(site));
+    await reconcileAi(site);
+    const session = await store.loadSession(keyOf(site));
     if (session) await renew(site, session);
+    else await clearAiUnlessSignedIn(site);
   } catch {
     // tried again at the next check
   }
+}
+
+function onSettingsChanged() {
+  syncSite().catch(() => {});
 }
 
 async function onLoad() {
@@ -281,15 +472,7 @@ async function onLoad() {
       const action = args && args.action;
       const ticket = args && args.ticket ? ` ticket ${args.ticket}` : "";
       if (ctx && ctx.log) ctx.log(`tbo_support ${action}${ticket}`);
-      const { site, session, client } = await signedInClient();
-      try {
-        return await runAction(client, args, { siteUrl: site });
-      } catch (e) {
-        if (e.code !== "AUTH" || !session) throw e;
-        // the token was refused early (revoked or the clock is off): renew once
-        const fresh = await renew(site, session, { force: true });
-        return runAction(await clientFor(site, { token: fresh.accessToken }), args, { siteUrl: site });
-      }
+      return runSignedIn(args);
     },
   });
 
@@ -322,16 +505,21 @@ async function onLoad() {
       try {
         const state = await panelState();
         if (!state.signedIn) throw new Error(state.error || "Not signed in. Run 'TBO Support: Sign in'.");
-        const ai = state.ai && state.ai.ready ? " TBO AI is ready." : state.method === "microsoft" ? " TBO AI is not ready yet." : "";
-        await pi.ui.showToast(`Signed in to ${state.site} as ${state.fullName || state.user}.${ai}`);
+        if (state.error) throw new Error(state.error); // kept, but TBO Support could not be reached
+        // a kept Microsoft sign-in proves nothing on its own: ask TBO Support who this is
+        const me = state.method === "microsoft" ? await runSignedIn({ action: "who_am_i" }) : null;
+        const ai = aiState.ready ? " TBO AI is ready." : state.method === "microsoft" ? " TBO AI is not ready yet." : "";
+        await pi.ui.showToast(`Signed in to ${state.site} as ${state.fullName || (me && me.user) || state.user}.${ai}`);
       } catch (e) {
         await pi.ui.showToast(e.message, "error");
       }
     },
   });
 
+  if (pi.events && pi.events.on) pi.events.on(SETTINGS_EVENT, onSettingsChanged);
+
   startupTimer = setTimeout(() => {
-    startup().catch(() => {});
+    syncSite({ openPanel: true }).catch(() => {});
   }, STARTUP_DELAY_MS);
   timer = setInterval(() => {
     check().catch(() => {});
@@ -347,6 +535,7 @@ async function onUnload() {
   startupTimer = timer = null;
   if (pending) pending.cancelled = true;
   pending = null;
+  if (pi.events && pi.events.off) pi.events.off(SETTINGS_EVENT, onSettingsChanged);
   await pi.agent.unregisterTool(TOOL.name).catch(() => {});
   for (const id of Object.values(COMMANDS)) {
     await pi.commands.unregister(id).catch(() => {});
@@ -354,4 +543,4 @@ async function onUnload() {
   store = null;
 }
 
-module.exports = { onLoad, onUnload, onPanelInvoke, AI_PROVIDER };
+module.exports = { onLoad, onUnload, onPanelInvoke, AI_PROVIDER, keyOf };

@@ -425,9 +425,12 @@ pi.providers.setBaseUrl(providerId: string, baseUrl: string): Promise<void>
   的行拒绝密钥。
 - `setBaseUrl` 仅在声明省略 `baseUrl` 时可用。该值保存在行中，每次加载刷新声明
   时恢复；必须是 https，或 `localhost`、`127.0.0.1`、`*.localhost` 的普通 http；
-  不得内嵌凭据。
-- 错误：`PERMISSION_DENIED`（缺少 `provider.register`，或不是插件自己的行）、
-  `NOT_FOUND`（插件未声明的 id）、`INVALID_PARAMS`。
+  不得内嵌凭据。该地址会收到对话内容和密钥，因此其主机还必须通过插件的出站检查：
+  `manifest.net.domains`，或安装时授予的 `net.anyHost`（与 `pi.net.fetch` 相同）。
+- 调用被接受后，渲染进程刷新提供方列表（`providersChanged`），模型选择器无需重启
+  即可显示该提供方。已在运行的回合继续使用其开始时的密钥，与用户在设置中修改密钥时相同。
+- 错误：`PERMISSION_DENIED`（缺少 `provider.register`、不是插件自己的行，或地址不在
+  `net.domains` 中）、`NOT_FOUND`（插件未声明的 id）、`INVALID_PARAMS`。
 
 ### 会话协作（需要 `desktop.control`）
 

@@ -1611,6 +1611,15 @@ export const api = {
       ),
     );
   },
+  /** A plugin set or cleared a provider row's key or endpoint (ADR 0319). */
+  onProvidersChanged: (
+    listener: (event: { reason?: string; pluginId?: string }) => void,
+  ) => {
+    if (!window.piDesktop?.on) return () => undefined;
+    return window.piDesktop.on(IPC.event.providersChanged, (payload) =>
+      listener((payload ?? {}) as { reason?: string; pluginId?: string }),
+    );
+  },
   onNotificationActivated: (
     listener: (event: { id: string; sessionId: string }) => void,
   ) => {

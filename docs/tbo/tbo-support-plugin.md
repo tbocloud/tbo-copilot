@@ -142,14 +142,33 @@ their role allows.
 5. The plugin puts the AI key and address into its **TBO AI** provider row (`pi.providers.setCredential` and
    `setBaseUrl`). The app holds the key in its own secret store; the plugin cannot read it back and never stores
    it itself.
+   - A new address never sees the old key: the plugin clears the row, sets the address, then the key, so a
+     failure half way leaves no key rather than a mixed pair.
+   - The app accepts the address only on a host in the plugin's `net.domains` (the gateway,
+     `copilot-gateway.tbocloud.in`, is listed for that and is never accepted as a TBO Support address).
+   - The model picker refreshes as soon as the key is set.
+   - The row holds one site's key: changing the site address clears it at once, and the new site's sign-in (if
+     any) sets it again.
+   - If the app refuses the key, the panel says so and the plugin tries again within about 5 minutes.
 6. While signed in, the plugin renews the TBO Support token before it runs out (`refresh`), at start and when a
-   call is refused. TBO Support checks the person again each time.
+   call is refused. TBO Support checks the person again each time. If TBO Support cannot be reached for a routine
+   renewal, the plugin keeps using the saved token until it actually runs out.
+
+**Overlapping steps.** Every sign-out (and an API-key sign-in) makes a renewal or Microsoft sign-in that is still
+running drop its answer, and all writes to the saved sign-in and the TBO AI row happen one at a time. So a renewal
+can never put a key back after sign-out, a cancelled sign-in keeps nothing, and the panel never shows a sign-in
+whose TBO AI is still being set up. An API-key sign-in is refused while a Microsoft sign-in is kept for that site.
 
 **When TBO Support ends the sign-in** (the person lost access, the 30 days are over, a System Manager signed the
 computer out), renewal answers 401. The plugin then removes the session and clears the TBO AI key, and tells the
 person why.
 
-**Sign out** tells TBO Support (which revokes the token and removes the AI key), then removes everything locally.
+**Sign out** tells TBO Support (which revokes the token and removes the AI key), clears the TBO AI key on this
+computer, then removes the saved sign-in. If the Keychain or the data folder refuses the removal twice, sign-out
+says so ("this computer could not delete the saved sign-in") instead of reporting success.
+
+**Check connection** asks TBO Support who is signed in, so it reports a revoked sign-in or an unreachable site
+instead of trusting the saved token.
 
 **A local test site** (`localhost`, `127.0.0.1`, `*.localhost`) can still use an API key: the panel offers the
 form only there. Frappe lets only a System Manager generate keys (`generate_keys`). On your own site you can
@@ -159,12 +178,17 @@ generate Administrator's key yourself.
 
 | Platform | Store | How |
 |---|---|---|
-| macOS | Keychain, service `tbo-copilot.tbo-support`: account `session.<host>` for the sign-in, `<host>` for an API key | `/usr/bin/security -i`, with the command sent on standard input, so the secret never appears in a process list |
-| Windows | DPAPI (encrypted for the Windows user): files `<host>.session.dpapi` and `<host>.credentials.dpapi` in the plugin's private data folder | PowerShell `ConvertTo-SecureString` / `ConvertFrom-SecureString`, with the secret sent on standard input |
+| macOS | Keychain, service `tbo-copilot.tbo-support`: account `session.<site>` for the sign-in, `<site>` for an API key | `/usr/bin/security -i`, with the command sent on standard input, so the secret never appears in a process list |
+| Windows | DPAPI (encrypted for the Windows user): files `<site>.session.dpapi` and `<site>.credentials.dpapi` in the plugin's private data folder | PowerShell `ConvertTo-SecureString` / `ConvertFrom-SecureString`, with the secret sent on standard input |
 | Other | Not supported | The app ships for macOS and Windows only |
 
-The session (computer token, TBO Support token, who is signed in) travels as one base64url word. The TBO AI key is
-never part of it: it lives only in the app's provider row.
+`<site>` is the host name for an https site on the standard port (for example `teams.teambackoffice.com`), and
+`scheme_host_port` for any other address (for example `http_tbo.localhost_8002`), so two local benches on one host
+never share a sign-in. An API key saved before this rule for a local bench is not read again: enter it once more.
+
+The session (computer token, TBO Support token, who is signed in) travels as one base64url word, at most 8,192
+characters; a longer one is refused when it is saved rather than lost when it is read. The TBO AI key is never part
+of it: it lives only in the app's provider row.
 
 **Why not plugin settings:** the app does not allow secrets in plugin settings (D018), and its own secret store is
 open to plugins only for the key of a provider row the plugin owns (ADR 0319).
@@ -178,14 +202,14 @@ by tests.
 | Permission | Why |
 |---|---|
 | `agent.tool.register` | The `tbo_support` tool |
-| `net.fetch`, with `net.domains: ["teams.teambackoffice.com", "localhost", "*.localhost", "127.0.0.1"]` | Calls to TBO Support, or to a local test bench on the same computer. The host refuses every other host, and re-checks redirects |
+| `net.fetch`, with `net.domains: ["teams.teambackoffice.com", "demo-tbo.tbocloud.in", "copilot-gateway.tbocloud.in", "localhost", "*.localhost", "127.0.0.1"]` | Calls to TBO Support (the real site or the demo hub), or to a local test bench on the same computer. The gateway is listed because the app checks the TBO AI address against `net.domains`; the plugin never sends a TBO Support token there. The host refuses every other host, and re-checks redirects |
 | `ui.panel` | The sign-in panel |
 | `shell.openExternal` | Opens TBO Support's Allow page in the browser (only a page on the same site) |
 | `provider.register` | The **TBO AI** provider row, and storing its key and address after the sign-in |
 
 There is no file, command, MCP or clipboard permission (`shell.openExternal` only opens the Allow page). The tool is `risk: "low"` because v1 only reads. The host audits every call. The plugin also logs each action and ticket number through `ctx.log`, never the content.
 
-The **site address** is a plugin setting (`siteUrl`, default `https://teams.teambackoffice.com`). The plugin refuses an address whose host is not in `net.domains`. It also refuses plain HTTP, except for `localhost`, `127.0.0.1` and names ending in `.localhost`, which always mean this computer (RFC 6761). So a developer can test against a local bench site such as `http://tbo.localhost:8002`. The saved key is per host, so a local key and the real one never mix.
+The **site address** is a plugin setting (`siteUrl`, default `https://teams.teambackoffice.com`). The plugin refuses an address whose host is not in `net.domains`. It also refuses plain HTTP, except for `localhost`, `127.0.0.1` and names ending in `.localhost`, which always mean this computer (RFC 6761). So a developer can test against a local bench site such as `http://tbo.localhost:8002`. The saved sign-in and key are per site (scheme, host and port), so a local key and the real one never mix.
 
 ## 9. Handling ticket data safely
 

@@ -133,14 +133,18 @@
 
       function aiText(state) {
         if (state.method !== "microsoft") return "TBO AI comes with the Microsoft sign-in.";
+        if (state.ai && state.ai.configuring) return "Setting up TBO AI…";
         if (state.ai && state.ai.ready) return "TBO AI is ready: pick TBO AI as the model.";
         if (state.ai && state.ai.error) return `TBO AI is not ready yet: ${state.ai.error}`;
         return "TBO AI is not set up on this TBO Support site yet.";
       }
 
-      function show(state) {
+      // `startError`: why the last Sign in click failed, kept through this refresh.
+      function show(state, startError) {
         $("site").textContent = state.site ? state.site : "No site set";
         const waiting = !state.signedIn && state.pending && !state.pending.error;
+        // the sign-in is kept before TBO AI is set up: keep asking until it is
+        const configuring = !!(state.signedIn && state.ai && state.ai.configuring);
         const box = $("status");
         box.classList.toggle("ok", !!state.signedIn);
         box.classList.toggle("err", !state.signedIn && !!(state.error || (state.pending && state.pending.error)));
@@ -153,9 +157,10 @@
         $("key-box").hidden = !!state.signedIn || waiting || !state.local;
         if (waiting) $("code").textContent = state.pending.code;
         if (state.signedIn) $("ai").textContent = aiText(state);
-        $("error").textContent = (state.pending && state.pending.error) || state.error || "";
-        if (waiting && !poller) poller = setInterval(refresh, 2000);
-        if (!waiting && poller) {
+        $("error").textContent = startError || (state.pending && state.pending.error) || state.error || "";
+        const polling = waiting || configuring;
+        if (polling && !poller) poller = setInterval(refresh, 2000);
+        if (!polling && poller) {
           clearInterval(poller);
           poller = null;
         }
@@ -170,9 +175,9 @@
         }
       }
 
-      async function refresh() {
+      async function refresh(startError) {
         const res = await call("tbo-support.state");
-        show(res.ok ? res : { error: res.error });
+        show(res.ok ? res : { error: res.error }, typeof startError === "string" ? startError : "");
       }
 
       $("microsoft").addEventListener("click", async () => {
@@ -180,8 +185,7 @@
         $("error").textContent = "";
         const res = await call("tbo-support.microsoft");
         $("microsoft").disabled = false;
-        if (!res.ok) $("error").textContent = res.error || "Could not start the sign-in.";
-        refresh();
+        refresh(res.ok ? "" : res.error || "Could not start the sign-in.");
       });
 
       $("open-again").addEventListener("click", () => call("tbo-support.open-again"));

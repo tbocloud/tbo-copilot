@@ -153,7 +153,11 @@ export function createPluginServices({
     if (!getHost()) {
       throw Object.assign(new Error("host unavailable"), { code: "UNSUPPORTED" });
     }
-    return getHost()!.call(method, { ...input, pluginId });
+    const result = await getHost()!.call(method, { ...input, pluginId });
+    // A key or endpoint set after sign-in changes what the model picker offers;
+    // a refused write changed nothing, so it throws above and sends nothing.
+    sendToRenderer(IPC.event.providersChanged, { reason: method, pluginId });
+    return result;
   };
   const callPluginProjectHost = async (
     pluginId: string,

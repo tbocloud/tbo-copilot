@@ -515,9 +515,16 @@ Semantics:
 - `setBaseUrl` works only when the declaration omits `baseUrl`. The value is
   kept in the row and restored by the declaration refresh on every load; https,
   or plain http for `localhost`, `127.0.0.1` and `*.localhost`; no embedded
-  credentials.
-- Errors: `PERMISSION_DENIED` (no `provider.register`, or a row the plugin does
-  not own), `NOT_FOUND` (an id the plugin does not declare), `INVALID_PARAMS`.
+  credentials. The endpoint receives the conversation and the key, so its host
+  must also pass the plugin's egress check: `manifest.net.domains`, or the
+  install-time `net.anyHost` grant (the same check as `pi.net.fetch`).
+- After an accepted call the renderer refreshes its provider list
+  (`providersChanged`), so the model picker offers the provider without a
+  restart. A turn already running keeps the key it started with, as it does
+  when the user edits a key in Settings.
+- Errors: `PERMISSION_DENIED` (no `provider.register`, a row the plugin does
+  not own, or an endpoint outside `net.domains`), `NOT_FOUND` (an id the plugin
+  does not declare), `INVALID_PARAMS`.
 
 ### session collaboration (requires `desktop.control`)
 

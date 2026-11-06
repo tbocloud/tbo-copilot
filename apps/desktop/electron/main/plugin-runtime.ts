@@ -2835,6 +2835,9 @@ export class PluginRuntime {
         if (!providers) {
           throw apiError("UNSUPPORTED", `host api not available: ${api}`);
         }
+        // The row's endpoint receives the conversation and the key, so it is an
+        // outbound channel like pi.net.fetch: the same allowlist and grant.
+        if (api === "providers.setBaseUrl") this.assertEgress(loaded, value as string, api);
         if (api === "providers.setCredential") {
           await providers.setCredential(pluginId, { providerId, apiKey: value as string });
         } else if (api === "providers.clearCredential") {
