@@ -24,7 +24,7 @@ Design: `system-design.md`. Phase plans: `phases/` (0 to 16). Section 7 below is
 | 13 | The customer's support chat, one chat per ticket | Built and pushed 31 Oct 2026; checkpoint after the demo redeploy | `phases/phase-13.md` |
 | 14 | The support chat, as in the prototype | Built and pushed 1 Nov 2026; checkpoint after the demo redeploy | `phases/phase-14.md` |
 | 15 | A cleaner ticket area in TBO Support | Built and pushed 4 Nov 2026 | `phases/phase-15.md` |
-| 16 | The ticket inbox: every ticket as one conversation | Built and pushed 5 Nov 2026 | `phases/phase-16.md` |
+| 16 | The ticket inbox: every ticket as one conversation | Built and pushed 5 Nov 2026. Checkpoint open: sending a reply, asking Copilot and approving a fix from the inbox were not tried on the demo hub yet | `phases/phase-16.md` |
 | Later | §5.6 features still open: Microsoft Entra sign-in and OAuth instead of API keys (Press UAT for customer acceptance dropped for now by the owner, 28 Oct) | Not started | — |
 
 ## 7. Build plan, step by step (revised after the owner's review)

@@ -158,7 +158,7 @@ the ticket.
 - the build;
 - the AI review and the task reference check.
 
-They run on every pull request. GitHub's free plan can't require checks on private repositories, so the gate is TBO Support's: a release waits for them before it is deployed (Phase 7). Copilot's PRs also carry their sandbox evidence.
+They run on every pull request in a repository that has them. GitHub's free plan can't require checks on private repositories, so the gate is TBO Support's: a release waits until every check that runs on its commit has passed (Phase 7). Until the shared CI is in place (CI1 and the onboarding pull requests), a repository may run only the AI review and the task reference check, so a green gate there does not mean that lint and tests ran. Copilot's PRs also carry their sandbox evidence.
 
 **Blocker to decide (decision 5):** GitHub Actions on TBO's private repositories is blocked by billing today.
 Either add Actions minutes (or the Team plan), or run a self-hosted runner on the new worker server (cheap; only
