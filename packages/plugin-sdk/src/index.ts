@@ -1198,6 +1198,23 @@ export type PluginHostApi = {
       limit?: number;
     }) => Promise<PluginUsageTurnPage>;
   };
+  /**
+   * The provider rows this plugin declared in `contributes.providers`
+   * (`provider.register`, ADR 0319). `providerId` is the declared id. The key
+   * is write only: nothing here or elsewhere reads it back. A row another
+   * plugin or the user owns is refused.
+   */
+  providers: {
+    /** Store the API key a signed-in user's endpoint needs (≤ 4096 characters, one line). */
+    setCredential: (providerId: string, apiKey: string) => Promise<void>;
+    /** Remove the stored key, for example on sign-out. */
+    clearCredential: (providerId: string) => Promise<void>;
+    /**
+     * Point the row at an endpoint learnt at sign-in. Only when the declaration
+     * omits `baseUrl`; https, or http for localhost. Kept across reloads.
+     */
+    setBaseUrl: (providerId: string, baseUrl: string) => Promise<void>;
+  };
   services: {
     /**
      * Register a resident service declared in `contributes.services`. Local

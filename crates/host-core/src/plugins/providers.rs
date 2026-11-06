@@ -7,6 +7,9 @@ use crate::providers::{
 };
 use crate::secrets::SecretStore;
 
+mod owned;
+pub(crate) use owned::{set_owned_provider_base_url, set_owned_provider_credential};
+
 /// Upper bound on `contributes.providers` entries. Matches the SDK constant.
 pub(crate) const MAX_PLUGIN_PROVIDERS: usize = 8;
 /// Upper bound on one declaration's model list.
@@ -281,12 +284,19 @@ pub(crate) fn sync_plugin_providers(
             .optional()?
             .unwrap_or((None, None, None, None));
         let models = providers::normalize_model_bindings(&provider.models);
+        // A declaration that leaves `baseUrl` out lets the plugin set the
+        // endpoint after sign-in (ADR 0319); that value lives in the config and
+        // survives this refresh. A declared endpoint always wins.
+        let base_url = provider
+            .base_url
+            .clone()
+            .or_else(|| owned::config_plugin_base_url(existing_config.as_deref()));
         // A declaration that moves the endpoint abandons the answer the previous
         // one produced: the cached rows carry no endpoint of their own, so the
         // discovery cache is dropped and the next probe records the new answer.
         let endpoint_changed = existing_config.is_some()
             && (existing_base_url.as_deref().unwrap_or("").trim()
-                != provider.base_url.as_deref().unwrap_or("").trim()
+                != base_url.as_deref().unwrap_or("").trim()
                 || existing_api_style.as_deref().unwrap_or("") != provider.api_style);
         // A declaration that no longer names a model forgets that model's
         // cached row, exactly as a user save does: the row would otherwise keep
@@ -359,7 +369,7 @@ pub(crate) fn sync_plugin_providers(
                 provider.vendor_key,
                 protocol_for_api_style(&provider.api_style),
                 if enabled { 1 } else { 0 },
-                provider.base_url,
+                base_url,
                 provider.auth_kind,
                 provider.api_style,
                 default_model_id,

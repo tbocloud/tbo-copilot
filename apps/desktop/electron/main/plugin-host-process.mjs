@@ -321,6 +321,16 @@ function buildApi() {
     usage: {
       listTurns: (input) => call("usage.listTurns", [input ?? {}]),
     },
+    // Provider rows this plugin declared (`provider.register`, ADR 0319). The
+    // key is write only: nothing on this bridge reads it back.
+    providers: {
+      setCredential: (providerId, apiKey) =>
+        call("providers.setCredential", [providerId, apiKey]).then(() => undefined),
+      clearCredential: (providerId) =>
+        call("providers.clearCredential", [providerId]).then(() => undefined),
+      setBaseUrl: (providerId, baseUrl) =>
+        call("providers.setBaseUrl", [providerId, baseUrl]).then(() => undefined),
+    },
     /**
      * Resident background workers (spec 07 §3). Registration is local: the
      * manifest already declared the service, and the broker starts it only when

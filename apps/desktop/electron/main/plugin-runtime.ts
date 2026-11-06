@@ -468,6 +468,12 @@ export type PluginHostServices = {
   usage?: {
     listTurns: (pluginId: string, input: Record<string, unknown>) => Promise<unknown>;
   };
+  /** A plugin configuring the provider rows it owns (ADR 0319); host-core checks ownership. */
+  providers?: {
+    setCredential: (pluginId: string, input: { providerId: string; apiKey: string }) => Promise<unknown>;
+    clearCredential: (pluginId: string, input: { providerId: string }) => Promise<unknown>;
+    setBaseUrl: (pluginId: string, input: { providerId: string; baseUrl: string }) => Promise<unknown>;
+  };
 };
 
 /** Host APIs a plugin process may reach. Anything else does not exist (spec 04 §2). */
@@ -548,6 +554,9 @@ const HOST_API_ALLOWLIST = new Set([
   "session.rename",
   "session.delete",
   "usage.listTurns",
+  "providers.setCredential",
+  "providers.clearCredential",
+  "providers.setBaseUrl",
   "agent.complete",
   "keyboard.registerGlobalShortcut",
   "keyboard.unregisterGlobalShortcut",
@@ -2804,6 +2813,37 @@ export class PluginRuntime {
           throw apiError("UNSUPPORTED", "host api not available: usage.listTurns");
         }
         return this.services.usage.listTurns(loaded.manifest.id, input);
+      }
+      case "providers.setCredential":
+      case "providers.clearCredential":
+      case "providers.setBaseUrl": {
+        // A plugin configures only the rows it declared; host-core checks the
+        // row's owner and validates the key and URL. The key is write only:
+        // no reply and no audit entry carries it (ADR 0319).
+        this.assertPermission(loaded, "provider.register");
+        const providerId = typeof args[0] === "string" ? args[0].trim() : "";
+        if (!providerId || providerId.length > 64) {
+          throw apiError("INVALID_PARAMS", "providerId must be the id declared in contributes.providers");
+        }
+        const value = args[1];
+        if (api !== "providers.clearCredential" && (typeof value !== "string" || value.length > 4096)) {
+          throw apiError("INVALID_PARAMS", api === "providers.setBaseUrl"
+            ? "baseUrl must be a string"
+            : "apiKey must be a string of at most 4096 characters");
+        }
+        const providers = this.services.providers;
+        if (!providers) {
+          throw apiError("UNSUPPORTED", `host api not available: ${api}`);
+        }
+        if (api === "providers.setCredential") {
+          await providers.setCredential(pluginId, { providerId, apiKey: value as string });
+        } else if (api === "providers.clearCredential") {
+          await providers.clearCredential(pluginId, { providerId });
+        } else {
+          await providers.setBaseUrl(pluginId, { providerId, baseUrl: value as string });
+        }
+        this.services.audit?.({ pluginId, api, ok: true, providerId, ts: Date.now() });
+        return { ok: true };
       }
       case "agent.complete": {
         return this.runAgentComplete(loaded, (args[0] ?? {}) as PluginCompleteInput);

@@ -495,6 +495,30 @@ Semantics:
 - A missing or malformed `usage_json` yields zero cache/reasoning counters —
   never a partial row.
 
+### providers (requires `provider.register`)
+
+A plugin configures the provider rows it declared in `contributes.providers`
+(ADR 0319). `providerId` is the declared id; a user row or another plugin's row
+is refused.
+
+```ts
+pi.providers.setCredential(providerId: string, apiKey: string): Promise<void>
+pi.providers.clearCredential(providerId: string): Promise<void>
+pi.providers.setBaseUrl(providerId: string, baseUrl: string): Promise<void>
+```
+
+Semantics:
+
+- The key is write only: it goes to the Host secret store under the row's usual
+  ref, and no reply, audit entry or plugin API returns it. 1..=4096 characters,
+  no line breaks or control characters; refused for an `authKind: "none"` row.
+- `setBaseUrl` works only when the declaration omits `baseUrl`. The value is
+  kept in the row and restored by the declaration refresh on every load; https,
+  or plain http for `localhost`, `127.0.0.1` and `*.localhost`; no embedded
+  credentials.
+- Errors: `PERMISSION_DENIED` (no `provider.register`, or a row the plugin does
+  not own), `NOT_FOUND` (an id the plugin does not declare), `INVALID_PARAMS`.
+
 ### session collaboration (requires `desktop.control`)
 
 The official Session Orchestrator composes the reviewed desktop-control

@@ -407,6 +407,28 @@ pi.usage.listTurns(input?: {
   `null`。
 - `usage_json` 缺失或畸形时 cache/reasoning 计数记 0——绝不返回残缺行。
 
+### 提供方（需要 `provider.register`）
+
+插件配置它在 `contributes.providers` 中声明的提供方行（ADR 0319）。`providerId`
+是声明的 id；用户行或其他插件的行会被拒绝。
+
+```ts
+pi.providers.setCredential(providerId: string, apiKey: string): Promise<void>
+pi.providers.clearCredential(providerId: string): Promise<void>
+pi.providers.setBaseUrl(providerId: string, baseUrl: string): Promise<void>
+```
+
+语义：
+
+- 密钥只写：存入宿主密钥库中该行的常规引用，任何回复、审计条目或插件 API
+  都不会返回它。长度 1..=4096 字符，不得含换行或控制字符；`authKind: "none"`
+  的行拒绝密钥。
+- `setBaseUrl` 仅在声明省略 `baseUrl` 时可用。该值保存在行中，每次加载刷新声明
+  时恢复；必须是 https，或 `localhost`、`127.0.0.1`、`*.localhost` 的普通 http；
+  不得内嵌凭据。
+- 错误：`PERMISSION_DENIED`（缺少 `provider.register`，或不是插件自己的行）、
+  `NOT_FOUND`（插件未声明的 id）、`INVALID_PARAMS`。
+
 ### 会话协作（需要 `desktop.control`）
 
 官方 Session Orchestrator 组合了已审查的 desktop-control 目录；这不是第二套 session API，

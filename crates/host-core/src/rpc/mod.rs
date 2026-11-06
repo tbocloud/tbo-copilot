@@ -2943,6 +2943,89 @@ async fn handle_request(
             Ok(page)
         }
 
+        // A plugin configuring a provider row it owns (ADR 0319). Electron main
+        // checks `provider.register` and is the only caller that can supply
+        // pluginId; ownership of the row is checked here. The key is write
+        // only: no reply carries it.
+        "plugin.providers.setCredential" | "plugin.providers.clearCredential" => {
+            let plugin_id = params
+                .get("pluginId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| rpc_err(1002, "pluginId required", "INVALID_PARAMS"))?;
+            let provider_id = params
+                .get("providerId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| rpc_err(1002, "providerId required", "INVALID_PARAMS"))?;
+            let api_key = if method == "plugin.providers.setCredential" {
+                Some(
+                    params
+                        .get("apiKey")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| rpc_err(1002, "apiKey required", "INVALID_PARAMS"))?,
+                )
+            } else {
+                None
+            };
+            let st = state.lock().await;
+            crate::plugins::set_owned_provider_credential(
+                &st.db,
+                &st.secrets,
+                plugin_id,
+                provider_id,
+                api_key,
+            )
+            .map_err(session_collaboration_rpc_err)?;
+            tracing::info!(
+                method,
+                plugin_id,
+                provider_id,
+                "plugin provider credential changed"
+            );
+            Ok(json!({ "ok": true }))
+        }
+        "plugin.providers.setBaseUrl" => {
+            let plugin_id = params
+                .get("pluginId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| rpc_err(1002, "pluginId required", "INVALID_PARAMS"))?;
+            let provider_id = params
+                .get("providerId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| rpc_err(1002, "providerId required", "INVALID_PARAMS"))?;
+            let base_url = params
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .ok_or_else(|| rpc_err(1002, "baseUrl required", "INVALID_PARAMS"))?;
+            let st = state.lock().await;
+            let declared = st
+                .plugins
+                .manifest_for(plugin_id)
+                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?
+                .map(|manifest| crate::plugins::declared_providers(&manifest))
+                .ok_or_else(|| {
+                    rpc_err(
+                        1007,
+                        format!("NOT_FOUND: plugin {plugin_id} is not registered"),
+                        "NOT_FOUND",
+                    )
+                })?;
+            crate::plugins::set_owned_provider_base_url(
+                &st.db,
+                plugin_id,
+                &declared,
+                provider_id,
+                base_url,
+            )
+            .map_err(session_collaboration_rpc_err)?;
+            tracing::info!(
+                method,
+                plugin_id,
+                provider_id,
+                "plugin provider base url changed"
+            );
+            Ok(json!({ "ok": true }))
+        }
+
         "session.beginTurn" => {
             let session_id = params
                 .get("sessionId")
@@ -6260,6 +6343,115 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn plugin_provider_credential_rpc_is_write_only_and_owner_scoped() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let state = Arc::new(Mutex::new(app_state));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let row_id = "plugin:demo.provider:demo";
+        {
+            let st = state.lock().await;
+            let manifest: crate::plugins::PluginManifest = serde_json::from_value(json!({
+                "schemaVersion": 1,
+                "id": "demo.provider",
+                "name": "Demo provider",
+                "version": "0.1.0",
+                "main": "main.js",
+                "permissions": ["provider.register"],
+                "contributes": { "providers": [{
+                    "id": "demo", "name": "Demo", "authKind": "api_key",
+                    "models": [{ "id": "demo-large" }]
+                }] }
+            }))
+            .unwrap();
+            let declared = crate::plugins::declared_providers(&manifest);
+            crate::plugins::sync_plugin_providers(
+                &st.db,
+                &st.secrets,
+                "demo.provider",
+                &declared,
+                true,
+            )
+            .unwrap();
+        }
+
+        let missing = handle_request(
+            state.clone(),
+            "plugin.providers.setCredential",
+            json!({ "providerId": "demo", "apiKey": "sk-x" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(missing.code, 1002);
+
+        let reply = handle_request(
+            state.clone(),
+            "plugin.providers.setCredential",
+            json!({ "pluginId": "demo.provider", "providerId": "demo", "apiKey": "sk-signed-in" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            reply,
+            json!({ "ok": true }),
+            "the reply never carries the key"
+        );
+        {
+            let st = state.lock().await;
+            assert_eq!(
+                crate::providers::get_secret_for_provider(&st.db, &st.secrets, row_id)
+                    .unwrap()
+                    .as_deref(),
+                Some("sk-signed-in")
+            );
+        }
+
+        // Another plugin naming the same declared id reaches only its own
+        // namespace, where no such row exists.
+        let foreign = handle_request(
+            state.clone(),
+            "plugin.providers.clearCredential",
+            json!({ "pluginId": "other.plugin", "providerId": "demo" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(foreign.code, 1007);
+        assert_eq!(foreign.data.unwrap()["errorCode"], "NOT_FOUND");
+
+        handle_request(
+            state.clone(),
+            "plugin.providers.clearCredential",
+            json!({ "pluginId": "demo.provider", "providerId": "demo" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        {
+            let st = state.lock().await;
+            assert!(
+                crate::providers::get_secret_for_provider(&st.db, &st.secrets, row_id)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        // The endpoint needs a registered plugin whose declaration can be read.
+        let unregistered = handle_request(
+            state.clone(),
+            "plugin.providers.setBaseUrl",
+            json!({ "pluginId": "demo.provider", "providerId": "demo", "baseUrl": "https://ai.example.com/v1" }),
+            tx,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(unregistered.code, 1007);
     }
 
     #[tokio::test]
