@@ -566,3 +566,6 @@ impl PluginManager {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod owned_tests;
