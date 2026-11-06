@@ -130,7 +130,7 @@
       {
         "key": "siteUrl",
         "title": "TBO Support address",
-        "description": "The TBO Support site the plugin reads from. Use https://teams.teambackoffice.com, or a local test bench such as http://tbo.localhost:8002.",
+        "description": "The TBO Support site the plugin signs in to and reads from. Use https://teams.teambackoffice.com, the demo hub https://demo-tbo.tbocloud.in for a first try, or a local test bench such as http://tbo.localhost:8002.",
         "type": "string",
         "default": "https://teams.teambackoffice.com"
       }
@@ -161,6 +161,7 @@
   "net": {
     "domains": [
       "teams.teambackoffice.com",
+      "demo-tbo.tbocloud.in",
       "localhost",
       "*.localhost",
       "127.0.0.1"

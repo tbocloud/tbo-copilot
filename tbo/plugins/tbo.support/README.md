@@ -20,6 +20,8 @@ Other commands: **TBO Support: Check connection**, **TBO Support: Sign out**.
 You see only what your TBO Support account may see. Every call runs as you. The sign-in lasts 30 days; TBO Support
 can end it sooner (for example when you leave a team), and the plugin then clears TBO AI too.
 
+**The demo hub first.** For the first try, set the plugin's **TBO Support address** to `https://demo-tbo.tbocloud.in`; the real site stays the default.
+
 **A local test site** (`http://tbo.localhost:8002` and the like; set it in the plugin's settings) can use an API key
 instead: the panel shows the form only there. A System Manager generates it: your user → **API Access → Generate
 Keys**.

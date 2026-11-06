@@ -259,6 +259,10 @@ test("API key: a wrong key is never saved, a good one is saved and used", async 
 });
 
 test("a local bench shows the key form; a site outside net.domains is refused", async () => {
+  settings = { siteUrl: "https://demo-tbo.tbocloud.in" };
+  const demo = await plugin.onPanelInvoke("tbo-support.state");
+  assert.equal(demo.site, "https://demo-tbo.tbocloud.in");
+  assert.equal(demo.local, false); // the demo hub signs in with Microsoft (or its own login), no key form
   settings = { siteUrl: "http://tbo.localhost:8002" };
   assert.equal((await plugin.onPanelInvoke("tbo-support.state")).local, true);
   settings = { siteUrl: "https://evil.example.com" };
