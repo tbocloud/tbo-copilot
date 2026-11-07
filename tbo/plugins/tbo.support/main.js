@@ -55,6 +55,11 @@ function fail(code, message) {
   return err;
 }
 
+// The answer of a step that a sign-out, another sign-in or a site change overtook.
+function stale() {
+  return fail("STALE", "Your TBO Support sign-in changed while this was running. Try again.");
+}
+
 // Runs `fn` after every earlier exclusive call has finished.
 function exclusive(fn) {
   const run = chain.then(fn, fn);
@@ -205,7 +210,7 @@ async function renew(site, session, { force = false } = {}) {
       appVersion: await appVersion(),
     });
   } catch (e) {
-    if (gen !== epoch) throw fail("SIGNED_OUT", "You signed out of TBO Support.");
+    if (gen !== epoch) throw stale();
     if (e.code === "SIGNED_OUT") {
       await endLocally(site, session.computerToken, e.message);
       throw e;
@@ -216,8 +221,8 @@ async function renew(site, session, { force = false } = {}) {
     throw e;
   }
   return exclusive(async () => {
-    // a sign-out (or another sign-in) came first: this answer is stale
-    if (gen !== epoch) throw fail("SIGNED_OUT", "You signed out of TBO Support.");
+    // a sign-out, another sign-in or a site change came first: this answer is stale
+    if (gen !== epoch) throw stale();
     await store.saveSession(keyOf(site), fresh);
     aiState = await setUpAi(site, fresh.ai);
     return fresh;
@@ -250,11 +255,12 @@ async function runSignedIn(args) {
 }
 
 async function startMicrosoft() {
+  const gen = epoch; // before the first wait: a sign-out or API-key sign-in meanwhile ends this attempt
   const site = await currentSite();
   if (pending) pending.cancelled = true;
   pending = null;
   const started = await desktop.start({ request, siteUrl: site, os, appVersion: await appVersion() });
-  const gen = epoch;
+  if (gen !== epoch) throw stale(); // never open a browser for an attempt that was overtaken
   const mine = {
     site,
     code: started.code,
@@ -310,7 +316,7 @@ function pendingView(p) {
 
 // --- the panel -----------------------------------------------------------------
 
-async function panelState() {
+async function panelState(retried = false) {
   let site;
   try {
     site = await currentSite();
@@ -327,6 +333,7 @@ async function panelState() {
       const fresh = await renew(site, session);
       return { site, local, signedIn: true, method: "microsoft", user: fresh.user, fullName: fresh.fullName, ai: aiState };
     } catch (e) {
+      if (e.code === "STALE" && !retried) return panelState(true); // read what holds now
       if (e.code !== "SIGNED_OUT") {
         // offline: still signed in, TBO Support could not be reached
         return { site, local, signedIn: true, method: "microsoft", user: session.user, fullName: session.fullName, ai: aiState, error: e.message };
@@ -386,7 +393,9 @@ async function signOut() {
   return exclusive(async () => {
     const key = keyOf(site);
     const session = await store.loadSession(key);
-    if (session) await desktop.signOut({ request, siteUrl: site, computerToken: session.computerToken });
+    const reached = session
+      ? await desktop.signOut({ request, siteUrl: site, computerToken: session.computerToken })
+      : true;
     await clearAi(); // the TBO AI key goes first, whatever happens below
     try {
       await removeStored(() => store.removeSession(key));
@@ -397,9 +406,17 @@ async function signOut() {
         "Signed out of TBO Support, but this computer could not delete the saved sign-in. Choose Sign out again.",
       );
     }
-    return { site, local: isLoopback(hostOf(site)), signedIn: false };
+    const done = { site, local: isLoopback(hostOf(site)), signedIn: false };
+    // TBO Support ends the sign-in (and removes the TBO AI key on the gateway)
+    // only when it hears of it: say so when it could not be reached
+    if (!reached) done.error = NOT_REACHED_ON_SIGN_OUT;
+    return done;
   });
 }
+
+const NOT_REACHED_ON_SIGN_OUT =
+  "Signed out on this computer, but TBO Support could not be reached. A System Manager can end this " +
+  "computer's sign-in there now (TBO Desktop Sign-in); otherwise it ends when it runs out.";
 
 async function onPanelInvoke(channel, payload) {
   try {
@@ -425,8 +442,12 @@ async function onPanelInvoke(channel, payload) {
 // --- lifecycle -----------------------------------------------------------------
 
 // At start, and whenever the site changes: renew this site's sign-in (and with
-// it the AI key), or clear a TBO AI key no sign-in here stands behind.
-async function syncSite({ openPanel = false } = {}) {
+// it the AI key), or clear a TBO AI key no sign-in here stands behind. At
+// start the row may hold a key from an earlier run, whose sign-in is not known
+// (`clearFirst`): it is cleared, and the renewal sets the current one. A
+// renewal that fails is tried again at the next check, panel read or tool call.
+async function syncSite({ openPanel = false, clearFirst = false } = {}) {
+  if (clearFirst) await exclusive(clearAi);
   let site;
   try {
     site = await currentSite();
@@ -437,7 +458,11 @@ async function syncSite({ openPanel = false } = {}) {
   await reconcileAi(site);
   const session = await store.loadSession(keyOf(site));
   if (session) {
-    await renew(site, session, { force: true }).catch(() => {});
+    try {
+      await renew(site, session, { force: true });
+    } catch {
+      if (!aiApplied) aiRetryAt = Date.now();
+    }
     return;
   }
   await clearAiUnlessSignedIn(site, { always: true });
@@ -459,8 +484,17 @@ async function check() {
   }
 }
 
+// The site may have changed: work still running for the old one drops its
+// answer (it cannot put that site's key back), then the new site is synced.
 function onSettingsChanged() {
+  epoch += 1;
+  if (pending) pending.cancelled = true;
+  pending = null;
   syncSite().catch(() => {});
+}
+
+function startup() {
+  return syncSite({ openPanel: true, clearFirst: true });
 }
 
 async function onLoad() {
@@ -489,8 +523,9 @@ async function onLoad() {
     keywords: ["tbo", "helpdesk", "logout"],
     run: async () => {
       try {
-        await signOut();
-        await pi.ui.showToast("Signed out of TBO Support and TBO AI.");
+        const done = await signOut();
+        if (done.error) await pi.ui.showToast(done.error, "error");
+        else await pi.ui.showToast("Signed out of TBO Support and TBO AI.");
       } catch (e) {
         await pi.ui.showToast(e.message, "error");
       }
@@ -519,7 +554,7 @@ async function onLoad() {
   if (pi.events && pi.events.on) pi.events.on(SETTINGS_EVENT, onSettingsChanged);
 
   startupTimer = setTimeout(() => {
-    syncSite({ openPanel: true }).catch(() => {});
+    startup().catch(() => {});
   }, STARTUP_DELAY_MS);
   timer = setInterval(() => {
     check().catch(() => {});
@@ -543,4 +578,5 @@ async function onUnload() {
   store = null;
 }
 
-module.exports = { onLoad, onUnload, onPanelInvoke, AI_PROVIDER, keyOf };
+// `startup` and `check` are what the plugin's two timers run; exported for the tests.
+module.exports = { onLoad, onUnload, onPanelInvoke, AI_PROVIDER, keyOf, startup, check };

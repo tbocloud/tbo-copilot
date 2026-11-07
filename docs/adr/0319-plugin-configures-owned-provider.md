@@ -40,6 +40,12 @@ computer, and breaks the "sign in and use" flow.
    also applies the plugin's egress check to the URL (`manifest.net.domains`, or
    the `net.anyHost` grant), the same check as `pi.net.fetch`: the endpoint gets
    the conversation and the key, so it may only be a host the plugin declared.
+   The same decision is made again on every model launch for a row whose
+   declaration omits `baseUrl` (`PluginRuntime.ownedProviderEndpointAllowed`):
+   after a plugin update removes the host from `net.domains`, or the user
+   revokes `net.anyHost`, the row is refused at launch and not offered to
+   subagents. A row whose manifest declares its endpoint keeps ADR 0259's
+   behaviour.
 5. After an accepted call, Electron main tells the renderer
    (`providersChanged`), which refreshes its provider list: the model picker
    offers the provider as soon as the sign-in completes. A refused call sends
@@ -61,6 +67,11 @@ computer, and breaks the "sign in and use" flow.
   running keeps the key it resolved when it started, exactly as when the user
   edits a key in Settings; revocation that must take effect at once belongs to
   the endpoint (TBO's gateway deletes the person's key when the sign-in ends).
+- Follow-ups, runtime-wide and not specific to plugins, are left for later: a
+  redirect policy for model requests of plugin-owned rows (the agent runtime's
+  HTTP client follows redirects for every provider alike), a launch that reads
+  a row's endpoint and key as one snapshot, and invalidating a running turn's
+  credential when it changes.
 - The change is small and additive (no schema change; one config key,
   `pluginBaseUrl`), so it can be offered to PI-Desktop as is.
 

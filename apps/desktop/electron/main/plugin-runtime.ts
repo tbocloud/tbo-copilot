@@ -4008,6 +4008,26 @@ export class PluginRuntime {
   }
 
   /**
+   * Whether a plugin-owned provider row may send a model request to `url`
+   * now (ADR 0319). A row whose manifest declares its endpoint keeps ADR
+   * 0259's behaviour. An endpoint the plugin set at run time answers to the
+   * plugin's current egress decision on every launch, so removing a host
+   * from `net.domains` or revoking `net.anyHost` stops it too. A plugin that
+   * is not loaded has its rows disabled by host-core, so it is not asked.
+   */
+  ownedProviderEndpointAllowed(pluginId: string, providerId: string, url: string | undefined): boolean {
+    const loaded = this.loaded.get(pluginId);
+    if (!loaded) return true;
+    const prefix = `plugin:${pluginId}:`;
+    const declaredId = providerId.startsWith(prefix) ? providerId.slice(prefix.length) : "";
+    const declared = (loaded.manifest.contributes?.providers ?? []).find(
+      (provider) => provider.id === declaredId,
+    );
+    if (declared?.baseUrl) return true;
+    return typeof url === "string" && isNetUrlAllowedWithGrant(url, this.netEgressGrant(loaded));
+  }
+
+  /**
    * Confine one outbound URL to the allowlist. Reading a secret only becomes a
    * leak when it can leave, so every host-owned egress path funnels through
    * here — an undeclared `net.domains` means nothing leaves at all, unless the

@@ -18,7 +18,7 @@ const saved = new Map();
 const sessions = new Map();
 const storeCalls = [];
 // Slow or failing store calls, for the tests of overlapping steps.
-const storeHooks = { saveSessionDelayMs: 0, onSaveSession: null, removeSessionFailures: 0 };
+const storeHooks = { saveSessionDelayMs: 0, onSaveSession: null, removeSessionFailures: 0, loadSessionFailures: 0 };
 const credentials = require("../../tbo.support/lib/credentials");
 credentials.createStore = () => ({
   async save(host, creds) {
@@ -39,6 +39,10 @@ credentials.createStore = () => ({
     sessions.set(host, JSON.parse(JSON.stringify({ ...session, ai: undefined })));
   },
   async loadSession(host) {
+    if (storeHooks.loadSessionFailures > 0) {
+      storeHooks.loadSessionFailures -= 1;
+      throw Object.assign(new Error("Keychain locked"), { code: "SECRET_STORE" });
+    }
     return sessions.get(host) || null;
   },
   async removeSession(host) {
@@ -70,6 +74,8 @@ const hub = {
   refreshReason: "",
   refreshDelayMs: 0,
   onRefresh: null,
+  startDelayMs: 0,
+  signOutStatus: 200,
   tokens: new Set(),
   issued: 0,
   calls: [],
@@ -88,6 +94,7 @@ async function hubFetch(input) {
   hub.calls.push({ path, method: input.method, auth: input.headers.Authorization });
   const body = input.body ? JSON.parse(input.body) : {};
   if (path === "tbo_desktop.api.start_sign_in") {
+    if (hub.startDelayMs) await new Promise((r) => realSetTimeout(r, hub.startDelayMs));
     return ok({ code: "K7P-4QX", device_code: "device-1", verify_url: `${SITE}/copilot-desktop/sign-in?code=K7P-4QX`, expires_in: 600, interval: 1 });
   }
   if (path === "tbo_desktop.api.finish_sign_in") {
@@ -112,7 +119,10 @@ async function hubFetch(input) {
     }
     return ok({ access_token: newToken(), access_expires_in: 43200, expires_at: "2026-12-06 10:00:00", user: { email: "rahul@teambackoffice.com", full_name: "Rahul" }, ai: AI });
   }
-  if (path === "tbo_desktop.api.sign_out") return ok({ ok: true });
+  if (path === "tbo_desktop.api.sign_out") {
+    if (hub.signOutStatus !== 200) return { status: hub.signOutStatus, headers: {}, bodyText: "{}" };
+    return ok({ ok: true });
+  }
   if (path === "frappe.auth.get_logged_user") {
     const auth = input.headers.Authorization;
     if (auth === `token ${GOOD.key}:${GOOD.secret}`) return ok("agent@example.com");
@@ -355,8 +365,11 @@ test("a renewal that finishes after sign-out keeps nothing", async () => {
   await pause(50);
   assert.equal((await plugin.onPanelInvoke("tbo-support.sign-out")).ok, true);
   const afterSignOut = providerCalls.length;
-  await assert.rejects(call, { code: "SIGNED_OUT" });
-  hub.refreshDelayMs = 0;
+  try {
+    await assert.rejects(call, { code: "STALE" });
+  } finally {
+    hub.refreshDelayMs = 0;
+  }
   assert.equal(sessions.has(HOST), false);
   assert.deepEqual(providerCalls.slice(afterSignOut), []); // no AI key put back
   assert.equal((await plugin.onPanelInvoke("tbo-support.state")).signedIn, false);
@@ -405,6 +418,81 @@ test("changing the site clears TBO AI; changing back sets it up again", async ()
     ["setCredential", "tbo-ai", "sk-person-1"],
   ]);
   assert.equal((await plugin.onPanelInvoke("tbo-support.state")).ai.ready, true);
+});
+
+test("a renewal for the old site that finishes after the site changed puts no key back", async () => {
+  sessions.get(HOST).accessExpiresAt = Date.now() + 10 * 60 * 1000; // due for renewal
+  hub.refreshDelayMs = 300;
+  const call = tool().execute({ action: "who_am_i" }, { log() {} });
+  await pause(50);
+  settings = { siteUrl: "https://demo-tbo.tbocloud.in" };
+  const atChange = providerCalls.length;
+  try {
+    await settingsChanged();
+    await assert.rejects(call, { code: "STALE" });
+  } finally {
+    hub.refreshDelayMs = 0;
+  }
+  assert.ok(!providerCalls.slice(atChange).some((c) => c[0] !== "clearCredential"), JSON.stringify(providerCalls.slice(atChange)));
+  assert.equal((await plugin.onPanelInvoke("tbo-support.state")).signedIn, false); // the demo hub: no sign-in
+  settings = {};
+  await settingsChanged();
+  assert.equal((await plugin.onPanelInvoke("tbo-support.state")).ai.ready, true);
+});
+
+test("at start a key from an earlier run is cleared; a failed renewal is tried again soon", async () => {
+  providerCalls.length = 0;
+  hub.refreshStatus = 502;
+  try {
+    await plugin.startup();
+  } finally {
+    hub.refreshStatus = 200;
+  }
+  assert.deepEqual(providerCalls, [["clearCredential", "tbo-ai"]]); // nothing kept from before
+  assert.equal(sessions.has(HOST), true); // a passing failure does not sign out
+  // the next panel read fetches the key again, without waiting for the 12-hour token
+  const state = await plugin.onPanelInvoke("tbo-support.state");
+  assert.equal(state.ai.ready, true);
+  assert.deepEqual(providerCalls.at(-1), ["setCredential", "tbo-ai", "sk-person-1"]);
+});
+
+test("a check that cannot read the kept sign-in leaves the TBO AI key alone", async () => {
+  const before = providerCalls.length;
+  storeHooks.loadSessionFailures = 1;
+  await plugin.check();
+  assert.equal(storeHooks.loadSessionFailures, 0); // the failure did happen
+  assert.deepEqual(providerCalls.slice(before), []);
+  assert.equal((await plugin.onPanelInvoke("tbo-support.state")).ai.ready, true);
+});
+
+test("an API-key sign-in during a slow Microsoft start ends that attempt before a browser opens", async () => {
+  await signedOut();
+  hub.startDelayMs = 300;
+  const openedBefore = opened.length;
+  const microsoft = plugin.onPanelInvoke("tbo-support.microsoft");
+  await pause(50);
+  const key = await plugin.onPanelInvoke("tbo-support.sign-in", { ...GOOD });
+  const started = await microsoft;
+  hub.startDelayMs = 0;
+  assert.equal(key.ok, true);
+  assert.equal(started.ok, false);
+  assert.equal(started.code, "STALE");
+  assert.equal(opened.length, openedBefore); // no browser for the overtaken attempt
+  assert.equal((await plugin.onPanelInvoke("tbo-support.state")).method, "key");
+  await signedOut();
+});
+
+test("sign-out says so when TBO Support could not be reached", async () => {
+  await signInMicrosoft();
+  hub.signOutStatus = 503;
+  const res = await plugin.onPanelInvoke("tbo-support.sign-out");
+  hub.signOutStatus = 200;
+  assert.equal(res.ok, true);
+  assert.equal(res.signedIn, false);
+  assert.match(res.error, /could not be reached/);
+  assert.equal(sessions.has(HOST), false);
+  assert.deepEqual(providerCalls.at(-1), ["clearCredential", "tbo-ai"]);
+  await signInMicrosoft(); // signed in again for the tests below
 });
 
 test("the TBO AI gateway is never accepted as the TBO Support address", async () => {

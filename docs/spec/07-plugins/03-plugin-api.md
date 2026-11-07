@@ -517,7 +517,9 @@ Semantics:
   or plain http for `localhost`, `127.0.0.1` and `*.localhost`; no embedded
   credentials. The endpoint receives the conversation and the key, so its host
   must also pass the plugin's egress check: `manifest.net.domains`, or the
-  install-time `net.anyHost` grant (the same check as `pi.net.fetch`).
+  install-time `net.anyHost` grant (the same check as `pi.net.fetch`). The
+  check runs again at every model launch, so a later change to `net.domains`
+  or to the grant also stops the endpoint.
 - After an accepted call the renderer refreshes its provider list
   (`providersChanged`), so the model picker offers the provider without a
   restart. A turn already running keeps the key it started with, as it does

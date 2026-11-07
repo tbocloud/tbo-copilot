@@ -118,11 +118,15 @@ async function refresh({ request, siteUrl, computerToken, appVersion, now = Date
   return { ...session(got, now), computerToken };
 }
 
+// True when TBO Support heard of it (or the sign-in had already ended there).
+// Signing out on this computer goes ahead either way; the caller says so when
+// TBO Support could not be reached, since only it ends the sign-in there.
 async function signOut({ request, siteUrl, computerToken }) {
   try {
     await call(request, siteUrl, "sign_out", { computer_token: computerToken });
-  } catch {
-    // signing out locally is enough when TBO Support cannot be reached
+    return true;
+  } catch (e) {
+    return e.code === "SIGNED_OUT";
   }
 }
 

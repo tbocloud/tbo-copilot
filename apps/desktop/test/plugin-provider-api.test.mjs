@@ -28,11 +28,20 @@ function forkPluginProcess({ entry }) {
   };
 }
 
-function writePlugin({ id, permissions, main, net }) {
+function writePlugin({ id, permissions, main, net, contributes }) {
   const dir = mkdtempSync(join(tmpdir(), "pi-provider-plugin-"));
   writeFileSync(
     join(dir, "manifest.json"),
-    JSON.stringify({ schemaVersion: 1, id, name: id, version: "0.0.1", main: "main.js", permissions, ...(net ? { net } : {}) }),
+    JSON.stringify({
+      schemaVersion: 1,
+      id,
+      name: id,
+      version: "0.0.1",
+      main: "main.js",
+      permissions,
+      ...(net ? { net } : {}),
+      ...(contributes ? { contributes } : {}),
+    }),
     "utf8",
   );
   writeFileSync(join(dir, "main.js"), main, "utf8");
@@ -176,4 +185,38 @@ test("pi.providers is refused without the provider.register permission", async (
     "clear:PERMISSION_DENIED",
     "url:PERMISSION_DENIED",
   ]);
+});
+
+test("a run-time provider endpoint answers to the plugin's current net.domains at every launch", async (t) => {
+  const runtime = new PluginRuntime({
+    hostEntry: hostProcessEntry,
+    spawnProcess: forkPluginProcess,
+    providers: recordingProviders([]),
+  });
+  t.after(async () => {
+    for (const loaded of runtime.listLoaded()) await runtime.unload(loaded.manifest.id);
+  });
+  const dir = writePlugin({
+    id: "demo.endpoint",
+    permissions: ["provider.register"],
+    net: { domains: ["ai.example.com"] },
+    contributes: {
+      providers: [
+        { id: "signed", name: "Signed in", authKind: "api_key", models: [{ id: "m1" }] },
+        { id: "fixed", name: "Fixed", baseUrl: "https://fixed.example.org/v1", authKind: "api_key", models: [{ id: "m1" }] },
+      ],
+    },
+    main: "module.exports = { async onLoad() {} };",
+  });
+  await runtime.loadFromPath(dir, ["provider.register"]);
+  const allowed = (providerId, url) => runtime.ownedProviderEndpointAllowed("demo.endpoint", providerId, url);
+
+  // set at run time: only a declared host
+  assert.equal(allowed("plugin:demo.endpoint:signed", "https://ai.example.com/v1"), true);
+  assert.equal(allowed("plugin:demo.endpoint:signed", "https://elsewhere.example.net/v1"), false);
+  assert.equal(allowed("plugin:demo.endpoint:signed", undefined), false);
+  // declared in the manifest: ADR 0259 behaviour, unchanged
+  assert.equal(allowed("plugin:demo.endpoint:fixed", "https://fixed.example.org/v1"), true);
+  // a plugin that is not loaded has its rows disabled by host-core
+  assert.equal(runtime.ownedProviderEndpointAllowed("not.loaded", "plugin:not.loaded:x", "https://x.test"), true);
 });

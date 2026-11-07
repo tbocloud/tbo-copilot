@@ -351,6 +351,17 @@ export function createSessionLaunchRuntime({
     const storedModel = bindingForModel(provider, modelId);
     const apiStyle = vendorBinding?.apiStyle ?? provider.apiStyle;
     const baseUrl = vendorBinding?.baseUrl ?? provider.baseUrl;
+    // An endpoint a plugin set for its own row answers to that plugin's
+    // egress decision now, not only when it was set (ADR 0319).
+    if (
+      provider.ownerPluginId &&
+      !plugins.ownedProviderEndpointAllowed(provider.ownerPluginId, provider.id, baseUrl)
+    ) {
+      throw Object.assign(
+        new Error(`${provider.name}: its address is not one its plugin may reach`),
+        { errorCode: ErrorCodes.PLUGIN_PERMISSION_DENIED },
+      );
+    }
     const catalogModelConfig = vendorBinding?.modelConfig ??
       catalogModelConfigFor(modelsDevCatalog, {
         providerId: provider.id,
@@ -524,6 +535,9 @@ export function createSessionLaunchRuntime({
           continue; // already resolved, and independently opted in
         }
         const isVendorAccount = row.authKind === OAUTH_AUTH_KIND;
+        if (row.ownerPluginId && !plugins.ownedProviderEndpointAllowed(row.ownerPluginId, row.id, row.baseUrl)) {
+          continue; // a plugin endpoint its plugin may no longer reach is not offered
+        }
         let apiKey = "";
         if (!isVendorAccount && row.authKind !== "none") {
           try {

@@ -100,10 +100,12 @@ test("refresh keeps the computer token; a 401 means the sign-in is over, with TB
   await assert.rejects(desktop.refresh({ request: offline.request, siteUrl: SITE, computerToken: "x" }), { code: "NETWORK" });
 });
 
-test("sign-out tells TBO Support, and never fails when it cannot be reached", async () => {
+test("sign-out tells TBO Support, never fails, and says whether TBO Support heard of it", async () => {
   const { request, calls } = fakeSite([reply(200, { ok: true })]);
-  await desktop.signOut({ request, siteUrl: SITE, computerToken: "computer-secret" });
+  assert.equal(await desktop.signOut({ request, siteUrl: SITE, computerToken: "computer-secret" }), true);
   assert.equal(calls[0].url, `${SITE}/api/method/tbo_desktop.api.sign_out`);
   const offline = fakeSite([new Error("ENOTFOUND")]);
-  await desktop.signOut({ request: offline.request, siteUrl: SITE, computerToken: "x" });
+  assert.equal(await desktop.signOut({ request: offline.request, siteUrl: SITE, computerToken: "x" }), false);
+  const ended = fakeSite([reply(401, { status: "signed_out", reason: "already ended" })]);
+  assert.equal(await desktop.signOut({ request: ended.request, siteUrl: SITE, computerToken: "x" }), true);
 });
