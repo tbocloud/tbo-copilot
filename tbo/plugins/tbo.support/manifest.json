@@ -2,15 +2,15 @@
   "schemaVersion": 1,
   "id": "tbo.support",
   "name": "TBO Support",
-  "version": "0.1.1",
-  "description": "Lets the TBO Copilot agent read TBO Support tickets: conversation, AI triage, fix brief, session replay, duplicates and the knowledge base. Read-only.",
+  "version": "0.2.0",
+  "description": "Signs TBO Copilot in with your Microsoft account through TBO Support, gives it TBO AI, and lets the agent read TBO Support tickets: conversation, AI triage, fix brief, session replay, duplicates and the knowledge base. Read-only.",
   "author": "Team Back Office",
   "main": "main.js",
   "ui": {
     "panel": "renderer/index.html",
     "title": "TBO Support",
     "width": 460,
-    "height": 560
+    "height": 600
   },
   "contributes": {
     "commands": [
@@ -21,6 +21,8 @@
           "tbo",
           "helpdesk",
           "login",
+          "microsoft",
+          "sso",
           "api key"
         ],
         "category": "TBO Support"
@@ -128,20 +130,39 @@
       {
         "key": "siteUrl",
         "title": "TBO Support address",
-        "description": "The TBO Support site the plugin reads from. Use https://teams.teambackoffice.com, or a local test bench such as http://tbo.localhost:8002.",
+        "description": "The TBO Support site the plugin signs in to and reads from. Use https://teams.teambackoffice.com, the demo hub https://demo-tbo.tbocloud.in for a first try, or a local test bench such as http://tbo.localhost:8002.",
         "type": "string",
         "default": "https://teams.teambackoffice.com"
+      }
+    ],
+    "providers": [
+      {
+        "id": "tbo-ai",
+        "name": "TBO AI",
+        "apiStyle": "chat_completions",
+        "authKind": "api_key",
+        "models": [
+          {
+            "id": "tbo-default",
+            "name": "TBO AI",
+            "supportsImages": true
+          }
+        ]
       }
     ]
   },
   "permissions": [
     "agent.tool.register",
     "net.fetch",
+    "provider.register",
+    "shell.openExternal",
     "ui.panel"
   ],
   "net": {
     "domains": [
       "teams.teambackoffice.com",
+      "demo-tbo.tbocloud.in",
+      "copilot-gateway.tbocloud.in",
       "localhost",
       "*.localhost",
       "127.0.0.1"

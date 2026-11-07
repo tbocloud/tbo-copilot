@@ -296,4 +296,6 @@ jobs:
 
             TBO Copilot opens on the **TBO Dark** theme. Settings → General → Theme also has **TBO Light**.
 
+            **Sign in with Microsoft:** TBO Copilot asks you to sign in when it opens. Your browser opens TBO Support; check the code and press Allow. TBO AI and your TBO Support tickets are then ready, with no key to type.
+
             Updates are off in this build: install new versions by hand.

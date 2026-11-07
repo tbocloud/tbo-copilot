@@ -3,7 +3,7 @@ use crate::db::SCHEMA_VERSION;
 use serde_json::json;
 use std::fs;
 
-fn test_context() -> (tempfile::TempDir, Database, SecretStore) {
+pub(super) fn test_context() -> (tempfile::TempDir, Database, SecretStore) {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open(&dir.path().join("pi.sqlite")).unwrap();
     let secrets = SecretStore::open(dir.path()).unwrap();
@@ -11,7 +11,7 @@ fn test_context() -> (tempfile::TempDir, Database, SecretStore) {
 }
 
 /// A manifest that declares one API-key provider with two models.
-fn manifest() -> PluginManifest {
+pub(super) fn manifest() -> PluginManifest {
     serde_json::from_value(json!({
         "schemaVersion": 1,
         "id": "demo.provider",
@@ -37,7 +37,7 @@ fn manifest() -> PluginManifest {
 }
 
 /// The same declared provider under a different auth kind.
-fn manifest_with_auth_kind(auth_kind: &str) -> PluginManifest {
+pub(super) fn manifest_with_auth_kind(auth_kind: &str) -> PluginManifest {
     let mut value = serde_json::to_value(manifest()).unwrap();
     value["contributes"]["providers"][0]["authKind"] = json!(auth_kind);
     serde_json::from_value(value).unwrap()

@@ -9,7 +9,7 @@ repository.
 | Plugin | What it adds |
 |---|---|
 | [`tbo.theme`](tbo.theme/) | TBO colours: the brand orange as the accent, everything else neutral |
-| [`tbo.support`](tbo.support/) | Lets the agent read TBO Support: tickets, conversation, triage, fix brief, session replay, duplicates, knowledge base. Read-only. [Design](../../docs/tbo/tbo-support-plugin.md) |
+| [`tbo.support`](tbo.support/) | Signs the app in with Microsoft through TBO Support and gives it TBO AI; lets the agent read TBO Support: tickets, conversation, triage, fix brief, session replay, duplicates, knowledge base. Read-only. [Design](../../docs/tbo/tbo-support-plugin.md) |
 
 ## Working on a plugin
 

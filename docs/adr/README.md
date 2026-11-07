@@ -359,3 +359,4 @@ Each ADR includes:
 | image-generation-capability | [Image generation as a configured Agent capability](image-generation-capability.md) | Accepted |
 | retained-browser-pages-per-tab | [Retain a host-owned browser page per resource tab](retained-browser-pages-per-tab.md) | Accepted |
 | 0318 | [Publish native Linux arm64 artifacts](0318-linux-arm64-release-lane.md) | Accepted (D638) |
+| 0319 | [A plugin may configure the provider rows it owns](0319-plugin-configures-owned-provider.md) | Accepted (TBO Copilot) |

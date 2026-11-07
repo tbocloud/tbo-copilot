@@ -1,13 +1,15 @@
 # TBO Support (`tbo.support`)
 
-Lets the TBO Copilot agent **read** TBO Support: tickets and their conversation, internal notes, AI triage, fix brief, session replay, possible duplicates, the suggested reply, the estimate, and the knowledge base. It cannot change anything.
+Signs TBO Copilot in with your **Microsoft** work account through TBO Support, gives it **TBO AI**, and lets the agent **read** TBO Support: tickets and their conversation, internal notes, AI triage, fix brief, session replay, possible duplicates, the suggested reply, the estimate, and the knowledge base. It cannot change anything.
 
 Design: [`docs/tbo/tbo-support-plugin.md`](../../../docs/tbo/tbo-support-plugin.md).
 
 ## Use it
 
-1. **Get your API key.** Ask a TBO Support admin (System Manager) to open your user in TBO Support and click **API Access → Generate Keys**. Frappe lets only a System Manager do this. The secret is shown once, so they should give it to you directly, not in a shared chat.
-2. **Sign in.** In TBO Copilot, open the command menu (`Cmd/Ctrl+K`) and run **TBO Support: Sign in**. Paste the key and secret. The plugin checks them first, then keeps them in your Keychain (macOS) or encrypted for your Windows user.
+1. **Sign in.** TBO Copilot opens the TBO Support panel when nobody is signed in (or press `Cmd/Ctrl+K` and run
+   **TBO Support: Sign in**). Press **Sign in with Microsoft**. Your browser opens TBO Support: log in with your
+   Microsoft work account, check that the page shows the same code as the panel, and press **Allow**.
+2. **Use TBO AI.** Pick **TBO AI** as the model. Its key comes from the sign-in; you never see or type it.
 3. **Ask the agent**, in Agent or Plan mode. For example:
    - "Summarise TBO Support ticket 1234 and show its fix brief."
    - "List my open TBO Support tickets."
@@ -15,7 +17,14 @@ Design: [`docs/tbo/tbo-support-plugin.md`](../../../docs/tbo/tbo-support-plugin.
 
 Other commands: **TBO Support: Check connection**, **TBO Support: Sign out**.
 
-You see only what your TBO Support account may see. Every call runs as you.
+You see only what your TBO Support account may see. Every call runs as you. The sign-in lasts 30 days; TBO Support
+can end it sooner (for example when you leave a team), and the plugin then clears TBO AI too.
+
+**The demo hub first.** For the first try, set the plugin's **TBO Support address** to `https://demo-tbo.tbocloud.in`; the real site stays the default.
+
+**A local test site** (`http://tbo.localhost:8002` and the like; set it in the plugin's settings) can use an API key
+instead: the panel shows the form only there. A System Manager generates it: your user → **API Access → Generate
+Keys**.
 
 ## Develop
 

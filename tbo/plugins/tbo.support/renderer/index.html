@@ -31,6 +31,7 @@
         --bad: #b2452d;
       }
       * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
       body {
         margin: 0;
         min-height: 100vh;
@@ -45,22 +46,30 @@
       .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
       .status.ok .dot { background: var(--good); }
       .status.err .dot { background: var(--bad); }
+      section { display: grid; gap: 12px; margin-bottom: 16px; }
       form { display: grid; gap: 12px; }
       label { display: grid; gap: 4px; font-weight: 500; }
       input {
         font: inherit; color: var(--fg); background: var(--surface);
         border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
       }
-      input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      input:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
       .help { color: var(--muted); margin: 0; }
       .row { display: flex; gap: 8px; flex-wrap: wrap; }
       button {
-        font: inherit; font-weight: 600; border-radius: 8px; padding: 8px 14px; cursor: pointer;
+        font: inherit; font-weight: 600; border-radius: 8px; padding: 8px 14px; cursor: pointer; min-height: 36px;
         border: 1px solid var(--border); background: var(--surface); color: var(--fg);
       }
       button.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; }
       button:disabled { opacity: 0.55; cursor: default; }
       .error { color: var(--bad); margin: 0; min-height: 1.5em; }
+      .code {
+        font: 600 28px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.12em;
+        text-align: center; padding: 12px; border: 1px dashed var(--border); border-radius: 10px;
+      }
+      details { border-top: 1px solid var(--border); padding-top: 12px; }
+      summary { cursor: pointer; color: var(--muted); }
+      details[open] summary { margin-bottom: 12px; }
     </style>
   </head>
   <body>
@@ -69,20 +78,45 @@
 
     <div class="status" id="status" role="status"><span class="dot"></span><span id="status-text">Checking your sign-in…</span></div>
 
-    <form id="form" autocomplete="off">
-      <p class="help">You need your own TBO Support API key and secret. Only a TBO Support admin (System Manager) can create them: your user → <b>API Access → Generate Keys</b>. Paste them here. The key is checked first, then kept in your computer's secure store (Keychain on macOS, or encrypted for your Windows user with DPAPI).</p>
-      <label for="key">API key <input id="key" name="key" spellcheck="false" required /></label>
-      <label for="secret">API secret <input id="secret" name="secret" type="password" spellcheck="false" required /></label>
-      <p class="error" id="error" aria-live="polite"></p>
+    <!-- signed out: Microsoft first -->
+    <section id="start" hidden>
+      <p class="help">Sign in with your Microsoft work account. Your browser opens TBO Support: check that it shows the same code as here, then press <b>Allow</b>. TBO AI and your TBO Support tickets are then ready, with no key to type.</p>
+      <div class="row"><button class="primary" id="microsoft" type="button">Sign in with Microsoft</button></div>
+    </section>
+
+    <!-- waiting for Allow in the browser -->
+    <section id="waiting" hidden>
+      <p class="help">Your browser opened TBO Support. Check that it shows this code, then press <b>Allow</b>.</p>
+      <p class="code" id="code" aria-label="Sign-in code"></p>
       <div class="row">
-        <button class="primary" id="save" type="submit">Sign in</button>
-        <button id="signout" type="button" hidden>Sign out</button>
+        <button id="open-again" type="button">Open the page again</button>
+        <button id="cancel" type="button">Cancel</button>
       </div>
-    </form>
+    </section>
+
+    <!-- signed in -->
+    <section id="signed-in" hidden>
+      <p class="help" id="ai"></p>
+      <div class="row"><button id="signout" type="button">Sign out</button></div>
+    </section>
+
+    <p class="error" id="error" aria-live="polite"></p>
+
+    <!-- an API key, for a local test site only -->
+    <details id="key-box" hidden>
+      <summary>Local test site: sign in with an API key</summary>
+      <form id="form" autocomplete="off">
+        <p class="help">For a TBO Support bench on this computer. A System Manager creates the key: your user → <b>API Access → Generate Keys</b>. It is checked first, then kept in your computer's secure store.</p>
+        <label for="key">API key <input id="key" name="key" spellcheck="false" required /></label>
+        <label for="secret">API secret <input id="secret" name="secret" type="password" spellcheck="false" required /></label>
+        <div class="row"><button id="save" type="submit">Sign in with the key</button></div>
+      </form>
+    </details>
 
     <script>
       const bridge = window.pluginBridge;
       const $ = (id) => document.getElementById(id);
+      let poller = null;
 
       const applyAppearance = (appearance) => {
         const base = appearance && appearance.base;
@@ -97,16 +131,39 @@
         applyAppearance(null);
       }
 
-      function show(state) {
+      function aiText(state) {
+        if (state.method !== "microsoft") return "TBO AI comes with the Microsoft sign-in.";
+        if (state.ai && state.ai.configuring) return "Setting up TBO AI…";
+        if (state.ai && state.ai.ready) return "TBO AI is ready: pick TBO AI as the model.";
+        if (state.ai && state.ai.error) return `TBO AI is not ready yet: ${state.ai.error}`;
+        return "TBO AI is not set up on this TBO Support site yet.";
+      }
+
+      // `startError`: why the last Sign in click failed, kept through this refresh.
+      function show(state, startError) {
         $("site").textContent = state.site ? state.site : "No site set";
+        const waiting = !state.signedIn && state.pending && !state.pending.error;
+        // the sign-in is kept before TBO AI is set up: keep asking until it is
+        const configuring = !!(state.signedIn && state.ai && state.ai.configuring);
         const box = $("status");
         box.classList.toggle("ok", !!state.signedIn);
-        box.classList.toggle("err", !state.signedIn && !!state.error);
+        box.classList.toggle("err", !state.signedIn && !!(state.error || (state.pending && state.pending.error)));
         $("status-text").textContent = state.signedIn
-          ? `Signed in as ${state.user}`
-          : state.error ? state.error : "Not signed in";
-        $("signout").hidden = !state.signedIn;
-        $("save").textContent = state.signedIn ? "Replace key" : "Sign in";
+          ? `Signed in as ${state.fullName || state.user}${state.method === "key" ? " (API key)" : ""}`
+          : waiting ? "Waiting for Allow in your browser…" : "Not signed in";
+        $("start").hidden = !!state.signedIn || waiting;
+        $("waiting").hidden = !waiting;
+        $("signed-in").hidden = !state.signedIn;
+        $("key-box").hidden = !!state.signedIn || waiting || !state.local;
+        if (waiting) $("code").textContent = state.pending.code;
+        if (state.signedIn) $("ai").textContent = aiText(state);
+        $("error").textContent = startError || (state.pending && state.pending.error) || state.error || "";
+        const polling = waiting || configuring;
+        if (polling && !poller) poller = setInterval(refresh, 2000);
+        if (!polling && poller) {
+          clearInterval(poller);
+          poller = null;
+        }
       }
 
       async function call(channel, payload) {
@@ -118,26 +175,38 @@
         }
       }
 
-      async function refresh() {
+      async function refresh(startError) {
         const res = await call("tbo-support.state");
-        show(res.ok ? res : { error: res.error });
+        show(res.ok ? res : { error: res.error }, typeof startError === "string" ? startError : "");
       }
+
+      $("microsoft").addEventListener("click", async () => {
+        $("microsoft").disabled = true;
+        $("error").textContent = "";
+        const res = await call("tbo-support.microsoft");
+        $("microsoft").disabled = false;
+        refresh(res.ok ? "" : res.error || "Could not start the sign-in.");
+      });
+
+      $("open-again").addEventListener("click", () => call("tbo-support.open-again"));
+
+      $("cancel").addEventListener("click", async () => {
+        await call("tbo-support.cancel");
+        refresh();
+      });
 
       $("form").addEventListener("submit", async (event) => {
         event.preventDefault();
         $("error").textContent = "";
         $("save").disabled = true;
-        $("save").textContent = "Checking…";
         const res = await call("tbo-support.sign-in", { key: $("key").value, secret: $("secret").value });
         $("save").disabled = false;
         if (res.ok) {
           $("key").value = "";
           $("secret").value = "";
           show(res);
-          bridge && bridge.invoke("ui.showToast", { message: `Signed in to TBO Support as ${res.user}` }).catch(() => {});
         } else {
           $("error").textContent = res.error || "Sign-in failed.";
-          refresh();
         }
       });
 

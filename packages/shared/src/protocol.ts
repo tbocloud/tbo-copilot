@@ -410,6 +410,8 @@ export const IPC = {
     plansChanged: "pi-desktop/plans/event/changed",
     todosChanged: "pi-desktop/todos/event/changed",
     providersOauth: "pi-desktop/providers/oauth/event",
+    /** A plugin changed a provider row it owns (ADR 0319): refresh the list. */
+    providersChanged: "pi-desktop/providers/event/changed",
     mcpOauth: "pi-desktop/mcp/oauth/event",
     updatesState: "pi-desktop/updates/event/state",
     voiceStateChanged: "pi-desktop/voice/event/stateChanged",

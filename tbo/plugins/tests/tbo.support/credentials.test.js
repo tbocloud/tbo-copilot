@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const os = require("node:os");
 const path = require("node:path");
 const fs = require("node:fs/promises");
-const { createStore, SERVICE, PS_PROTECT, PS_UNPROTECT } = require("../../tbo.support/lib/credentials");
+const { createStore, packSession, unpackSession, SERVICE, PS_PROTECT, PS_UNPROTECT, MAX_BLOB_CHARS } = require("../../tbo.support/lib/credentials");
 
 const HOST = "teams.teambackoffice.com";
 const CREDS = { key: "abc123key", secret: "def456secret" };
@@ -80,4 +80,83 @@ test("other platforms load nothing and refuse to save", async () => {
   const store = createStore({ platform: "linux" });
   assert.equal(await store.load(HOST), null);
   await assert.rejects(store.save(HOST, CREDS), { code: "UNSUPPORTED" });
+});
+
+const SESSION = {
+  computerToken: "computer-secret_1",
+  accessToken: "bearer-1",
+  accessExpiresAt: 1790000000000,
+  signInExpiresAt: "2026-12-06 10:00:00",
+  user: "rahul@teambackoffice.com",
+  fullName: "Rahul K",
+  ai: { key: "sk-must-not-be-kept" },
+};
+
+test("a session is packed as one base64url word and never keeps the AI key", () => {
+  const blob = packSession(SESSION);
+  assert.match(blob, /^[A-Za-z0-9_-]+$/);
+  const back = unpackSession(blob);
+  assert.equal(back.computerToken, "computer-secret_1");
+  assert.equal(back.fullName, "Rahul K");
+  assert.equal(back.ai, undefined);
+  assert.ok(!Buffer.from(blob, "base64url").toString().includes("sk-must-not-be-kept"));
+  assert.equal(unpackSession("not base64 ; rm -rf"), null);
+  assert.throws(() => packSession({ user: "x" }), { code: "INVALID_ARGUMENT" });
+});
+
+test("macOS keeps the session under its own account, on stdin", async () => {
+  const blob = packSession(SESSION);
+  const { runner, calls } = fakeRunner([{ code: 0, stdout: "", stderr: "" }, { code: 0, stdout: `${blob}\n`, stderr: "" }]);
+  const store = createStore({ platform: "darwin", runner });
+  await store.saveSession(HOST, SESSION);
+  assert.deepEqual(calls[0].args, ["-i"]);
+  assert.equal(calls[0].input, `add-generic-password -U -s ${SERVICE} -a session.${HOST} -w ${blob}\n`);
+  assert.equal((await store.loadSession(HOST)).accessToken, "bearer-1");
+  assert.deepEqual(calls[1].args, ["find-generic-password", "-s", SERVICE, "-a", `session.${HOST}`, "-w"]);
+});
+
+test("a session too long to read back is refused when it is kept, not lost later", () => {
+  const big = { ...SESSION, fullName: "R".repeat(MAX_BLOB_CHARS) };
+  assert.throws(() => packSession(big), { code: "INVALID_ARGUMENT" });
+  const justFits = packSession(SESSION);
+  assert.ok(justFits.length <= MAX_BLOB_CHARS);
+  assert.ok(unpackSession(justFits)); // whatever is kept can be read
+});
+
+test("macOS delete counts 'not found' as deleted and reports any other Keychain failure", async () => {
+  const { runner } = fakeRunner([
+    { code: 44, stdout: "", stderr: "The specified item could not be found in the keychain." },
+    { code: 0, stdout: "", stderr: "" },
+    { code: 51, stdout: "", stderr: "User interaction is not allowed." },
+    { code: 51, stdout: "", stderr: "User interaction is not allowed." },
+  ]);
+  const store = createStore({ platform: "darwin", runner });
+  await store.removeSession(HOST);
+  await store.remove(HOST);
+  await assert.rejects(store.removeSession(HOST), { code: "SECRET_STORE" });
+  await assert.rejects(store.remove(HOST), { code: "SECRET_STORE" });
+});
+
+test("a local bench's store key (scheme_host_port) is accepted", async () => {
+  const { runner, calls } = fakeRunner([{ code: 0, stdout: "", stderr: "" }]);
+  await createStore({ platform: "darwin", runner }).save("http_tbo.localhost_8002", CREDS);
+  assert.match(calls[0].input, / -a http_tbo\.localhost_8002 -w /);
+});
+
+test("Windows keeps the session with DPAPI in its own file", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tbo-support-"));
+  const blob = packSession(SESSION);
+  const { runner, calls } = fakeRunner([
+    { code: 0, stdout: "01000000-session-blob\r\n", stderr: "" },
+    { code: 0, stdout: blob, stderr: "" },
+  ]);
+  const store = createStore({ platform: "win32", runner, dataDir });
+  await store.saveSession(HOST, SESSION);
+  assert.equal(calls[0].input, blob);
+  const file = path.join(dataDir, `${HOST}.session.dpapi`);
+  assert.equal(await fs.readFile(file, "utf8"), "01000000-session-blob");
+  assert.equal((await store.loadSession(HOST)).computerToken, "computer-secret_1");
+  await store.removeSession(HOST);
+  await assert.rejects(fs.stat(file));
+  await fs.rm(dataDir, { recursive: true, force: true });
 });

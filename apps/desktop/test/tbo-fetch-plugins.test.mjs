@@ -17,16 +17,18 @@ function plugin(root, folder, manifest, files = {}) {
   }
 }
 
-test("the shipped config bundles tbo.theme from tbo/plugins in this repository", () => {
+test("the shipped config bundles tbo.theme and tbo.support from tbo/plugins in this repository", () => {
   const config = readConfig();
   assert.equal(config.source, "tbo/plugins");
-  assert.deepEqual(config.plugins, ["tbo.theme"]);
+  assert.deepEqual(config.plugins, ["tbo.theme", "tbo.support"]);
   const root = mkdtempSync(join(tmpdir(), "tbo-fetch-"));
   try {
     const source = fileURLToPath(new URL(`../../../${config.source}`, import.meta.url));
     const copied = bundlePlugins({ source, dest: root, plugins: config.plugins });
     assert.match(copied[0], /^tbo\.theme@\d+\.\d+\.\d+/);
+    assert.match(copied[1], /^tbo\.support@\d+\.\d+\.\d+/);
     assert.ok(existsSync(join(root, "tbo.theme", "manifest.json")));
+    assert.ok(existsSync(join(root, "tbo.support", "manifest.json")));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

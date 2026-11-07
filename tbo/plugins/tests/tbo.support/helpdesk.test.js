@@ -110,3 +110,11 @@ test("frappeMessage reads _server_messages and exception text", () => {
   assert.equal(frappeMessage('{"exception":"frappe.exceptions.ValidationError: Bad value"}'), "Bad value");
   assert.equal(frappeMessage("not json"), "");
 });
+
+test("a Microsoft sign-in's token is sent as a bearer token", async () => {
+  const { request, calls } = fakeRequest([{ status: 200, headers: {}, bodyText: '{"message":"rahul@teambackoffice.com"}' }]);
+  const client = createClient({ siteUrl: SITE, credentials: { token: "bearer-1" }, request });
+  assert.equal(await client.method("frappe.auth.get_logged_user"), "rahul@teambackoffice.com");
+  assert.equal(calls[0].headers.Authorization, "Bearer bearer-1");
+  assert.throws(() => createClient({ siteUrl: SITE, credentials: {}, request }), { code: "NOT_SIGNED_IN" });
+});
