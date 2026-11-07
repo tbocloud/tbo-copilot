@@ -484,9 +484,16 @@ export function createSessionLaunchRuntime({
       // A switched-off builtin is dropped from what this prompt may delegate to.
       disabledBuiltins: await disabledBuiltinSubagents(),
     });
+    // A plugin-owned row whose endpoint its plugin may no longer reach is left
+    // out of everything a subagent can use, pinned or offered (ADR 0319).
+    const subagentProviderRows = providers.providers.filter(
+      (row) =>
+        !row.ownerPluginId ||
+        plugins.ownedProviderEndpointAllowed(row.ownerPluginId, row.id, row.baseUrl),
+    );
     const subagentBindings = await resolveSubagentProviders({
       definitions: subagentCatalog.definitions,
-      providers: providers.providers,
+      providers: subagentProviderRows,
       getSecret: async (id: string) =>
         (await runtimeState.host!.call<{ value?: string }>("providers.getSecret", { id })).value,
       resolveVendorBinding: (pinned, pinnedModelId) =>
@@ -520,7 +527,7 @@ export function createSessionLaunchRuntime({
     // extra RPC round-trip. Statically pinned entries from definitions take
     // precedence — they were resolved above with stricter diagnostics.
     const subagentModelKeys: string[] = [];
-    for (const row of providers.providers) {
+    for (const row of subagentProviderRows) {
       if (!row.enabled) continue;
       for (const binding of row.models ?? []) {
         if (!binding.availableForSubagents) continue;
@@ -535,9 +542,6 @@ export function createSessionLaunchRuntime({
           continue; // already resolved, and independently opted in
         }
         const isVendorAccount = row.authKind === OAUTH_AUTH_KIND;
-        if (row.ownerPluginId && !plugins.ownedProviderEndpointAllowed(row.ownerPluginId, row.id, row.baseUrl)) {
-          continue; // a plugin endpoint its plugin may no longer reach is not offered
-        }
         let apiKey = "";
         if (!isVendorAccount && row.authKind !== "none") {
           try {

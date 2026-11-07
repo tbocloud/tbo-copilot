@@ -43,8 +43,8 @@ computer, and breaks the "sign in and use" flow.
    The same decision is made again on every model launch for a row whose
    declaration omits `baseUrl` (`PluginRuntime.ownedProviderEndpointAllowed`):
    after a plugin update removes the host from `net.domains`, or the user
-   revokes `net.anyHost`, the row is refused at launch and not offered to
-   subagents. A row whose manifest declares its endpoint keeps ADR 0259's
+   revokes `net.anyHost`, the row is refused at launch and left out of what
+   subagents can use, pinned or offered. A row whose manifest declares its endpoint keeps ADR 0259's
    behaviour.
 5. After an accepted call, Electron main tells the renderer
    (`providersChanged`), which refreshes its provider list: the model picker
