@@ -84,7 +84,8 @@ export type ProviderIpcDependencies = {
   /**
    * Whether a plugin-owned row's endpoint is one its plugin may reach now
    * (ADR 0319, `PluginRuntime.ownedProviderEndpointAllowed`). A connection test
-   * and live model discovery send the row's key, so they ask first.
+   * and live model discovery send the row's key, so they ask first. Without
+   * it, plugin-owned rows are refused.
    */
   ownedProviderEndpointAllowed?: (pluginId: string, providerId: string, url: string | undefined) => boolean;
 };
@@ -110,8 +111,7 @@ export function registerProviderIpc({
     url: string | undefined,
   ) =>
     Boolean(row?.ownerPluginId) &&
-    ownedProviderEndpointAllowed !== undefined &&
-    !ownedProviderEndpointAllowed(row!.ownerPluginId!, row!.id, url);
+    !(ownedProviderEndpointAllowed?.(row!.ownerPluginId!, row!.id, url) ?? false);
   let host: HostProcess | null = null;
   const handle = (channel: string, fn: (...args: any[]) => Promise<any>) => {
     registrar.handle(channel, async (...args) => {

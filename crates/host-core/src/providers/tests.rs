@@ -1856,6 +1856,69 @@ fn provider_api_keys_fold_fullwidth_on_write_and_read() {
 }
 
 #[test]
+fn clearing_a_key_that_cannot_be_deleted_fails_and_keeps_its_reference() {
+    let (dir, db, secrets) = test_context();
+    let provider = create_provider(
+        &db,
+        &secrets,
+        ProviderCreateInput {
+            name: "Custom".into(),
+            vendor_key: None,
+            provider_type: None,
+            protocol: None,
+            base_url: None,
+            auth_kind: Some("api_key".into()),
+            models: None,
+            default_model_id: Some("model-1".into()),
+            secret_value: Some("sk-keep".into()),
+            api_style: None,
+            oauth_account_label: None,
+            headers: None,
+            context_window: None,
+            max_output_tokens: None,
+            temperature: None,
+            supports_reasoning: None,
+            supported_thinking_levels: None,
+        },
+    )
+    .unwrap();
+    // Swap the key file for a non-empty folder of the same name: removing it
+    // as a file fails, the way a locked or read-only file would.
+    let stored: Vec<_> = std::fs::read_dir(dir.path().join("secrets"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "bin"))
+        .collect();
+    assert_eq!(stored.len(), 1);
+    std::fs::remove_file(&stored[0]).unwrap();
+    std::fs::create_dir(&stored[0]).unwrap();
+    std::fs::write(stored[0].join("held"), b"x").unwrap();
+
+    let secret_ref = |db: &Database| -> Option<String> {
+        db.conn()
+            .query_row(
+                "SELECT secret_ref FROM providers WHERE id = ?1",
+                params![provider.id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert!(set_provider_secret(&db, &secrets, &provider.id, None).is_err());
+    assert_eq!(
+        secret_ref(&db).as_deref(),
+        Some(secret_ref_for_provider(&provider.id).as_str()),
+        "the reference stays while the key file does"
+    );
+
+    // Once the file can go, clearing goes through.
+    std::fs::remove_dir_all(&stored[0]).unwrap();
+    set_provider_secret(&db, &secrets, &provider.id, None).unwrap();
+    assert_eq!(secret_ref(&db), None);
+    let read = get_provider(&db, &secrets, &provider.id).unwrap().unwrap();
+    assert!(!read.has_secret);
+}
+
+#[test]
 fn sync_payloads_keep_only_storable_headers() {
     // A peer on an older build, or a backup taken before the header rule was
     // tightened, can hand us rows this build refuses. Dropping them at the sync

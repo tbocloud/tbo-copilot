@@ -494,7 +494,9 @@ pub fn set_provider_secret(
                 .execute(params![id, api_key_ref, now_ms()])?;
         }
         None => {
-            let _ = secrets.delete(&api_key_ref);
+            // A key file that stays on disk keeps its reference: clearing must
+            // not report success while the encrypted key is still readable.
+            secrets.delete(&api_key_ref)?;
             db.conn()
                 .prepare_cached("DELETE FROM secrets_meta WHERE secret_ref = ?1")?
                 .execute(params![api_key_ref])?;

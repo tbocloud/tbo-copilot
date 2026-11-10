@@ -152,11 +152,15 @@ async function setUpAi(site, ai) {
   }
 }
 
+// Best effort: true when the app cleared the row's key.
 async function clearAi() {
   aiApplied = null;
   aiState = { ready: false };
   aiRetryAt = 0;
-  await pi.providers.clearCredential(AI_PROVIDER).catch(() => {});
+  return pi.providers.clearCredential(AI_PROVIDER).then(
+    () => true,
+    () => false,
+  );
 }
 
 // The TBO AI row belongs to the current site's sign-in only.
@@ -402,7 +406,7 @@ async function signOut() {
     const reached = session
       ? await desktop.signOut({ request, siteUrl: site, computerToken: session.computerToken })
       : true;
-    await clearAi(); // the TBO AI key goes first, whatever happens below
+    const aiCleared = await clearAi(); // the TBO AI key goes first, whatever happens below
     try {
       await removeStored(() => store.removeSession(key));
       await removeStored(() => store.remove(key));
@@ -419,6 +423,7 @@ async function signOut() {
     // only when it hears of it: say so when it could not be told
     if (readFailed) done.error = NOT_READ_ON_SIGN_OUT;
     else if (!reached) done.error = NOT_REACHED_ON_SIGN_OUT;
+    if (!aiCleared) done.error = [done.error, AI_NOT_CLEARED_ON_SIGN_OUT].filter(Boolean).join(" ");
     return done;
   });
 }
@@ -426,6 +431,10 @@ async function signOut() {
 const NOT_READ_ON_SIGN_OUT =
   "Signed out on this computer, but its saved sign-in could not be read, so TBO Support was not told. A System " +
   "Manager can end this computer's sign-in there now (TBO Desktop Sign-in); otherwise it ends when it runs out.";
+
+// The command needs no saved sign-in, and start clears the row too.
+const AI_NOT_CLEARED_ON_SIGN_OUT =
+  "This computer could not clear the TBO AI key. Run TBO Support: Sign out again, or restart TBO Copilot.";
 
 const NOT_REACHED_ON_SIGN_OUT =
   "Signed out on this computer, but TBO Support could not be reached. A System Manager can end this " +

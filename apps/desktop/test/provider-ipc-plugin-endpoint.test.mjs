@@ -13,13 +13,14 @@ const { ModelsDevCatalog } = await import("../electron/main/models-dev-catalog.t
 const { createProviderCatalogRuntime } = await import("../electron/main/runtime/provider-catalog.ts");
 const { bindingForCustomModel, IPC } = await import("@pi-desktop/shared");
 
+const row = {
+  id: "plugin:demo.signin:tbo-ai", name: "TBO AI", vendorKey: "custom", enabled: true,
+  authKind: "api_key", hasSecret: true, apiStyle: "chat_completions", ownerPluginId: "demo.signin",
+  baseUrl: "https://ai.example.com/v1",
+  models: ["tbo-default"].map(bindingForCustomModel),
+};
+
 test("a plugin-owned row whose endpoint its plugin may no longer reach is never probed with its key", async (t) => {
-  const row = {
-    id: "plugin:demo.signin:tbo-ai", name: "TBO AI", vendorKey: "custom", enabled: true,
-    authKind: "api_key", hasSecret: true, apiStyle: "chat_completions", ownerPluginId: "demo.signin",
-    baseUrl: "https://ai.example.com/v1",
-    models: ["tbo-default"].map(bindingForCustomModel),
-  };
   const calls = [];
   let fetches = 0;
   const originalFetch = globalThis.fetch;
@@ -82,4 +83,24 @@ test("a plugin-owned row whose endpoint its plugin may no longer reach is never 
   await listModels({ providerId: row.id, source: "refresh" });
   assert.ok(fetches >= 2);
   assert.ok(calls.includes("providers.getSecret"));
+});
+
+test("without the endpoint check, a plugin-owned row is refused rather than probed", async () => {
+  const calls = [];
+  const handlers = new Map();
+  registerProviderIpc({
+    registrar: { handle: (channel, handler) => handlers.set(channel, handler) },
+    getHost: () => ({ call: async (method) => {
+      calls.push(method);
+      if (method === "providers.get") return { provider: row };
+      if (method === "providers.getSecret") return { value: "sk-person" };
+      return { ok: true };
+    } }),
+    modelsDevCatalog: { ensureLoaded: async () => true }, vendorOAuth: {}, logger: { app() {} },
+    enrichProvider: (p) => p, listRuntimeProviders: async () => [row], enrichProviderList: (l) => l,
+    bindingForModel: () => undefined,
+  });
+  const tested = await handlers.get(IPC.invoke.providersTest)(row.id);
+  assert.equal(tested.errorCode, "PLUGIN_PERMISSION_DENIED");
+  assert.ok(!calls.includes("providers.getSecret"), "the key was never read");
 });

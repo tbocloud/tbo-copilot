@@ -61,7 +61,7 @@ const GOOD = { key: "abc123key", secret: "def456secret" };
 const registered = { tools: [], commands: [] };
 const opened = [];
 const providerCalls = [];
-const providerHooks = { setCredentialFailures: 0, setCredentialDelayMs: 0 };
+const providerHooks = { setCredentialFailures: 0, setCredentialDelayMs: 0, clearCredentialFailures: 0 };
 const toasts = [];
 const eventHandlers = new Map();
 const shellHooks = { openFailures: 0 };
@@ -158,7 +158,13 @@ global.pi = {
       }
       providerCalls.push(["setCredential", id, key]);
     },
-    clearCredential: async (id) => providerCalls.push(["clearCredential", id]),
+    clearCredential: async (id) => {
+      if (providerHooks.clearCredentialFailures > 0) {
+        providerHooks.clearCredentialFailures -= 1;
+        throw Object.assign(new Error("host unavailable"), { code: "UNSUPPORTED" });
+      }
+      providerCalls.push(["clearCredential", id]);
+    },
   },
   shell: {
     openExternal: async (url) => {
@@ -505,6 +511,33 @@ test("sign-out still cleans up when the saved sign-in cannot be read, and says T
   assert.equal(sessions.has(HOST), false);
   assert.deepEqual(providerCalls.at(-1), ["clearCredential", "tbo-ai"]);
   assert.equal(hub.calls.filter((c) => c.path === "tbo_desktop.api.sign_out").length, signOutsBefore);
+  await signInMicrosoft(); // signed in again for the tests below
+});
+
+test("sign-out says so when the app could not clear the TBO AI key, and the command tries again", async () => {
+  await signInMicrosoft();
+  hub.signOutStatus = 503;
+  providerHooks.clearCredentialFailures = 1;
+  providerCalls.length = 0;
+  let res;
+  try {
+    res = await plugin.onPanelInvoke("tbo-support.sign-out");
+  } finally {
+    hub.signOutStatus = 200;
+    providerHooks.clearCredentialFailures = 0;
+  }
+  assert.equal(res.ok, true);
+  assert.equal(res.signedIn, false);
+  assert.match(res.error, /could not be reached/, "the TBO Support warning stays");
+  assert.match(res.error, /could not clear the TBO AI key/);
+  assert.equal(sessions.has(HOST), false);
+  assert.deepEqual(providerCalls, [], "the key was not cleared");
+
+  const signOut = registered.commands.find((c) => c.id === "tbo-support.sign-out");
+  const toastsBefore = toasts.length;
+  await signOut.run();
+  assert.deepEqual(providerCalls, [["clearCredential", "tbo-ai"]]);
+  assert.deepEqual(toasts.slice(toastsBefore), ["Signed out of TBO Support and TBO AI."]);
   await signInMicrosoft(); // signed in again for the tests below
 });
 

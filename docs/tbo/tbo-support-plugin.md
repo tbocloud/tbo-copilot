@@ -151,8 +151,8 @@ their role allows.
      any) sets it again. At start the plugin first asks the app to clear the row (a key from an earlier run belongs to no
      known sign-in), then the renewal sets it; if that renewal fails, the next panel read, check or tool call
      tries again. Clearing is best effort: if the app refuses it, the earlier key can stay in the row until the
-     next sign-in sets a new one or sign-out clears it. Such a key stops working at the gateway once TBO Support
-     has ended the sign-in it belongs to.
+     next sign-in sets a new one or a later clear succeeds (sign-out, or the next start). Such a key stops working
+     at the gateway once TBO Support has ended the sign-in it belongs to.
    - The app checks the address again whenever a chat starts, against the plugin's `net.domains` at that moment.
    - If the app refuses the key, the panel says so and the plugin tries again within about 5 minutes.
 6. While signed in, the plugin renews the TBO Support token before it runs out (`refresh`), at start and when a
@@ -168,11 +168,14 @@ whose TBO AI is still being set up. An API-key sign-in is refused while a Micros
 computer out), renewal answers 401. The plugin then removes the session and clears the TBO AI key, and tells the
 person why.
 
-**Sign out** tells TBO Support (which revokes the token and removes the AI key), clears the TBO AI key on this
-computer, then removes the saved sign-in. If the Keychain or the data folder refuses the removal twice, sign-out
-says so ("this computer could not delete the saved sign-in") instead of reporting success. If TBO Support cannot be
-reached, sign-out still completes on this computer and says that the sign-in there (and the TBO AI key on the
-gateway) ends only when a System Manager ends it in TBO Desktop Sign-in, or when it runs out.
+**Sign out** tells TBO Support (which revokes the token and removes the AI key), asks the app to clear the TBO AI
+key on this computer, then removes the saved sign-in. Clearing the key is best effort: if the app refuses it,
+sign-out still completes and says so ("this computer could not clear the TBO AI key"); running *TBO Support: Sign
+out* again, or restarting the app, tries again. If the Keychain or the data folder refuses the removal twice,
+sign-out says so ("this computer could not delete the saved sign-in") instead of reporting success. If TBO Support
+cannot be reached, sign-out still completes on this computer and says that the sign-in there (and the TBO AI key on
+the gateway) ends only when a System Manager ends it in TBO Desktop Sign-in, or when it runs out. Both warnings can
+appear together.
 
 **Check connection** asks TBO Support who is signed in, so it reports a revoked sign-in or an unreachable site
 instead of trusting the saved token.
