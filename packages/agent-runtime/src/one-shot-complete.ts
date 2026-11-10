@@ -130,6 +130,7 @@ export async function completeOneShot(
       provider.headers,
     ),
     model.api,
+    provider.refuseRedirects === true,
   );
   const stream = createProviderRetryStream(
     model,

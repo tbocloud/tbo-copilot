@@ -593,6 +593,7 @@ export function createSessionLaunchRuntime({
           apiKey,
           ...(row.authKind ? { authKind: row.authKind } : {}),
           ...(row.apiStyle ? { apiStyle: row.apiStyle } : {}),
+          ...(row.ownerPluginId ? { refuseRedirects: true } : {}),
           ...optionalProviderHeaders(row.headers),
           supportsReasoning: caps.supportsReasoning,
           supportedThinkingLevels: [...caps.supportedThinkingLevels],
@@ -657,6 +658,8 @@ export function createSessionLaunchRuntime({
           apiKey: secret.value || "",
           authKind: provider.authKind,
           extensionAgentKey: provider.extensionAgentKey,
+          // a plugin-owned row's requests stay on the host it declared (ADR 0319)
+          ...(provider.ownerPluginId ? { refuseRedirects: true } : {}),
           apiStyle,
           ...optionalProviderHeaders(provider.headers),
           supportsReasoning: thinkingCapabilities.supportsReasoning,

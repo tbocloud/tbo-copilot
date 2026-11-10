@@ -354,6 +354,21 @@ describe("resolveSubagentProviders", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
+  it("marks a plugin-owned provider so its requests refuse redirects (ADR 0319)", async () => {
+    const pluginRow = { ...providers[0], id: "plugin:demo.signin:tbo-ai", name: "TBO AI", vendorKey: undefined, ownerPluginId: "demo.signin" };
+    const { providers: resolved } = await resolveSubagentProviders({
+      definitions: [
+        definition("a", { providerId: "plugin:demo.signin:tbo-ai", modelId: "claude-haiku-4-5" }),
+        definition("b", { providerId: "anthropic", modelId: "claude-haiku-4-5" }),
+      ],
+      providers: [pluginRow, ...providers],
+      getSecret: async (id: string) => (id === pluginRow.id || id === providers[0].id ? "sk-test" : undefined),
+    });
+    const entries = Object.values(resolved);
+    expect(entries.find((p) => p.id === "plugin:demo.signin:tbo-ai")?.refuseRedirects).toBe(true);
+    expect(entries.find((p) => p.id !== "plugin:demo.signin:tbo-ai")?.refuseRedirects).toBeUndefined();
+  });
+
   it("omits a pin it cannot resolve rather than substituting a provider", async () => {
     const { providers: resolved, diagnostics } = await resolveSubagentProviders({
       definitions: [

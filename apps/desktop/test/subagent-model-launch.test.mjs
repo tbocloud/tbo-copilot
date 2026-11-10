@@ -138,6 +138,9 @@ test("a plugin endpoint its plugin may no longer reach is neither pinned nor off
 
   const allowed = await launch();
   assert.ok(usesPluginRow(allowed), "reachable: pinned and offered");
+  // a plugin row's requests refuse redirects; the user's own row is unchanged
+  for (const key of pluginKeys) assert.equal(allowed.subagentProviders[key]?.refuseRedirects, true, key);
+  assert.equal(allowed.provider.refuseRedirects, undefined);
   assert.deepEqual(allowed.subagentModelKeys, ["TBO AI/m1"]);
 
   reachable = false; // the host left net.domains, or net.anyHost was revoked

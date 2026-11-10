@@ -2065,6 +2065,7 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
             this.provider.headers,
           ),
           m.api,
+          this.provider.refuseRedirects === true,
         );
         const hookedOptions = this.withExtensionProviderHooks(requestOptions, m);
         // The watchdog must be able to *stop* what it abandons. It wraps the

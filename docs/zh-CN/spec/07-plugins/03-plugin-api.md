@@ -428,6 +428,7 @@ pi.providers.setBaseUrl(providerId: string, baseUrl: string): Promise<void>
   不得内嵌凭据。该地址会收到对话内容和密钥，因此其主机还必须通过插件的出站检查：
   `manifest.net.domains`，或安装时授予的 `net.anyHost`（与 `pi.net.fetch` 相同）。
   每次模型启动时都会再次检查，因此之后对 `net.domains` 或授权的修改同样会阻止该地址。
+  插件拥有的提供方的模型请求从不跟随重定向：3xx 响应会使请求失败。
 - 调用被接受后，渲染进程刷新提供方列表（`providersChanged`），模型选择器无需重启
   即可显示该提供方。已在运行的回合继续使用其开始时的密钥，与用户在设置中修改密钥时相同。
 - 错误：`PERMISSION_DENIED`（缺少 `provider.register`、不是插件自己的行，或地址不在

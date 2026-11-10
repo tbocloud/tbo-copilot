@@ -67,11 +67,16 @@ computer, and breaks the "sign in and use" flow.
   running keeps the key it resolved when it started, exactly as when the user
   edits a key in Settings; revocation that must take effect at once belongs to
   the endpoint (TBO's gateway deletes the person's key when the sign-in ends).
+- Every model request of a plugin-owned row refuses redirects
+  (`RuntimeProviderConfig.refuseRedirects`, applied in `withProviderHeaders`
+  on every request path: the main turn, subagents, one-shot completions and
+  compaction). A 307 or 308 would otherwise resend the conversation and the
+  key to whatever host the endpoint names; with the policy it fails instead.
+  An adapter that accepts no custom fetch cannot carry it, so such a request
+  is refused rather than sent.
 - Follow-ups, runtime-wide and not specific to plugins, are left for later: a
-  redirect policy for model requests of plugin-owned rows (the agent runtime's
-  HTTP client follows redirects for every provider alike), a launch that reads
-  a row's endpoint and key as one snapshot, and invalidating a running turn's
-  credential when it changes.
+  launch that reads a row's endpoint and key as one snapshot, and
+  invalidating a running turn's credential when it changes.
 - The change is small and additive (no schema change; one config key,
   `pluginBaseUrl`), so it can be offered to PI-Desktop as is.
 

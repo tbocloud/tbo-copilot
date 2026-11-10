@@ -54,6 +54,11 @@ export type RuntimeProviderConfig = {
   authKind?: string;
   /** Plugin-owned trusted agent key when this is not a host provider row. */
   extensionAgentKey?: string;
+  /**
+   * A plugin-owned row (ADR 0319): its requests never follow a redirect, so
+   * the conversation and the key stay on the host the plugin declared.
+   */
+  refuseRedirects?: boolean;
   /** Wire protocol for the endpoint (provider config apiStyle). */
   apiStyle?: string;
   supportsReasoning: boolean;

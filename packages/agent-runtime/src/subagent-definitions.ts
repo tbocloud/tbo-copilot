@@ -370,6 +370,8 @@ export async function loadSubagentDefinitions(
 export type SubagentProviderSource = {
   id: string;
   enabled?: boolean;
+  /** The plugin that declared the row (ADR 0259); its requests refuse redirects. */
+  ownerPluginId?: string;
   headers?: Record<string, string>;
   name: string;
   vendorKey?: string;
@@ -532,6 +534,7 @@ export async function resolveSubagentProviders(input: {
       apiKey,
       ...(provider.authKind ? { authKind: provider.authKind } : {}),
       ...(apiStyle ? { apiStyle } : {}),
+      ...(provider.ownerPluginId ? { refuseRedirects: true } : {}),
       supportsReasoning: capabilities.supportsReasoning,
       supportedThinkingLevels: [...capabilities.supportedThinkingLevels],
       ...(modelConfig ? { modelConfig } : {}),

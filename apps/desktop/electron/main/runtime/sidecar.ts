@@ -465,6 +465,14 @@ export function createSidecarRuntime({
     if (!provider) {
       throw new Error(subagentProviderLookupError(providerPart, allProviders));
     }
+    // The same rule as at launch (ADR 0319): a plugin endpoint its plugin may
+    // no longer reach is not used, and a plugin row's requests refuse redirects.
+    if (
+      provider.ownerPluginId &&
+      !plugins.ownedProviderEndpointAllowed(provider.ownerPluginId, provider.id, provider.baseUrl)
+    ) {
+      throw new Error(`${provider.name}: its address is not one its plugin may reach`);
+    }
 
     // Check if the model has availableForSubagents enabled
     const binding = provider.models?.find(
@@ -524,6 +532,7 @@ export function createSidecarRuntime({
       apiKey,
       ...(provider.authKind ? { authKind: provider.authKind } : {}),
       ...(provider.apiStyle ? { apiStyle: provider.apiStyle } : {}),
+      ...(provider.ownerPluginId ? { refuseRedirects: true } : {}),
       supportsReasoning: capabilities.supportsReasoning,
       supportedThinkingLevels: [...capabilities.supportedThinkingLevels],
       ...(modelConfig ? { modelConfig } : {}),
