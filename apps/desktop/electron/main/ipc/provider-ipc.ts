@@ -55,6 +55,8 @@ type RuntimeProvider = {
   headers?: Record<string, string>;
   enabled?: boolean;
   supportsVision?: boolean;
+  /** Set on a plugin-owned row (ADR 0319). */
+  ownerPluginId?: string;
 };
 
 export type ProviderIpcDependencies = {
@@ -81,7 +83,18 @@ export type ProviderIpcDependencies = {
   enrichProviderList: (result: { providers: RuntimeProvider[] }) => Promise<unknown>;
   bindingForModel: (provider: Pick<RuntimeProvider, "models">, modelId: string) => ModelBinding | undefined;
   onProviderInvalidated?: (providerId: string) => Promise<void> | void;
+  /**
+   * Whether a plugin-owned row's endpoint is one its plugin may reach now
+   * (ADR 0319, `PluginRuntime.ownedProviderEndpointAllowed`). A connection test
+   * and live model discovery send the row's key, so they ask first. Without
+   * it, plugin-owned rows are refused.
+   */
+  ownedProviderEndpointAllowed?: (pluginId: string, providerId: string, url: string | undefined) => boolean;
 };
+
+const PLUGIN_ENDPOINT_REFUSED = "This provider's address is not one its plugin may reach.";
+const PLUGIN_KEY_ELSEWHERE_REFUSED =
+  "This provider's saved key is only sent to its saved address; enter a key to try another one.";
 
 /** Register provider catalog, model discovery, OAuth and secret channels. */
 export function registerProviderIpc({
@@ -95,7 +108,14 @@ export function registerProviderIpc({
   enrichProviderList,
   bindingForModel,
   onProviderInvalidated,
+  ownedProviderEndpointAllowed,
 }: ProviderIpcDependencies): void {
+  const pluginEndpointRefused = (
+    row: { id: string; ownerPluginId?: string } | undefined,
+    url: string | undefined,
+  ) =>
+    Boolean(row?.ownerPluginId) &&
+    !(ownedProviderEndpointAllowed?.(row!.ownerPluginId!, row!.id, url) ?? false);
   let host: HostProcess | null = null;
   const handle = (channel: string, fn: (...args: any[]) => Promise<any>) => {
     registrar.handle(channel, async (...args) => {
@@ -228,6 +248,7 @@ export function registerProviderIpc({
         authKind?: string;
         apiStyle?: string;
         headers?: Record<string, string>;
+        ownerPluginId?: string;
       };
     }>("providers.get", { id });
     // A vendor account proves itself by resolving auth — refreshing the token
@@ -247,6 +268,14 @@ export function registerProviderIpc({
     }
     const baseUrl = detail.provider?.baseUrl;
     if (!baseUrl) return { ...local, network: "skipped" };
+    if (pluginEndpointRefused(detail.provider && { id, ...detail.provider }, baseUrl)) {
+      return {
+        ok: false,
+        network: "skipped",
+        errorCode: ErrorCodes.PLUGIN_PERMISSION_DENIED,
+        message: PLUGIN_ENDPOINT_REFUSED,
+      };
+    }
     const secret = await host.call<{ value?: string }>("providers.getSecret", { id });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
@@ -593,10 +622,19 @@ export function registerProviderIpc({
         return { models: fallback, source: "fallback" as const };
       }
 
+      // A plugin-owned row (ADR 0319): live discovery sends its key, so only to
+      // an endpoint its plugin may reach now, and its saved key only to its
+      // saved address (a declared address passes the plugin check whatever the
+      // caller names). Cached lists stay available.
+      const savedKeyElsewhere =
+        Boolean(provider?.ownerPluginId) &&
+        !req.apiKey &&
+        baseUrl.replace(/\/+$/, "") !== (provider?.baseUrl ?? "").trim().replace(/\/+$/, "");
+      const endpointRefused = savedKeyElsewhere || pluginEndpointRefused(provider, baseUrl);
       // Dialog edits can omit the key to reuse the stored secret; the raw key
       // never travels back to the renderer either way.
       let apiKey = req.apiKey ?? "";
-      if (!apiKey && provider) {
+      if (!apiKey && provider && !endpointRefused) {
         const secret = await host.call<{ value?: string }>("providers.getSecret", {
           id: provider.id,
         });
@@ -615,14 +653,18 @@ export function registerProviderIpc({
         them in order. Whatever answers becomes the effective base URL the row is
         actually ran — automatic, but never hidden.
       */
-      let discoveryError: string | undefined;
+      let discoveryError: string | undefined = savedKeyElsewhere
+        ? PLUGIN_KEY_ELSEWHERE_REFUSED
+        : endpointRefused
+          ? PLUGIN_ENDPOINT_REFUSED
+          : undefined;
       let resolution: {
         effectiveBaseUrl?: string;
         discoveryStyle?: string;
         apiStyleHint?: string;
         evidence?: string;
       } = {};
-      if (baseUrl) {
+      if (baseUrl && !endpointRefused) {
         try {
           const sweep = profile
             ? await probeDiscoveryCandidates({

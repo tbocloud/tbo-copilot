@@ -57,6 +57,7 @@ export function compactionRequestOptions(input: {
       provider.headers,
     ),
     model.api,
+    provider.refuseRedirects === true,
   );
 }
 

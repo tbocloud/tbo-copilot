@@ -453,6 +453,11 @@ Electron main after plugin permission and manifest-source checks:
 - `plugin.usage.listTurns` — keyset page of completed-turn facts (identifiers
   and token counters, never a message body) for non-deleted sessions. Gated
   in Electron main by `usage.read`. Additive; no protocol version bump.
+- `plugin.providers.setCredential` / `plugin.providers.clearCredential` /
+  `plugin.providers.setBaseUrl` — a plugin configuring a provider row it owns
+  (`{pluginId, providerId, apiKey | baseUrl}`; ADR 0319). Gated in Electron main
+  by `provider.register`; host-core checks ownership. Replies `{ok: true}` and
+  never carry the key. Additive; no protocol version bump.
 - Successful plugin session mutations cause Electron main to emit one
   `sessionsChanged` renderer event; the renderer refreshes the session list,
   and plugins do not emit this UI synchronization event.

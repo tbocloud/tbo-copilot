@@ -50,8 +50,9 @@ five plugins, the one-approval flow, traceability, sign-in and AI models.
 | Shared TBO pull-request checks: Kimi review and task reference | `.github/workflows/ai-review.yml` (copy of `tbocloud/ai-review/caller.yml`), `.github/workflows/task-reference.yml` (same as `tbocloud/helpdesk_client`) | New files (upstream never has them) |
 | **TBO logo** in the app icons (light and dark), Windows `.ico`, macOS `.icns`, menu bar icon, installer background and in-app logo | `apps/desktop/build/*`, `apps/desktop/src/assets/brand/*` | Branding script copies them from `scripts/tbo/assets/` |
 | **Default theme TBO Dark** for a new install (`plugin:tbo.theme:tbo-dark`); without the plugin the shell falls back to System | `crates/host-core/src/rpc/mod.rs` (`settings.get` defaults) | Branding script |
-| **TBO plugins** in `tbo/plugins/`; the installers bundle `tbo.theme`, copied in at build time; CI tests and packs them | `tbo/plugins/`, `scripts/tbo/bundled-plugins.json`, `scripts/tbo/fetch-plugins.mjs`, `.gitignore`, `tbo-release.yml`, `.github/workflows/tbo-plugins.yml` and their tests | New files; one `.gitignore` block |
+| **TBO plugins** in `tbo/plugins/`; the installers bundle `tbo.theme` and `tbo.support`, copied in at build time; CI tests and packs them | `tbo/plugins/`, `scripts/tbo/bundled-plugins.json`, `scripts/tbo/fetch-plugins.mjs`, `.gitignore`, `tbo-release.yml`, `.github/workflows/tbo-plugins.yml` and their tests | New files; one `.gitignore` block |
 | **A 429 that says the account is out of credit or quota is not retried** (OpenAI `insufficient_quota`, Moonshot "insufficient balance" / `exceeded_current_quota_error`); other 429s are retried as before. Without it, a turn kept backing off for many minutes on an account that could not answer | `packages/agent-runtime/src/agent-errors.ts` (`ACCOUNT_EXHAUSTED_PATTERN`), one test in `agent-errors.test.ts` | Normal commit |
+| **A plugin may configure the provider rows it owns** (ADR 0319): store or clear the API key, write only, and set the base URL when its declaration leaves it out. The bundled `tbo.support` plugin uses it to give the app TBO's AI after the person signs in, so nobody types a key | host-core `plugins/providers/owned.rs` and the `plugin.providers.*` RPC; `apps/desktop/electron/main/plugin-runtime.ts`, `plugin-host-process.mjs`, `services/plugin-services.ts`; `packages/plugin-sdk` (`pi.providers`); tests in `plugins/providers/tests.rs`, `rpc/mod.rs` and `apps/desktop/test/plugin-provider-api.test.mjs` | Normal commit; small and additive, so it can be offered to PI-Desktop |
 | **TBO Copilot worker**: the headless worker that investigates TBO Support tickets read-only (Phase 1c-1) and, with a sandbox runner, writes and tests fixes and opens their pull requests (Phase 1c-2); it uses the engine packages as they are, so the core is unchanged. Its files hold no keys, customer data or evaluation answers; at run time it reads a ticket and the customer's code into a folder that it deletes after the run. See `apps/tbo-worker/README.md` | `apps/tbo-worker/`, its entry in `pnpm-lock.yaml` | New app (upstream never has it) |
 
 ### Brand images
@@ -137,10 +138,10 @@ enable updates with `TBO_UPDATES=enabled`, or by changing `tboUpdatesEnabled`.
 ## Bundled TBO plugins
 
 TBO plugins live in this repository, in `tbo/plugins/`. The installers ship
-the ones listed in `scripts/tbo/bundled-plugins.json` (today: `tbo.theme`, the TBO colours):
+the ones listed in `scripts/tbo/bundled-plugins.json` (today: `tbo.theme`, the TBO colours, and `tbo.support`, which signs the app in through TBO Support, gives it TBO AI and reads TBO Support):
 
 ```json
-{ "source": "tbo/plugins", "plugins": ["tbo.theme"] }
+{ "source": "tbo/plugins", "plugins": ["tbo.theme", "tbo.support"] }
 ```
 
 - **At build time** `tbo-release.yml` runs `scripts/tbo/fetch-plugins.mjs`, which copies each listed

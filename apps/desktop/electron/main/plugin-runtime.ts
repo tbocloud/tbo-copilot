@@ -468,6 +468,12 @@ export type PluginHostServices = {
   usage?: {
     listTurns: (pluginId: string, input: Record<string, unknown>) => Promise<unknown>;
   };
+  /** A plugin configuring the provider rows it owns (ADR 0319); host-core checks ownership. */
+  providers?: {
+    setCredential: (pluginId: string, input: { providerId: string; apiKey: string }) => Promise<unknown>;
+    clearCredential: (pluginId: string, input: { providerId: string }) => Promise<unknown>;
+    setBaseUrl: (pluginId: string, input: { providerId: string; baseUrl: string }) => Promise<unknown>;
+  };
 };
 
 /** Host APIs a plugin process may reach. Anything else does not exist (spec 04 §2). */
@@ -548,6 +554,9 @@ const HOST_API_ALLOWLIST = new Set([
   "session.rename",
   "session.delete",
   "usage.listTurns",
+  "providers.setCredential",
+  "providers.clearCredential",
+  "providers.setBaseUrl",
   "agent.complete",
   "keyboard.registerGlobalShortcut",
   "keyboard.unregisterGlobalShortcut",
@@ -2805,6 +2814,40 @@ export class PluginRuntime {
         }
         return this.services.usage.listTurns(loaded.manifest.id, input);
       }
+      case "providers.setCredential":
+      case "providers.clearCredential":
+      case "providers.setBaseUrl": {
+        // A plugin configures only the rows it declared; host-core checks the
+        // row's owner and validates the key and URL. The key is write only:
+        // no reply and no audit entry carries it (ADR 0319).
+        this.assertPermission(loaded, "provider.register");
+        const providerId = typeof args[0] === "string" ? args[0].trim() : "";
+        if (!providerId || providerId.length > 64) {
+          throw apiError("INVALID_PARAMS", "providerId must be the id declared in contributes.providers");
+        }
+        const value = args[1];
+        if (api !== "providers.clearCredential" && (typeof value !== "string" || value.length > 4096)) {
+          throw apiError("INVALID_PARAMS", api === "providers.setBaseUrl"
+            ? "baseUrl must be a string"
+            : "apiKey must be a string of at most 4096 characters");
+        }
+        const providers = this.services.providers;
+        if (!providers) {
+          throw apiError("UNSUPPORTED", `host api not available: ${api}`);
+        }
+        // The row's endpoint receives the conversation and the key, so it is an
+        // outbound channel like pi.net.fetch: the same allowlist and grant.
+        if (api === "providers.setBaseUrl") this.assertEgress(loaded, value as string, api);
+        if (api === "providers.setCredential") {
+          await providers.setCredential(pluginId, { providerId, apiKey: value as string });
+        } else if (api === "providers.clearCredential") {
+          await providers.clearCredential(pluginId, { providerId });
+        } else {
+          await providers.setBaseUrl(pluginId, { providerId, baseUrl: value as string });
+        }
+        this.services.audit?.({ pluginId, api, ok: true, providerId, ts: Date.now() });
+        return { ok: true };
+      }
       case "agent.complete": {
         return this.runAgentComplete(loaded, (args[0] ?? {}) as PluginCompleteInput);
       }
@@ -3962,6 +4005,26 @@ export class PluginRuntime {
       domains: this.netDomains(loaded),
       anyHost: loaded.permissions.has("net.anyHost"),
     };
+  }
+
+  /**
+   * Whether a plugin-owned provider row may send a model request to `url`
+   * now (ADR 0319). A row whose manifest declares its endpoint keeps ADR
+   * 0259's behaviour. An endpoint the plugin set at run time answers to the
+   * plugin's current egress decision on every launch, so removing a host
+   * from `net.domains` or revoking `net.anyHost` stops it too. A plugin that
+   * is not loaded has its rows disabled by host-core, so it is not asked.
+   */
+  ownedProviderEndpointAllowed(pluginId: string, providerId: string, url: string | undefined): boolean {
+    const loaded = this.loaded.get(pluginId);
+    if (!loaded) return true;
+    const prefix = `plugin:${pluginId}:`;
+    const declaredId = providerId.startsWith(prefix) ? providerId.slice(prefix.length) : "";
+    const declared = (loaded.manifest.contributes?.providers ?? []).find(
+      (provider) => provider.id === declaredId,
+    );
+    if (declared?.baseUrl) return true;
+    return typeof url === "string" && isNetUrlAllowedWithGrant(url, this.netEgressGrant(loaded));
   }
 
   /**

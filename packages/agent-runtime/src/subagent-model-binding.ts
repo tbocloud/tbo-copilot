@@ -97,6 +97,7 @@ export function subagentModelBinding(opts: {
           opts.provider.headers,
         ),
         m.api,
+        opts.provider.refuseRedirects === true,
       );
       return createProviderRetryStream(
         m,

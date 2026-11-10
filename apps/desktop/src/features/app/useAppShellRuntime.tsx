@@ -661,6 +661,11 @@ export function useAppShellRuntime() {
         })
         .catch(() => undefined);
     });
+    // A plugin's sign-in sets its provider's key after startup: the model
+    // picker shows the provider as soon as it is usable, not after a restart.
+    const offProvidersChanged = api.onProvidersChanged(() => {
+      void useAppStore.getState().refreshProviders().catch(() => undefined);
+    });
     const offSessionsChanged = api.onSessionsChanged((event) => {
       const store = useAppStore.getState();
       const revealImportedProjects =
@@ -822,6 +827,7 @@ export function useAppShellRuntime() {
       offHostStatus();
       offNotificationChanged();
       offSessionsChanged();
+      offProvidersChanged();
       offNotificationActivated();
       window.removeEventListener("keydown", onKey);
     };

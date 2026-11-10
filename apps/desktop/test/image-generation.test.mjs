@@ -117,3 +117,30 @@ test("the default imagegen skill is discoverable and loads in an ordinary sessio
   assert.match(body, /Do not retry/);
   assert.equal(loadBuiltinSkillBody("../../outside"), null);
 });
+
+test("a plugin-owned image provider its plugin may no longer reach is refused before its key is read (ADR 0319)", async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pi-images-plugin-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const calls = [];
+  const host = {
+    call: async (method) => {
+      calls.push(method);
+      if (method === "settings.get") return { imageGeneration: { providerId: "plugin:demo.img:gen", modelId: "image-one" } };
+      if (method === "providers.get") return { provider: {
+        id: "plugin:demo.img:gen", enabled: true, ownerPluginId: "demo.img", authKind: "api_key",
+        models: [{ id: "image-one" }], baseUrl: "https://images.example.net",
+      } };
+      if (method === "providers.getSecret") return { value: "sk-img" };
+      throw new Error(method);
+    },
+  };
+  const tool = createImageGenerationTool({
+    dataDir,
+    getHost: () => host,
+    ownedProviderEndpointAllowed: () => false,
+  });
+  const result = await tool({ sessionId: "session", toolCallId: "call", args: { items: [{ prompt: "x" }] }, signal: new AbortController().signal });
+  assert.equal(result.ok, false);
+  assert.match(JSON.stringify(result), /PLUGIN_PERMISSION_DENIED/);
+  assert.ok(!calls.includes("providers.getSecret"), "the key is never read");
+});

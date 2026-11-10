@@ -105,7 +105,7 @@ function frappeMessage(bodyText) {
 function errorFor(status, bodyText) {
   const detail = frappeMessage(bodyText);
   const short = detail ? ` ${detail.slice(0, 300)}` : "";
-  if (status === 401) return fail("AUTH", "TBO Support did not accept the API key. Run 'TBO Support: Sign in' again.");
+  if (status === 401) return fail("AUTH", "TBO Support did not accept your sign-in. Run 'TBO Support: Sign in' again.");
   if (status === 403) return fail("FORBIDDEN", `Your TBO Support account may not read this.${short}`);
   if (status === 404) return fail("NOT_FOUND", `Not found in TBO Support.${short}`);
   if (status === 429) return fail("RATE_LIMITED", "TBO Support is rate-limiting requests. Wait a minute and try again.");
@@ -114,14 +114,20 @@ function errorFor(status, bodyText) {
   return fail("HELPDESK_ERROR", `TBO Support returned an error (HTTP ${status}).${short}`);
 }
 
+// credentials: { token } from the Microsoft sign-in (a TBO Support bearer token),
+// or { key, secret } (an API key, for a local test site).
+function authorization(credentials) {
+  if (credentials && credentials.token) return `Bearer ${credentials.token}`;
+  if (credentials && credentials.key && credentials.secret) return `token ${credentials.key}:${credentials.secret}`;
+  return null;
+}
+
 function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS }) {
-  if (!credentials || !credentials.key || !credentials.secret) {
+  const auth = authorization(credentials);
+  if (!auth) {
     throw fail("NOT_SIGNED_IN", "Not signed in to TBO Support. Run 'TBO Support: Sign in' from the command menu.");
   }
-  const headers = {
-    Accept: "application/json",
-    Authorization: `token ${credentials.key}:${credentials.secret}`,
-  };
+  const headers = { Accept: "application/json", Authorization: auth };
 
   async function get(path, params) {
     const query = new URLSearchParams();

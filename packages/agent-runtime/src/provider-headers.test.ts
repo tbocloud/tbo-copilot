@@ -8,7 +8,10 @@ import {
   runWithProviderHeaders,
   withProviderHeaders,
   withProviderHeadersFetch,
+  withRedirectsRefused,
 } from "./provider-headers.js";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 
 describe("normalizeProviderHeaders", () => {
   it("trims, drops empty rows, and treats empty as absent", () => {
@@ -213,5 +216,59 @@ describe("providerHeadersEqual", () => {
       providerHeadersEqual({ "User-Agent": "A" }, { "User-Agent": "B" }),
     ).toBe(false);
     expect(providerHeadersEqual(undefined, {})).toBe(true);
+  });
+});
+
+describe("withRedirectsRefused (a plugin-owned provider, ADR 0319)", () => {
+  it("sends every request with redirect: error, over the caller's fetch", async () => {
+    const seen: (RequestInit | undefined)[] = [];
+    const base = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      seen.push(init);
+      return new Response("ok");
+    });
+    const options = withProviderHeaders({ fetch: base as typeof fetch }, { "X-A": "1" }, "openai-completions", true);
+    await options.fetch!("https://ai.example.com/v1/chat/completions", { method: "POST", body: "{}" });
+    expect(seen[0]?.redirect).toBe("error");
+    expect(new Headers(seen[0]?.headers).get("X-A")).toBe("1");
+    // without the flag nothing changes
+    const plain = withProviderHeaders({ fetch: base as typeof fetch }, undefined, "openai-completions");
+    await plain.fetch!("https://ai.example.com/v1", {});
+    expect(seen[1]?.redirect).toBeUndefined();
+  });
+
+  it("refuses rather than sends when the adapter takes no custom fetch", () => {
+    expect(() => withRedirectsRefused({}, "google-generative-ai")).toThrow(/cannot refuse redirects/);
+  });
+
+  it("a 307 from the endpoint fails the request, and the other host receives nothing", async () => {
+    let elsewhereHits = 0;
+    const listen = (handler: Parameters<typeof createServer>[1]) =>
+      new Promise<Server>((resolve) => {
+        const server = createServer(handler);
+        server.listen(0, "127.0.0.1", () => resolve(server));
+      });
+    const elsewhere = await listen((_req, res) => {
+      elsewhereHits += 1;
+      res.end("{}");
+    });
+    const elsewhereUrl = `http://127.0.0.1:${(elsewhere.address() as AddressInfo).port}/steal`;
+    const endpoint = await listen((_req, res) => {
+      res.writeHead(307, { Location: elsewhereUrl });
+      res.end();
+    });
+    const endpointUrl = `http://127.0.0.1:${(endpoint.address() as AddressInfo).port}/v1/chat/completions`;
+    try {
+      const options = withRedirectsRefused({}, "openai-completions");
+      await expect(
+        options.fetch!(endpointUrl, { method: "POST", body: JSON.stringify({ messages: ["secret"] }) }),
+      ).rejects.toThrow();
+      expect(elsewhereHits).toBe(0);
+      // the same request without the policy does reach the other host
+      await fetch(endpointUrl, { method: "POST", body: "{}" });
+      expect(elsewhereHits).toBe(1);
+    } finally {
+      endpoint.close();
+      elsewhere.close();
+    }
   });
 });

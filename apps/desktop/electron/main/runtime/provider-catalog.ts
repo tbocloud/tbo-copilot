@@ -47,6 +47,8 @@ export type RuntimeProvider = {
   headers?: Record<string, string>;
   enabled?: boolean;
   supportsVision?: boolean;
+  /** The plugin that declared the row (ADR 0259); absent for a user row. */
+  ownerPluginId?: string;
 };
 
 export type RuntimeSession = {

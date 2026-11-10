@@ -351,6 +351,17 @@ export function createSessionLaunchRuntime({
     const storedModel = bindingForModel(provider, modelId);
     const apiStyle = vendorBinding?.apiStyle ?? provider.apiStyle;
     const baseUrl = vendorBinding?.baseUrl ?? provider.baseUrl;
+    // An endpoint a plugin set for its own row answers to that plugin's
+    // egress decision now, not only when it was set (ADR 0319).
+    if (
+      provider.ownerPluginId &&
+      !plugins.ownedProviderEndpointAllowed(provider.ownerPluginId, provider.id, baseUrl)
+    ) {
+      throw Object.assign(
+        new Error(`${provider.name}: its address is not one its plugin may reach`),
+        { errorCode: ErrorCodes.PLUGIN_PERMISSION_DENIED },
+      );
+    }
     const catalogModelConfig = vendorBinding?.modelConfig ??
       catalogModelConfigFor(modelsDevCatalog, {
         providerId: provider.id,
@@ -473,9 +484,16 @@ export function createSessionLaunchRuntime({
       // A switched-off builtin is dropped from what this prompt may delegate to.
       disabledBuiltins: await disabledBuiltinSubagents(),
     });
+    // A plugin-owned row whose endpoint its plugin may no longer reach is left
+    // out of everything a subagent can use, pinned or offered (ADR 0319).
+    const subagentProviderRows = providers.providers.filter(
+      (row) =>
+        !row.ownerPluginId ||
+        plugins.ownedProviderEndpointAllowed(row.ownerPluginId, row.id, row.baseUrl),
+    );
     const subagentBindings = await resolveSubagentProviders({
       definitions: subagentCatalog.definitions,
-      providers: providers.providers,
+      providers: subagentProviderRows,
       getSecret: async (id: string) =>
         (await runtimeState.host!.call<{ value?: string }>("providers.getSecret", { id })).value,
       resolveVendorBinding: (pinned, pinnedModelId) =>
@@ -509,7 +527,7 @@ export function createSessionLaunchRuntime({
     // extra RPC round-trip. Statically pinned entries from definitions take
     // precedence — they were resolved above with stricter diagnostics.
     const subagentModelKeys: string[] = [];
-    for (const row of providers.providers) {
+    for (const row of subagentProviderRows) {
       if (!row.enabled) continue;
       for (const binding of row.models ?? []) {
         if (!binding.availableForSubagents) continue;
@@ -575,6 +593,7 @@ export function createSessionLaunchRuntime({
           apiKey,
           ...(row.authKind ? { authKind: row.authKind } : {}),
           ...(row.apiStyle ? { apiStyle: row.apiStyle } : {}),
+          ...(row.ownerPluginId ? { refuseRedirects: true } : {}),
           ...optionalProviderHeaders(row.headers),
           supportsReasoning: caps.supportsReasoning,
           supportedThinkingLevels: [...caps.supportedThinkingLevels],
@@ -639,6 +658,8 @@ export function createSessionLaunchRuntime({
           apiKey: secret.value || "",
           authKind: provider.authKind,
           extensionAgentKey: provider.extensionAgentKey,
+          // a plugin-owned row's requests stay on the host it declared (ADR 0319)
+          ...(provider.ownerPluginId ? { refuseRedirects: true } : {}),
           apiStyle,
           ...optionalProviderHeaders(provider.headers),
           supportsReasoning: thinkingCapabilities.supportsReasoning,

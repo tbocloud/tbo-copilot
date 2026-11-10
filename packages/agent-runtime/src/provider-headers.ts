@@ -185,8 +185,45 @@ export function withProviderHeadersFetch(
     baseFetch(input, applyProviderHeadersToRequestInit(init, normalized));
 }
 
-/** Merge the override onto stream headers and wrap fetch so adapters cannot win. */
+/**
+ * Merge the override onto stream headers and wrap fetch so adapters cannot win.
+ * `refuseRedirects` (a plugin-owned row, ADR 0319) makes every request of this
+ * call refuse a redirect instead of following it.
+ */
 export function withProviderHeaders(
+  options: SimpleStreamOptions | undefined,
+  headers: Record<string, string> | undefined,
+  api?: Api,
+  refuseRedirects = false,
+): SimpleStreamOptions {
+  const merged = withHeaderOverride(options, headers, api);
+  return refuseRedirects ? withRedirectsRefused(merged, api) : merged;
+}
+
+/**
+ * Requests that answer a redirect with an error rather than follow it: a 307
+ * or 308 would otherwise resend the body (the conversation) and the key's
+ * header to whatever host the endpoint names. Adapters that accept no custom
+ * fetch cannot carry this, so such a request is refused rather than sent
+ * without it.
+ */
+export function withRedirectsRefused(
+  options: SimpleStreamOptions,
+  api?: Api,
+): SimpleStreamOptions {
+  if (!adapterAcceptsCustomFetch(api)) {
+    throw new Error(
+      `A plugin provider using the ${api} wire API cannot refuse redirects, so the request was not sent`,
+    );
+  }
+  const baseFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
+  return {
+    ...options,
+    fetch: (input, init) => baseFetch(input, { ...(init ?? {}), redirect: "error" }),
+  };
+}
+
+function withHeaderOverride(
   options: SimpleStreamOptions | undefined,
   headers: Record<string, string> | undefined,
   api?: Api,
