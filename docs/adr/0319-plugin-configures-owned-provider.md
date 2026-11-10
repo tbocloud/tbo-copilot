@@ -46,8 +46,10 @@ computer, and breaks the "sign in and use" flow.
    revokes `net.anyHost`, the row is refused at launch and left out of what
    subagents can use, pinned or offered. A row whose manifest declares its endpoint keeps ADR 0259's
    behaviour. Settings' connection test and live model discovery make the same check before they read
-   the key, and discovery sends a plugin-owned row's saved key only to the row's saved address; to try
-   another address, the dialog must be given a key.
+   the key. Discovery starts from the row's saved address: a dialog that names another address must
+   be given a key, or nothing is sent. The saved key's boundary is that address's origin (scheme, host
+   and port), not its path: discovery also asks the same-origin addresses that could serve the row and
+   follows same-origin redirects, and never carries the key to another origin.
 5. After an accepted call, Electron main tells the renderer
    (`providersChanged`), which refreshes its provider list: the model picker
    offers the provider as soon as the sign-in completes. A refused call sends
