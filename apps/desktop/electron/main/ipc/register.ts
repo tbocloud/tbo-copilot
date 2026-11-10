@@ -297,6 +297,8 @@ export function registerIpcHandlers(dependencies: RegisterIpcDependencies) {
     enrichProviderList,
     bindingForModel,
     onProviderInvalidated: (providerId) => liveCallService?.invalidateProvider(providerId),
+    ownedProviderEndpointAllowed: (pluginId, providerId, url) =>
+      plugins.ownedProviderEndpointAllowed(pluginId, providerId, url),
   });
   const loadComposerTemplatesCached = createComposerTemplateLoader(logger);
   const composerCommandService = registerComposerIpc({
