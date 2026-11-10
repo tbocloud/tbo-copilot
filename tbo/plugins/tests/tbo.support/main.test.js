@@ -495,6 +495,19 @@ test("sign-out says so when TBO Support could not be reached", async () => {
   await signInMicrosoft(); // signed in again for the tests below
 });
 
+test("sign-out still cleans up when the saved sign-in cannot be read, and says TBO Support was not told", async () => {
+  const signOutsBefore = hub.calls.filter((c) => c.path === "tbo_desktop.api.sign_out").length;
+  storeHooks.loadSessionFailures = 1;
+  const res = await plugin.onPanelInvoke("tbo-support.sign-out");
+  assert.equal(res.ok, true);
+  assert.equal(res.signedIn, false);
+  assert.match(res.error, /could not be read/);
+  assert.equal(sessions.has(HOST), false);
+  assert.deepEqual(providerCalls.at(-1), ["clearCredential", "tbo-ai"]);
+  assert.equal(hub.calls.filter((c) => c.path === "tbo_desktop.api.sign_out").length, signOutsBefore);
+  await signInMicrosoft(); // signed in again for the tests below
+});
+
 test("the TBO AI gateway is never accepted as the TBO Support address", async () => {
   settings = { siteUrl: "https://copilot-gateway.tbocloud.in" };
   const state = await plugin.onPanelInvoke("tbo-support.state");

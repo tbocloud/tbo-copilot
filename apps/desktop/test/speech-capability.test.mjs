@@ -101,3 +101,54 @@ test("speech-service rejects a protocol that cannot transcribe", async () => {
     (error) => error.errorCode === "SPEECH_PROTOCOL_UNSUPPORTED",
   );
 });
+
+test("a plugin-owned speech provider: only a reachable endpoint, and no redirects (ADR 0319)", async (t) => {
+  const { createServer } = await import("node:http");
+  const { createSpeechService } = await import("../electron/main/services/speech-service.ts");
+  const dataDir = mkdtempSync(join(tmpdir(), "pi-speech-plugin-"));
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  let elsewhereHits = 0;
+  const listen = (handler) => new Promise((resolve) => {
+    const server = createServer(handler);
+    server.listen(0, "127.0.0.1", () => resolve(server));
+  });
+  const elsewhere = await listen((_req, res) => { elsewhereHits += 1; res.end("audio"); });
+  const endpoint = await listen((_req, res) => {
+    res.writeHead(307, { Location: `http://127.0.0.1:${elsewhere.address().port}/steal` });
+    res.end();
+  });
+  t.after(() => { endpoint.close(); elsewhere.close(); });
+  const host = {
+    call: async (method) => {
+      if (method === "settings.get") {
+        return { speech: { synthesize: { providerId: "plugin:demo.voice:tts", modelId: "tts-1", protocol: "openai_audio" } } };
+      }
+      if (method === "providers.get") {
+        return { provider: {
+          id: "plugin:demo.voice:tts", enabled: true, ownerPluginId: "demo.voice",
+          baseUrl: `http://127.0.0.1:${endpoint.address().port}/v1`,
+        } };
+      }
+      if (method === "providers.getSecret") return { value: "sk-voice" };
+      if (method === "session.getScratchPath") return { path: join(dataDir, "scratch", "sess") };
+      throw new Error(method);
+    },
+  };
+  let reachable = false;
+  const speech = createSpeechService({
+    dataDir,
+    getHost: () => host,
+    plugins: {
+      listSpeechAdapters: () => [], getSpeechAdapter: () => undefined, runSpeechAdapter: async () => ({}),
+      ownedProviderEndpointAllowed: () => reachable,
+    },
+    logger: { app() {} },
+  });
+  await assert.rejects(
+    () => speech.synthesize({ sessionId: "sess", text: "hello" }),
+    (error) => error.errorCode === "PLUGIN_PERMISSION_DENIED",
+  );
+  reachable = true;
+  await assert.rejects(() => speech.synthesize({ sessionId: "sess", text: "hello" }));
+  assert.equal(elsewhereHits, 0, "the redirect was not followed");
+});

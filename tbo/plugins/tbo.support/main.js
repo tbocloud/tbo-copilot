@@ -392,7 +392,13 @@ async function signOut() {
   pending = null;
   return exclusive(async () => {
     const key = keyOf(site);
-    const session = await store.loadSession(key);
+    // A sign-in this computer cannot read is still cleaned up below; only
+    // TBO Support cannot be told, since its token was in that sign-in.
+    let readFailed = false;
+    const session = await store.loadSession(key).catch(() => {
+      readFailed = true;
+      return null;
+    });
     const reached = session
       ? await desktop.signOut({ request, siteUrl: site, computerToken: session.computerToken })
       : true;
@@ -403,16 +409,23 @@ async function signOut() {
     } catch {
       throw fail(
         "SECRET_STORE",
-        "Signed out of TBO Support, but this computer could not delete the saved sign-in. Choose Sign out again.",
+        readFailed
+          ? "This computer could not read or delete the saved sign-in, so TBO Support was not told. Choose Sign out again."
+          : "Signed out of TBO Support, but this computer could not delete the saved sign-in. Choose Sign out again.",
       );
     }
     const done = { site, local: isLoopback(hostOf(site)), signedIn: false };
     // TBO Support ends the sign-in (and removes the TBO AI key on the gateway)
-    // only when it hears of it: say so when it could not be reached
-    if (!reached) done.error = NOT_REACHED_ON_SIGN_OUT;
+    // only when it hears of it: say so when it could not be told
+    if (readFailed) done.error = NOT_READ_ON_SIGN_OUT;
+    else if (!reached) done.error = NOT_REACHED_ON_SIGN_OUT;
     return done;
   });
 }
+
+const NOT_READ_ON_SIGN_OUT =
+  "Signed out on this computer, but its saved sign-in could not be read, so TBO Support was not told. A System " +
+  "Manager can end this computer's sign-in there now (TBO Desktop Sign-in); otherwise it ends when it runs out.";
 
 const NOT_REACHED_ON_SIGN_OUT =
   "Signed out on this computer, but TBO Support could not be reached. A System Manager can end this " +

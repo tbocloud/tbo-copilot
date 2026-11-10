@@ -543,6 +543,9 @@ export function createSidecarRuntime({
   s.setLocalTool("GenerateImages", createImageGenerationTool({
     dataDir,
     getHost: () => runtimeState.host,
+    ownedProviderEndpointAllowed: (provider) =>
+      !provider.ownerPluginId ||
+      plugins.ownedProviderEndpointAllowed(provider.ownerPluginId, provider.id, provider.baseUrl),
     resolveAuth: providerId => vendorOAuth.resolveAuth(providerId),
     resolveImageModel: async (provider, modelId) => {
       await modelsDevCatalog.ensureLoaded();

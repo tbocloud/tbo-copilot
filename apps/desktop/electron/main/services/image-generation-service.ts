@@ -30,6 +30,11 @@ export function createImageGenerationTool(options: {
   allowFakeIp?: () => boolean;
   resolveAuth?: VendorOAuth["resolveAuth"];
   resolveImageModel?: (provider: ProviderPublic, modelId: string) => Promise<ImageModel<ImageApi> | undefined>;
+  /**
+   * Whether a plugin-owned row's endpoint is one its plugin may reach now
+   * (ADR 0319). Absent: no plugin rows are checked.
+   */
+  ownedProviderEndpointAllowed?: (provider: ProviderPublic) => boolean;
 }): LocalToolHandler {
   return async ({ sessionId, args, signal }) => {
     imageGenerationPrompts(args);
@@ -53,6 +58,13 @@ export function createImageGenerationTool(options: {
       return failure(
         "IMAGE_MODEL_UNAVAILABLE",
         "The configured image model is unavailable. Update Settings > Models > Image generation model.",
+      );
+    }
+    // The prompt and the key go to this endpoint (requests already refuse redirects).
+    if (provider.ownerPluginId && options.ownedProviderEndpointAllowed && !options.ownedProviderEndpointAllowed(provider)) {
+      return failure(
+        "PLUGIN_PERMISSION_DENIED",
+        "The configured image provider's address is not one its plugin may reach.",
       );
     }
     const { value } = provider.authKind === "oauth" || provider.authKind === "none"

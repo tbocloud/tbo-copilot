@@ -36,6 +36,9 @@ const AUDIO_EXT_MIME: Record<string, string> = {
   ".webm": "audio/webm",
 };
 
+/** A fetch whose requests fail on a redirect instead of following it. */
+const refuseRedirectsFetch: typeof fetch = (input, init) => fetch(input, { ...(init ?? {}), redirect: "error" });
+
 function fail(code: string, message: string): never {
   throw Object.assign(new Error(message), { errorCode: code });
 }
@@ -106,17 +109,25 @@ export function createSpeechService(options: {
 
   const resolveEndpoint = async (binding: SpeechBinding): Promise<SpeechEndpoint & { providerId: string }> => {
     const host = hostOrThrow();
-    const result = await host.call<{ provider?: { id: string; baseUrl?: string; enabled?: boolean } }>(
-      "providers.get",
-      { id: binding.providerId },
-    );
+    const result = await host.call<{
+      provider?: { id: string; baseUrl?: string; enabled?: boolean; ownerPluginId?: string };
+    }>("providers.get", { id: binding.providerId });
     const provider = result.provider;
     if (!provider || provider.enabled === false) fail(ErrorCodes.NOT_FOUND, "speech provider is missing");
+    // A plugin-owned row (ADR 0319): only an endpoint its plugin may reach now,
+    // and its requests refuse redirects, as for chat models.
+    if (
+      provider.ownerPluginId &&
+      !plugins.ownedProviderEndpointAllowed(provider.ownerPluginId, provider.id, provider.baseUrl)
+    ) {
+      fail(ErrorCodes.PLUGIN_PERMISSION_DENIED, "the speech provider's address is not one its plugin may reach");
+    }
     const secret = await host.call<{ value?: string }>("providers.getSecret", { id: provider.id });
     return {
       providerId: provider.id,
       baseUrl: (provider.baseUrl || "").replace(/\/+$/, ""),
       apiKey: secret.value,
+      ...(provider.ownerPluginId ? { fetchImpl: refuseRedirectsFetch } : {}),
     };
   };
 
@@ -187,6 +198,7 @@ export function createSpeechService(options: {
       return executeSpeechHttp(call, {
         apiKey: endpoint.apiKey,
         audio: job.audio,
+        ...(endpoint.fetchImpl ? { fetchImpl: endpoint.fetchImpl } : {}),
       });
     }
     if (!endpoint.baseUrl) fail(ErrorCodes.INVALID_ARGUMENT, "speech provider has no base URL");

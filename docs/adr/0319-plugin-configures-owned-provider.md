@@ -73,7 +73,9 @@ computer, and breaks the "sign in and use" flow.
   compaction). A 307 or 308 would otherwise resend the conversation and the
   key to whatever host the endpoint names; with the policy it fails instead.
   An adapter that accepts no custom fetch cannot carry it, so such a request
-  is refused rather than sent.
+  is refused rather than sent. Image generation and speech apply the same
+  endpoint check to a plugin-owned provider; image requests already refuse
+  redirects, and a plugin-owned speech provider's requests now do too.
 - Follow-ups, runtime-wide and not specific to plugins, are left for later: a
   launch that reads a row's endpoint and key as one snapshot, and
   invalidating a running turn's credential when it changes.
