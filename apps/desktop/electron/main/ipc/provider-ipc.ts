@@ -55,6 +55,8 @@ type RuntimeProvider = {
   headers?: Record<string, string>;
   enabled?: boolean;
   supportsVision?: boolean;
+  /** Set on a plugin-owned row (ADR 0319). */
+  ownerPluginId?: string;
 };
 
 export type ProviderIpcDependencies = {
@@ -91,6 +93,8 @@ export type ProviderIpcDependencies = {
 };
 
 const PLUGIN_ENDPOINT_REFUSED = "This provider's address is not one its plugin may reach.";
+const PLUGIN_KEY_ELSEWHERE_REFUSED =
+  "This provider's saved key is only sent to its saved address; enter a key to try another one.";
 
 /** Register provider catalog, model discovery, OAuth and secret channels. */
 export function registerProviderIpc({
@@ -619,8 +623,14 @@ export function registerProviderIpc({
       }
 
       // A plugin-owned row (ADR 0319): live discovery sends its key, so only to
-      // an endpoint its plugin may reach now. Cached lists stay available.
-      const endpointRefused = pluginEndpointRefused(provider, baseUrl);
+      // an endpoint its plugin may reach now, and its saved key only to its
+      // saved address (a declared address passes the plugin check whatever the
+      // caller names). Cached lists stay available.
+      const savedKeyElsewhere =
+        Boolean(provider?.ownerPluginId) &&
+        !req.apiKey &&
+        baseUrl.replace(/\/+$/, "") !== (provider?.baseUrl ?? "").trim().replace(/\/+$/, "");
+      const endpointRefused = savedKeyElsewhere || pluginEndpointRefused(provider, baseUrl);
       // Dialog edits can omit the key to reuse the stored secret; the raw key
       // never travels back to the renderer either way.
       let apiKey = req.apiKey ?? "";
@@ -643,7 +653,11 @@ export function registerProviderIpc({
         them in order. Whatever answers becomes the effective base URL the row is
         actually ran — automatic, but never hidden.
       */
-      let discoveryError: string | undefined = endpointRefused ? PLUGIN_ENDPOINT_REFUSED : undefined;
+      let discoveryError: string | undefined = savedKeyElsewhere
+        ? PLUGIN_KEY_ELSEWHERE_REFUSED
+        : endpointRefused
+          ? PLUGIN_ENDPOINT_REFUSED
+          : undefined;
       let resolution: {
         effectiveBaseUrl?: string;
         discoveryStyle?: string;

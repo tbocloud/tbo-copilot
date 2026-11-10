@@ -45,7 +45,9 @@ computer, and breaks the "sign in and use" flow.
    after a plugin update removes the host from `net.domains`, or the user
    revokes `net.anyHost`, the row is refused at launch and left out of what
    subagents can use, pinned or offered. A row whose manifest declares its endpoint keeps ADR 0259's
-   behaviour.
+   behaviour. Settings' connection test and live model discovery make the same check before they read
+   the key, and discovery sends a plugin-owned row's saved key only to the row's saved address; to try
+   another address, the dialog must be given a key.
 5. After an accepted call, Electron main tells the renderer
    (`providersChanged`), which refreshes its provider list: the model picker
    offers the provider as soon as the sign-in completes. A refused call sends

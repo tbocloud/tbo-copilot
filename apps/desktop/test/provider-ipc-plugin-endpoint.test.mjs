@@ -22,10 +22,11 @@ const row = {
 
 test("a plugin-owned row whose endpoint its plugin may no longer reach is never probed with its key", async (t) => {
   const calls = [];
-  let fetches = 0;
+  const sent = []; // [url, authorization] of each request the sweep made
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => {
-    fetches += 1;
+  globalThis.fetch = async (input, init) => {
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    sent.push([String(input instanceof Request ? input.url : input), headers.get("authorization") ?? ""]);
     return new Response(JSON.stringify({ data: [{ id: "tbo-default" }] }), {
       headers: { "content-type": "application/json" },
     });
@@ -38,6 +39,7 @@ test("a plugin-owned row whose endpoint its plugin may no longer reach is never 
   const runtime = createProviderCatalogRuntime({ getHost: () => null, modelsDevCatalog: catalog });
   const handlers = new Map();
   let reachable = false;
+  const asked = [];
   registerProviderIpc({
     registrar: { handle: (channel, handler) => handlers.set(channel, handler) },
     getHost: () => ({ call: async (method) => {
@@ -57,7 +59,7 @@ test("a plugin-owned row whose endpoint its plugin may no longer reach is never 
     ownedProviderEndpointAllowed: (pluginId, providerId, url) => {
       assert.equal(pluginId, "demo.signin");
       assert.equal(providerId, row.id);
-      assert.equal(url, row.baseUrl);
+      asked.push(url);
       return reachable;
     },
   });
@@ -70,18 +72,33 @@ test("a plugin-owned row whose endpoint its plugin may no longer reach is never 
   const listed = await listModels({ providerId: row.id, source: "refresh" });
   assert.match(listed.error, /not one its plugin may reach/);
   assert.ok(listed.models.length > 0, "the configured model stays listed");
-  assert.equal(fetches, 0, "no request went to the endpoint");
+  assert.deepEqual(sent, [], "no request went to the endpoint");
   assert.ok(!calls.includes("providers.getSecret"), "the key was never read");
+  assert.deepEqual(asked, [row.baseUrl, row.baseUrl], "both asked about the saved address");
 
   // cached lists stay available without asking
   const cached = await listModels({ providerId: row.id, source: "cache" });
   assert.ok(Array.isArray(cached.models));
 
-  // reachable again: both send their request with the key
+  // reachable, but the caller names another address: the saved key stays home
   reachable = true;
+  const elsewhere = "https://elsewhere.example.net/v1";
+  const moved = await listModels({ providerId: row.id, source: "refresh", baseUrl: `${elsewhere}/` });
+  assert.match(moved.error, /only sent to its saved address/);
+  assert.deepEqual(sent, [], "nothing went to the other address");
+  assert.ok(!calls.includes("providers.getSecret"), "the saved key was not read for it");
+
+  // a key typed in the dialog may go there (the plugin check still applies)
+  await listModels({ providerId: row.id, source: "refresh", baseUrl: elsewhere, apiKey: "sk-typed" });
+  assert.ok(sent.length > 0 && sent.every(([url, auth]) => url.startsWith("https://elsewhere.example.net/") && auth === "Bearer sk-typed"), JSON.stringify(sent));
+  assert.equal(asked.at(-1), elsewhere);
+  assert.ok(!calls.includes("providers.getSecret"));
+
+  // reachable at the saved address (trailing slash aside): both send their request with the saved key
+  sent.length = 0;
   assert.equal((await testConnection(row.id)).ok, true);
-  await listModels({ providerId: row.id, source: "refresh" });
-  assert.ok(fetches >= 2);
+  await listModels({ providerId: row.id, source: "refresh", baseUrl: `${row.baseUrl}/` });
+  assert.ok(sent.some(([url, auth]) => url.startsWith(row.baseUrl) && auth === "Bearer sk-person"), JSON.stringify(sent));
   assert.ok(calls.includes("providers.getSecret"));
 });
 
