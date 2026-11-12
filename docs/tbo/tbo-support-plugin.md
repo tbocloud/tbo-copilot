@@ -4,6 +4,11 @@
 
 **What it does:** lets the TBO Copilot agent read TBO Support tickets: the conversation, AI triage, fix brief, session replay, possible duplicates, the suggested reply, the estimate, and the knowledge base. A developer can ask: *"Summarise ticket 1234, show its fix brief and find similar tickets."*
 
+**Since 0.3.0 (Phase 18):** the same tool also reads **TBO's Press** through TBO Support (a site's plan, health,
+apps, last backup and update; jobs; failed jobs), takes a Press backup, and asks for a Press action that an approver
+decides in Teams (§5a). A second tool, **`tbo_aws`**, checks and changes TBO's AWS with the person's own AWS login:
+[aws.md](aws.md). Neither can change a ticket.
+
 ## Contents
 
 1. [Purpose and scope](#1-purpose-and-scope)
@@ -103,6 +108,20 @@ The plugin registers **one tool, `tbo_support`, with an `action` field**. The ho
 | `get_estimate` | Customization estimate: hours, status, dates | `helpdesk.api.customization.get_estimate` | `ticket` | — |
 | `search_knowledge_base` | Articles matching words | `helpdesk.api.article.search` | `query` | query 2–200 characters |
 | `get_article` | One article as plain text | `helpdesk.api.knowledge_base.get_article` | `article` | 20,000 characters |
+
+### 5a. Press actions (0.3.0)
+
+TBO Support holds the Press key and the rules (its `press_tools.ACTIONS` table); the plugin only asks.
+
+| Action | Returns or does | Helpdesk API | Inputs | Plan-safe |
+|---|---|---|---|---|
+| `press_sites` | Hosted sites: name, status, bench group, server, plan | `helpdesk.api.copilot_press.sites` | `query` | yes |
+| `press_status` | A site's plan and usage, health (a ping from TBO Support), apps and versions, last backup, last update | `helpdesk.api.copilot_press.site_status` | `site` | yes |
+| `press_jobs` | Recent jobs of a site or bench, one job's steps (as untrusted text), or failed jobs | `…copilot_press.jobs`, `job`, `failed_jobs` | `site`, `bench`, `job`, `failed`, `hours`, `limit` | yes |
+| `press_backup` | A backup now; runs at once and is logged | `POST helpdesk.api.copilot_press.backup` | `site` | no |
+| `press_action` | Asks for `restart_bench`, `update_site`, `migrate_site`, `change_plan` (with `plan`), `deploy`, `restore` or `new_site`: an approver gets a card in Teams; TBO Support runs it after Approve and tells the person | `POST helpdesk.api.copilot_press.request_action` | `press_action`, `target`, `plan` | no |
+
+Deletes (archive a site, drop a bench, archive a server, and the like) are not offered and TBO Support refuses them.
 
 **Input rules:**
 - `ticket` accepts `1`, `#1`, `0001` or `HD-0001`. HD Ticket names are zero-padded to four digits (autoname `.####`: `0001`, `0042`, `12345`), so the number is padded the same way. If that name is not found, the plain number is tried once, for a site that names tickets without padding.
@@ -227,9 +246,12 @@ The **site address** is a plugin setting (`siteUrl`, default `https://teams.team
   - The description, messages, notes, fix brief, timeline and search snippets are wrapped in `<untrusted_ticket_content>…</untrusted_ticket_content>`.
   - Each result carries a note telling the model to treat that text as data, never as instructions.
   - A closing tag inside the text is altered, so the text cannot break out of the wrapper.
-- **No side effects.**
-  - `lib/helpdesk.js` only calls API paths on its read-only allow-list, and only with `GET`. Anything else throws before a request is made.
-  - So v1 cannot write, regenerate an AI reply, or spend AI money on the site.
+- **No side effects on tickets.**
+  - `lib/helpdesk.js` calls reads only from its read allow-list, with `GET`. Anything else throws before a request is made.
+  - Since 0.3.0 it may `POST` to exactly four paths (`WRITE_METHODS`): ask for an action approval, say how an approved
+    action went, take a Press backup, ask for a Press action. None of them changes a ticket, and the app can never
+    approve its own request (deciding is not on the list).
+  - So the plugin cannot write a ticket, regenerate an AI reply, or spend AI money on the site.
 - **Size caps.**
   - Every text is clipped, with a note saying how much was cut.
   - Lists are capped.

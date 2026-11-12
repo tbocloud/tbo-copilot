@@ -118,3 +118,30 @@ test("a Microsoft sign-in's token is sent as a bearer token", async () => {
   assert.equal(calls[0].headers.Authorization, "Bearer bearer-1");
   assert.throws(() => createClient({ siteUrl: SITE, credentials: {}, request }), { code: "NOT_SIGNED_IN" });
 });
+
+test("post sends JSON with the sign-in, and only to the four listed paths", async () => {
+  const { request, calls } = fakeRequest([{ status: 200, headers: {}, bodyText: '{"message":{"name":"TBO-ACT-2026-00001","status":"Pending"}}' }]);
+  const client = createClient({ siteUrl: SITE, credentials: { token: "tok" }, request });
+  const out = await client.post("helpdesk.api.copilot_actions.request_action_approval", { kind: "AWS", payload: { command: "aws ec2 start-instances" } });
+  assert.equal(out.status, "Pending");
+  assert.equal(calls[0].method, "POST");
+  assert.equal(calls[0].url, `${SITE}/api/method/helpdesk.api.copilot_actions.request_action_approval`);
+  assert.equal(calls[0].headers.Authorization, "Bearer tok");
+  assert.equal(calls[0].headers["Content-Type"], "application/json");
+  assert.deepEqual(JSON.parse(calls[0].body), { kind: "AWS", payload: { command: "aws ec2 start-instances" } });
+  for (const blocked of ["frappe.client.delete", "frappe.client.set_value", "helpdesk.api.copilot_actions.decide_action", "helpdesk.api.copilot_press.site_status"]) {
+    await assert.rejects(client.post(blocked, {}), { code: "NOT_ALLOWED" }, blocked);
+  }
+  assert.equal(calls.length, 1);
+});
+
+test("the write list never lets the app approve its own request", () => {
+  const { WRITE_METHODS, READ_METHODS } = require("../../tbo.support/lib/helpdesk");
+  assert.deepEqual([...WRITE_METHODS].sort(), [
+    "helpdesk.api.copilot_actions.mark_action_executed",
+    "helpdesk.api.copilot_actions.request_action_approval",
+    "helpdesk.api.copilot_press.backup",
+    "helpdesk.api.copilot_press.request_action",
+  ]);
+  for (const p of WRITE_METHODS) assert.ok(!READ_METHODS.has(p), p);
+});

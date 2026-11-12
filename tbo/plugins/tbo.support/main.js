@@ -1,10 +1,12 @@
 "use strict";
 
-// TBO Support plugin: the read-only tbo_support tool, the TBO AI provider and
-// the sign-in panel. People sign in with their Microsoft account through TBO
-// Support (TBO Copilot Phase 17); TBO Support then gives this computer a TBO
-// Support token and the person's TBO AI key, so nobody types a key. A local test
-// site can still use an API key. See docs/tbo/tbo-support-plugin.md.
+// TBO Support plugin: the tbo_support tool (TBO Support and TBO's Press), the
+// tbo_aws tool (TBO's AWS with the person's own AWS login, Phase 18; lib/aws.js),
+// the TBO AI provider and the sign-in panel. People sign in with their Microsoft
+// account through TBO Support (TBO Copilot Phase 17); TBO Support then gives this
+// computer a TBO Support token and the person's TBO AI key, so nobody types a
+// key. A local test site can still use an API key. See
+// docs/tbo/tbo-support-plugin.md and docs/tbo/aws.md.
 //
 // Three rules keep the sign-in consistent when things overlap:
 // - every sign-out (and an API-key sign-in) moves `epoch` on, and a renewal or a
@@ -19,6 +21,7 @@ const { createClient, normalizeSite, isLoopback } = require("./lib/helpdesk");
 const { TOOL, runAction } = require("./lib/actions");
 const { createStore } = require("./lib/credentials");
 const desktop = require("./lib/desktop");
+const { AWS_TOOL, createAws } = require("./lib/aws");
 
 const DEFAULT_SITE = "https://teams.teambackoffice.com";
 const AI_PROVIDER = "tbo-ai";
@@ -37,6 +40,7 @@ const COMMANDS = {
 };
 
 let store = null;
+let aws = null;
 let timer = null;
 let startupTimer = null;
 let pending = null; // a Microsoft sign-in waiting for Allow in the browser
@@ -512,6 +516,7 @@ function onSettingsChanged() {
   epoch += 1;
   if (pending) pending.cancelled = true;
   pending = null;
+  if (aws) aws.stop(); // a new AWS profile or region starts a new AWS server
   syncSite().catch(() => {});
 }
 
@@ -529,6 +534,20 @@ async function onLoad() {
       const ticket = args && args.ticket ? ` ticket ${args.ticket}` : "";
       if (ctx && ctx.log) ctx.log(`tbo_support ${action}${ticket}`);
       return runSignedIn(args);
+    },
+  });
+
+  aws = createAws({
+    getSettings: () => pi.plugin.getSettings(),
+    getDataPath: () => pi.plugin.getDataPath(),
+    // a change asks TBO Support for its approval, as the signed-in person
+    hub: async () => (await signedInClient()).client,
+  });
+  await pi.agent.registerTool({
+    ...AWS_TOOL,
+    execute: async (args, ctx) => {
+      if (ctx && ctx.log) ctx.log(`tbo_aws ${args && args.action}`);
+      return aws.run(args);
     },
   });
 
@@ -594,6 +613,9 @@ async function onUnload() {
   pending = null;
   if (pi.events && pi.events.off) pi.events.off(SETTINGS_EVENT, onSettingsChanged);
   await pi.agent.unregisterTool(TOOL.name).catch(() => {});
+  await pi.agent.unregisterTool(AWS_TOOL.name).catch(() => {});
+  if (aws) aws.stop();
+  aws = null;
   for (const id of Object.values(COMMANDS)) {
     await pi.commands.unregister(id).catch(() => {});
   }
