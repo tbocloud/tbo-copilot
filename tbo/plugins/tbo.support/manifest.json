@@ -3,7 +3,7 @@
   "id": "tbo.support",
   "name": "TBO Support",
   "version": "0.3.0",
-  "description": "Signs TBO Copilot in with your Microsoft account through TBO Support, gives it TBO AI, lets the agent read TBO Support tickets and TBO's Press, and checks TBO's AWS with your own AWS login. Press actions and AWS changes wait for an approver in Teams; deletes are never possible.",
+  "description": "Signs TBO Copilot in with your Microsoft account through TBO Support, gives it TBO AI, lets the agent read TBO Support tickets and TBO's Press, and checks TBO's AWS with your own AWS login. Press actions and AWS changes wait for an approver in Teams; Press deletes are never offered, and AWS delete and terminate operations are blocked.",
   "author": "Team Back Office",
   "main": "main.js",
   "ui": {
@@ -238,7 +238,7 @@
       {
         "key": "awsAllowChanges",
         "title": "Allow AWS changes",
-        "description": "Off: the AWS tool only reads. On: it may ask for a change, which still needs an approver in Teams for every command. Deletes are never possible.",
+        "description": "Off: the AWS tool only reads. On: it may ask for a change, which still needs an approver in Teams for every command. Delete and terminate operations are always blocked.",
         "type": "boolean",
         "default": false
       },

@@ -5,7 +5,7 @@ Signs TBO Copilot in with your **Microsoft** work account through TBO Support, g
 It also reads **TBO's Press** (a site's plan, health, apps, last backup), takes a Press backup, and asks for Press
 actions such as a bench restart, which an approver decides in Teams. And the **`tbo_aws`** tool checks TBO's AWS with
 your own AWS login; a change needs **Allow AWS changes** in this plugin's settings and an approver in Teams for every
-command, and deletes are never possible. Set-up: [`docs/tbo/aws.md`](../../../docs/tbo/aws.md).
+command, and delete and terminate operations are blocked. Set-up: [`docs/tbo/aws.md`](../../../docs/tbo/aws.md).
 
 Design: [`docs/tbo/tbo-support-plugin.md`](../../../docs/tbo/tbo-support-plugin.md).
 

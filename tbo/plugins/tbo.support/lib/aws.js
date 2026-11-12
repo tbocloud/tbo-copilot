@@ -21,6 +21,7 @@
 //   the model sees it.
 // See docs/tbo/aws.md.
 
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -30,7 +31,15 @@ const SERVER_PACKAGE = "awslabs.aws-api-mcp-server";
 const SERVER_VERSION = "1.6.0"; // pinned: a new version is a reviewed change
 const DEFAULT_REGION = "ap-south-1";
 const START_TIMEOUT_MS = 30000;
-const CALL_TIMEOUT_MS = 85000; // inside the app's 110 s per tool call
+const CALL_TIMEOUT_MS = 85000; // the most one AWS call may take; a tool call's budget may allow less
+// The app ends a plugin tool call at 110 s. Each read or change ends by this budget, a cold server
+// start included, and a change keeps RECORD_MARGIN_MS of it to record its outcome.
+const TOOL_BUDGET_MS = 100000;
+const RECORD_MARGIN_MS = 8000;
+const MIN_CALL_MS = 10000; // less than this left: an approved change is not started at all
+const MAX_DIGEST_FILES = 20000;
+const MAX_DIGEST_BYTES = 1024 * 1024 * 1024;
+const PROFILE_NAME = /^[\w.+@-]{1,64}$/;
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 const IDLE_MS = 10 * 60 * 1000;
 const MAX_COMMAND = 2000;
@@ -69,7 +78,7 @@ function redact(text) {
     .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[access key left out]")
     // in plain JSON, and in JSON that sits inside a JSON string (escaped quotes)
     .replace(
-      /(\\?"(?:SecretAccessKey|SessionToken|SecretString|SecretBinary|Password|PasswordData|PrivateKey|aws_secret_access_key|aws_session_token)\\?"\s*:\s*\\?")(?:[^"\\]|\\[^"])*(\\?")/gi,
+      /(\\?"(?:SecretAccessKey|SessionToken|SecretString|SecretBinary|Password|PasswordData|PrivateKey|Plaintext|AuthorizationToken|aws_secret_access_key|aws_session_token)\\?"\s*:\s*\\?")(?:[^"\\]|\\[^"])*(\\?")/gi,
       "$1[left out]$2",
     )
     .replace(/((?:aws_secret_access_key|aws_session_token)\s*=\s*)\S+/gi, "$1[left out]");
@@ -85,17 +94,56 @@ function words(command) {
   return out;
 }
 
+// AWS CLI global options may stand anywhere, before the service included; those with a value take
+// the next word, or are written `--name=value`.
+const GLOBAL_WITH_VALUE = new Set([
+  "--region",
+  "--output",
+  "--query",
+  "--color",
+  "--cli-read-timeout",
+  "--cli-connect-timeout",
+  "--cli-binary-format",
+  "--profile",
+  "--endpoint-url",
+  "--ca-bundle",
+]);
+const GLOBAL_FLAGS = new Set(["--debug", "--no-paginate", "--no-cli-pager", "--cli-auto-prompt", "--no-cli-auto-prompt", "--no-verify-ssl", "--no-sign-request"]);
+// Never from Copilot: another profile than the settings' (the approval names that one), another
+// endpoint, or no TLS check.
+const REFUSED_OPTIONS = new Set(["--profile", "--endpoint-url", "--ca-bundle", "--no-verify-ssl", "--no-sign-request"]);
+const SHAPE = '"command" must look like "aws <service> <operation> [options]", e.g. "aws ec2 describe-instances".';
+
 function commandArg(args) {
   const raw = args && args.command != null ? String(args.command).trim() : "";
   if (!raw) throw fail("INVALID_ARGUMENT", '"command" is needed: one AWS CLI command that starts with "aws".');
   if (raw.length > MAX_COMMAND) throw fail("INVALID_ARGUMENT", `"command" must be at most ${MAX_COMMAND} characters.`);
   if (/[\r\n`]|\$\(/.test(raw)) throw fail("INVALID_ARGUMENT", '"command" must be one line: one AWS CLI command, nothing else.');
   const parts = words(raw);
-  if (parts[0] !== "aws" || parts.length < 3) {
-    throw fail("INVALID_ARGUMENT", '"command" must look like "aws <service> <operation> [options]", e.g. "aws ec2 describe-instances".');
+  if (parts[0] !== "aws") throw fail("INVALID_ARGUMENT", SHAPE);
+  const refused = parts.find((p) => REFUSED_OPTIONS.has(p.split("=")[0]));
+  if (refused) {
+    throw fail("INVALID_ARGUMENT", `"${refused.split("=")[0]}" is not allowed: Copilot uses the AWS profile in your settings and AWS's own endpoints, with TLS checked.`);
   }
+  // The service and the operation are the first two words that are not global options or their
+  // values, so "aws --region x kms decrypt" is checked as kms decrypt.
+  const positional = [];
+  for (let i = 1; i < parts.length && positional.length < 2; i += 1) {
+    const word = parts[i];
+    if (word.startsWith("-")) {
+      const name = word.split("=")[0];
+      if (GLOBAL_WITH_VALUE.has(name)) {
+        if (!word.includes("=")) i += 1;
+        continue;
+      }
+      if (GLOBAL_FLAGS.has(name)) continue;
+      throw fail("INVALID_ARGUMENT", `"${name}" before the operation is not an AWS CLI global option. ${SHAPE}`);
+    }
+    positional.push(word);
+  }
+  if (positional.length < 2) throw fail("INVALID_ARGUMENT", SHAPE);
   // kept exactly as written: the approval is for this text, and the second call must match it
-  return { command: raw, service: parts[1].toLowerCase(), operation: parts[2].toLowerCase(), parts };
+  return { command: raw, service: positional[0].toLowerCase(), operation: positional[1].toLowerCase(), parts };
 }
 
 // --- what is never run ------------------------------------------------------------
@@ -158,8 +206,10 @@ function blockedChange(cmd) {
   if (BLOCKED_PREFIXES.some((p) => operation.startsWith(p))) return `Copilot never runs "${operation}": deletes and terminations are blocked in this version.`;
   if (service === "s3" && BLOCKED_S3.has(operation)) return `Copilot never runs "aws s3 ${operation}": it removes objects or buckets.`;
   if (parts.some((p) => p === "--delete" || p.startsWith("--delete="))) return 'Copilot never runs a command with "--delete": it removes what is not in the source.';
-  // a batch can carry a delete inside it (a DNS change batch, a batch write)
-  if (/"?Action"?\s*[:=]\s*"?DELETE\b|DeleteRequest/i.test(cmd.command)) return "Copilot never runs a change batch that deletes something.";
+  // a batch can carry a delete inside it (a DNS change batch, a batch write), as plain or escaped JSON
+  if (/\\?"?Action\\?"?\s*[:=]\s*\\?"?DELETE\b|DeleteRequest/i.test(cmd.command)) return "Copilot never runs a change batch that deletes something.";
+  // lifecycle rules expire, that is delete, objects later
+  if (service === "s3api" && operation.startsWith("put-bucket-lifecycle")) return "Copilot never sets bucket lifecycle rules: they expire (delete) objects.";
   // the approver must see the whole change in the command, not in a file
   if (/\bfileb?:\/\//i.test(cmd.command)) return 'A change must be written out in the command; "file://" hides it from the approver.';
   if (parts.some((p, i) => p === "--region" && parts[i + 1] === "*") || parts.includes("--region=*")) {
@@ -467,10 +517,49 @@ function hintFor(errorText, profile) {
     return `The AWS profile "${profile || "default"}" is not set up on this computer. Set it up with "aws configure sso" (TBO's AWS admin gives the details), or correct "AWS profile" in Settings, Plugins, TBO Support.`;
   }
   if (NO_LOGIN.test(errorText)) {
-    const who = profile ? ` --profile ${profile}` : "";
+    const who = profile && PROFILE_NAME.test(profile) ? ` --profile ${profile}` : "";
     return `Your AWS login is missing or has expired. Run "aws sso login${who}" in a terminal (or ask TBO's AWS admin for a profile), then try again.`;
   }
   return "";
+}
+
+// The local files an "aws s3 cp/sync" would upload, as one digest: the approval names the content,
+// so files changed after the approval no longer match it. Null for any other command.
+function localSource(cmd, workDir) {
+  if (cmd.service !== "s3" || !["cp", "sync"].includes(cmd.operation)) return null;
+  const opIndex = cmd.parts.findIndex((p, i) => i > 1 && p.toLowerCase() === cmd.operation);
+  for (const word of cmd.parts.slice(opIndex + 1)) {
+    if (word.startsWith("-") || /^s3:\/\//i.test(word)) continue;
+    const full = path.resolve(workDir, word);
+    if (!fs.existsSync(full)) continue;
+    return { path: word, ...digestOf(full) };
+  }
+  return null;
+}
+
+function digestOf(root) {
+  const entries = [];
+  let bytes = 0;
+  const walk = (full, rel) => {
+    const stat = fs.statSync(full);
+    if (stat.isDirectory()) {
+      for (const name of fs.readdirSync(full).sort()) walk(path.join(full, name), rel ? `${rel}/${name}` : name);
+      return;
+    }
+    if (!stat.isFile()) return;
+    bytes += stat.size;
+    if (entries.length >= MAX_DIGEST_FILES || bytes > MAX_DIGEST_BYTES) {
+      throw fail("TOO_LARGE", `The upload's source is over ${MAX_DIGEST_FILES} files or 1 GB; upload it in parts.`);
+    }
+    const sha = crypto.createHash("sha256").update(fs.readFileSync(full)).digest("hex");
+    entries.push(`${rel || path.basename(full)}\0${stat.size}\0${sha}`);
+  };
+  walk(root, "");
+  return {
+    files: entries.length,
+    bytes,
+    digest: crypto.createHash("sha256").update(entries.join("\n")).digest("hex"),
+  };
 }
 
 // One AWS tool per plugin: the read-only server is kept for ten minutes between
@@ -485,18 +574,37 @@ function createAws({
   env = process.env,
   platform = process.platform,
   home = os.homedir(),
+  budgetMs = TOOL_BUDGET_MS,
+  recordMarginMs = RECORD_MARGIN_MS,
+  minCallMs = MIN_CALL_MS,
 }) {
-  let reader = null; // { proc, key, idle }
+  let reader = null; // { key, promise, proc, idle }: one read-only server, started once
   let setupState = { state: "not run" };
 
   async function settings() {
     const s = (await getSettings()) || {};
+    const profile = String(s.awsProfile || "").trim();
     return {
-      profile: String(s.awsProfile || "").trim(),
+      profile,
+      profileProblem:
+        profile && !PROFILE_NAME.test(profile)
+          ? `The "AWS profile" setting "${clip(profile, 40)}" is not a profile name (letters, digits and . _ + @ -, at most 64). Correct it in Settings, Plugins, TBO Support.`
+          : "",
       region: String(s.awsRegion || "").trim() || DEFAULT_REGION,
       allowChanges: s.awsAllowChanges === true,
       uvPath: String(s.awsUvPath || "").trim(),
     };
+  }
+
+  // The settings a read or a change may run with.
+  async function checkedSettings() {
+    const conf = await settings();
+    if (conf.profileProblem) throw fail("INVALID_SETTING", conf.profileProblem);
+    return conf;
+  }
+
+  function left(deadline) {
+    return deadline - Date.now();
   }
 
   async function workDir() {
@@ -509,7 +617,7 @@ function createAws({
     return findUv({ env, platform, home, configured: conf.uvPath });
   }
 
-  async function startServer(conf, readOnly) {
+  async function startServer(conf, readOnly, deadline) {
     const dir = await workDir();
     let spec;
     if (launch) spec = launch({ readOnly, conf, workDir: dir });
@@ -521,7 +629,7 @@ function createAws({
     const proc = new McpProcess({ command: spec.command, args: spec.args, env: spec.env, cwd: dir, spawnFn });
     proc.start();
     try {
-      await proc.initialize();
+      await proc.initialize(Math.max(1000, Math.min(START_TIMEOUT_MS, left(deadline) - minCallMs)));
     } catch (e) {
       proc.stop();
       if (e.code === "TIMEOUT") {
@@ -532,25 +640,47 @@ function createAws({
     return proc;
   }
 
-  async function readerFor(conf) {
+  // Parallel reads share one start: the first stores its promise, the others wait for it. A server
+  // that finishes starting after its entry was replaced (new settings, unload) stops itself.
+  async function readerFor(conf, deadline) {
     const key = `${conf.profile}|${conf.region}`;
-    if (reader && (reader.key !== key || reader.proc.exited)) stopReader();
-    if (!reader) reader = { proc: await startServer(conf, true), key, idle: null };
-    clearTimeout(reader.idle);
-    reader.idle = setTimeout(stopReader, IDLE_MS);
-    if (reader.idle.unref) reader.idle.unref();
-    return reader.proc;
+    if (reader && (reader.key !== key || (reader.proc && reader.proc.exited))) stopReader();
+    if (!reader) {
+      const entry = { key, proc: null, idle: null, promise: null };
+      entry.promise = startServer(conf, true, deadline).then(
+        (proc) => {
+          if (reader !== entry) {
+            proc.stop();
+            throw fail("STALE", "The AWS settings changed while the server was starting. Try again.");
+          }
+          entry.proc = proc;
+          return proc;
+        },
+        (e) => {
+          if (reader === entry) reader = null;
+          throw e;
+        },
+      );
+      reader = entry;
+    }
+    const entry = reader;
+    const proc = await entry.promise;
+    clearTimeout(entry.idle);
+    entry.idle = setTimeout(stopReader, IDLE_MS);
+    if (entry.idle.unref) entry.idle.unref();
+    return proc;
   }
 
   function stopReader() {
     if (!reader) return;
-    clearTimeout(reader.idle);
-    reader.proc.stop();
+    const entry = reader;
     reader = null;
+    clearTimeout(entry.idle);
+    if (entry.proc) entry.proc.stop(); // one still starting stops itself when it is up
   }
 
-  async function callAws(proc, command) {
-    const results = callResults(await proc.callTool("call_aws", { cli_command: command })).map(unwrap);
+  async function callAws(proc, command, timeoutMs) {
+    const results = callResults(await proc.callTool("call_aws", { cli_command: command }, Math.min(CALL_TIMEOUT_MS, timeoutMs))).map(unwrap);
     const errors = results.filter((r) => r.error).map((r) => r.error);
     const answers = results.filter((r) => !r.error).map((r) => r.text);
     return { ok: errors.length === 0, errorText: redact(errors.join(" ")), output: answers.join("\n") };
@@ -566,9 +696,10 @@ function createAws({
       setup: setupState.state,
       setup_detail: setupState.detail,
       profile: conf.profile || "(the default AWS profile)",
+      profile_problem: conf.profileProblem || undefined,
       region: conf.region,
       changes_allowed: conf.allowChanges,
-      read_server_running: Boolean(reader && !reader.proc.exited),
+      read_server_running: Boolean(reader && reader.proc && !reader.proc.exited),
       // the only folder the AWS server may read local files from (an upload's source)
       work_folder: await workDir(),
       website_bucket: (await getSettings()).awsWebsiteBucket || "(not set)",
@@ -609,13 +740,14 @@ function createAws({
   }
 
   async function read(args) {
+    const deadline = Date.now() + budgetMs;
     const cmd = commandArg(args);
     if (secretRead(cmd)) {
       throw fail("BLOCKED", `"aws ${cmd.service} ${cmd.operation}" returns a secret, so Copilot never runs it.`);
     }
-    const conf = await settings();
-    const proc = await readerFor(conf);
-    const done = await callAws(proc, cmd.command);
+    const conf = await checkedSettings();
+    const proc = await readerFor(conf, deadline);
+    const done = await callAws(proc, cmd.command, left(deadline));
     if (!done.ok && REFUSED_AS_CHANGE.test(done.errorText)) {
       return {
         refused: true,
@@ -630,8 +762,9 @@ function createAws({
   }
 
   async function change(args) {
+    const deadline = Date.now() + budgetMs;
     const cmd = commandArg(args);
-    const conf = await settings();
+    const conf = await checkedSettings();
     if (!conf.allowChanges) {
       throw fail(
         "CHANGES_OFF",
@@ -640,15 +773,25 @@ function createAws({
     }
     const blocked = blockedChange(cmd) || (secretRead(cmd) ? "That command returns a secret." : "");
     if (blocked) throw fail("BLOCKED", blocked);
+    const local = localSource(cmd, await workDir());
     const client = await hub();
     const payload = { command: cmd.command, profile: conf.profile || "default", region: conf.region };
+    // an upload is approved for its content: changed files after the approval need a new one
+    if (local) payload.content_sha256 = local.digest;
     const approved = await client.method(HUB.approved, { kind: APPROVAL_KIND, payload });
     if (!approved) {
       const reason = args && args.reason ? String(args.reason).trim().slice(0, 300) : "";
       const asked = await client.post(HUB.request, {
         kind: APPROVAL_KIND,
         title: clip(`AWS: aws ${cmd.service} ${cmd.operation}`, 130),
-        details: [`${cmd.command}`, `profile ${payload.profile}, region ${payload.region}`, reason && `why: ${reason}`].filter(Boolean).join("\n"),
+        details: [
+          `${cmd.command}`,
+          `profile ${payload.profile}, region ${payload.region}`,
+          local && `uploads ${local.path}: ${local.files} files, ${local.bytes} bytes, sha256 ${local.digest.slice(0, 16)}…`,
+          reason && `why: ${reason}`,
+        ]
+          .filter(Boolean)
+          .join("\n"),
         payload,
         risk: "normal",
         via: "Desktop",
@@ -661,13 +804,20 @@ function createAws({
         next: "Tell the person who was asked. When they say it is approved, call change again with exactly the same command. Nothing has run.",
       };
     }
+    if (left(deadline) < minCallMs + recordMarginMs) {
+      throw fail("TIMEOUT", `Approved (${approved.name}), but too little time is left in this call to run it safely. Call change again with the same command; nothing has run.`);
+    }
     log(`tbo_aws change ${approved.name}: aws ${cmd.service} ${cmd.operation}`);
     let done;
-    const proc = await startServer(conf, false);
+    const proc = await startServer(conf, false, deadline - recordMarginMs);
     try {
-      done = await callAws(proc, cmd.command);
+      done = await callAws(proc, cmd.command, left(deadline) - recordMarginMs);
     } catch (e) {
-      done = { ok: false, errorText: redact(e.message), output: "" };
+      // No answer in time: AWS may still have done it, so the approval is spent, never run twice.
+      done =
+        e.code === "TIMEOUT"
+          ? { ok: false, errorText: "AWS did not answer in time; the change may have run. Check AWS before asking again." }
+          : { ok: false, errorText: redact(e.message), output: "" };
     } finally {
       proc.stop();
     }

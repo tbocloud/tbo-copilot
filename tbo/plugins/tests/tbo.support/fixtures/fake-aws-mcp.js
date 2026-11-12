@@ -31,6 +31,7 @@ function callAws(id, command) {
   if (READ_ONLY && !read) {
     return answer(id, [{ cli_command: command, error: "Execution of this operation is denied by security policy." }]);
   }
+  if (command.includes("hang-forever")) return; // AWS never answers
   if (command.includes("expired")) {
     return answer(id, [{ cli_command: command, error: "Error while executing the command: Token has expired and refresh failed" }]);
   }

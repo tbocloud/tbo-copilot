@@ -228,10 +228,13 @@ test("Press reads go to TBO Support's Press endpoints with the site as Press nam
   };
   assert.equal((await runAction(client, { action: "press_status", site: "acme.tbo365.cloud" }, ENV)).status, "Active");
   assert.deepEqual(calls.at(-1), ["helpdesk.api.copilot_press.site_status", { site: "acme.tbo365.cloud" }]);
-  await runAction(client, { action: "press_jobs", failed: true, hours: 6 }, ENV);
+  const failed = await runAction(client, { action: "press_jobs", failed: true, hours: 6 }, ENV);
   assert.deepEqual(calls.at(-1), ["helpdesk.api.copilot_press.failed_jobs", { hours: 6 }]);
-  await runAction(client, { action: "press_jobs", bench: "bench-0020", limit: 5 }, ENV);
+  assert.match(failed.failed_jobs, /untrusted/);
+  const jobs = await runAction(client, { action: "press_jobs", bench: "bench-0020", limit: 5 }, ENV);
   assert.deepEqual(calls.at(-1), ["helpdesk.api.copilot_press.jobs", { site: undefined, bench: "bench-0020", limit: 5 }]);
+  assert.match(jobs.jobs, /untrusted/);
+  assert.ok(jobs.note);
   const job = await runAction(client, { action: "press_jobs", job: "48213" }, ENV);
   assert.match(job.job, /untrusted/);
   assert.equal((await runAction(client, { action: "press_sites", query: "acme" }, ENV)).sites.length, 1);
@@ -252,6 +255,10 @@ test("a Press action only asks for an approval, and never one Copilot does not o
   assert.equal(asked.status, "waiting for approval");
   assert.equal(asked.approver, "approver@example.com");
   assert.deepEqual(posts[0], ["helpdesk.api.copilot_press.request_action", { action: "change_plan", target: "demo.tbo365.cloud", extra: { plan: "Pro" } }]);
+  await assert.rejects(
+    runAction(client, { action: "press_action", press_action: "change_plan", target: "demo.tbo365.cloud" }, ENV),
+    { code: "INVALID_ARGUMENT", message: /needs "plan"/ },
+  );
   for (const bad of ["archive", "delete_site", "drop", ""]) {
     await assert.rejects(runAction(client, { action: "press_action", press_action: bad, target: "demo.tbo365.cloud" }, ENV), { code: "INVALID_ARGUMENT" }, bad);
   }

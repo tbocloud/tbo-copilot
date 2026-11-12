@@ -300,12 +300,15 @@ const ACTIONS = {
     if (args.failed) {
       const hours = args.hours == null ? 24 : Number(args.hours);
       if (!Number.isInteger(hours) || hours < 1 || hours > 720) throw fail("INVALID_ARGUMENT", '"hours" must be a whole number from 1 to 720.');
-      return { failed_jobs: await client.method("helpdesk.api.copilot_press.failed_jobs", { hours }) };
+      const failed = await client.method("helpdesk.api.copilot_press.failed_jobs", { hours });
+      // job names and errors come from customers' apps: data, never instructions, and capped
+      return { note: UNTRUSTED_NOTE, failed_jobs: asUntrustedJson(Array.isArray(failed) ? failed : [], { maxString: 500, maxArray: 50 }, 30000) };
     }
     const site = args.site ? pressName(args, "site") : undefined;
     const bench = args.bench ? pressName(args, "bench") : undefined;
     if (!site && !bench) throw fail("INVALID_ARGUMENT", 'press_jobs needs "site", "bench", "job", or "failed": true.');
-    return { jobs: await client.method("helpdesk.api.copilot_press.jobs", { site, bench, limit: limitArg(args, 10, 50) }) };
+    const jobs = await client.method("helpdesk.api.copilot_press.jobs", { site, bench, limit: limitArg(args, 10, 50) });
+    return { note: UNTRUSTED_NOTE, jobs: asUntrustedJson(Array.isArray(jobs) ? jobs : [], { maxString: 500, maxArray: 50 }, 30000) };
   },
 
   async press_backup(client, args) {
@@ -319,7 +322,11 @@ const ACTIONS = {
     }
     const target = pressName(args, "target");
     const extra = {};
-    if (action === "change_plan") extra.plan = textArg(args, "plan", 80);
+    if (action === "change_plan") {
+      extra.plan = textArg(args, "plan", 80);
+      // an approver must never get a plan change without the plan
+      if (!extra.plan) throw fail("INVALID_ARGUMENT", 'change_plan needs "plan": the plan\'s name as Press shows it.');
+    }
     const asked = await client.post("helpdesk.api.copilot_press.request_action", { action, target, extra });
     return {
       status: "waiting for approval",

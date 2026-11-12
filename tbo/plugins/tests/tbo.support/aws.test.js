@@ -55,7 +55,7 @@ function fakeHub() {
   };
 }
 
-function setup(t, settings = {}) {
+function setup(t, settings = {}, options = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tbo-aws-test-"));
   const hub = fakeHub();
   const launches = [];
@@ -64,6 +64,7 @@ function setup(t, settings = {}) {
     getSettings: async () => values,
     getDataPath: async () => dataDir,
     hub: async () => hub.client,
+    ...options,
     launch: ({ readOnly, conf }) => {
       launches.push(readOnly ? "read-only" : "changes");
       return {
@@ -348,4 +349,111 @@ test("the tool's declaration lets only status and read run in Plan mode", () => 
   assert.deepEqual(AWS_TOOL.planSafeActions, ["status", "read"]);
   assert.deepEqual(AWS_TOOL.schema.properties.action.enum, ["status", "setup", "read", "change"]);
   assert.equal(AWS_TOOL.schema.additionalProperties, false);
+});
+
+
+// --- CodeRabbit's review of PR #24 ------------------------------------------------------------
+
+test("global options before the service are skipped, so the checks see the real command", () => {
+  const kms = cmd("aws --region ap-south-1 kms decrypt --ciphertext-blob x");
+  assert.deepEqual([kms.service, kms.operation], ["kms", "decrypt"]);
+  assert.ok(secretRead(kms));
+  assert.ok(blockedChange(cmd("aws --output json iam create-access-key --user-name x")));
+  assert.ok(blockedChange(cmd("aws --debug ec2 terminate-instances --instance-ids i-1")));
+  const between = cmd("aws ec2 --region ap-south-1 --query=Reservations describe-instances");
+  assert.deepEqual([between.service, between.operation], ["ec2", "describe-instances"]);
+  assert.deepEqual([cmd("aws --output=json s3 ls").service, cmd("aws --output=json s3 ls").operation], ["s3", "ls"]);
+  assert.throws(() => cmd("aws --weird ec2 describe-instances"), { code: "INVALID_ARGUMENT", message: /not an AWS CLI global option/ });
+  assert.throws(() => cmd("aws --region ap-south-1"), { code: "INVALID_ARGUMENT" });
+});
+
+test("another profile, another endpoint or no TLS check is refused anywhere in the command", () => {
+  for (const bad of [
+    "aws --profile admin ec2 terminate-instances --instance-ids i-1",
+    "aws ec2 describe-instances --profile admin",
+    "aws ec2 describe-instances --profile=admin",
+    "aws --endpoint-url=https://elsewhere.example ec2 describe-instances",
+    "aws s3 ls --no-verify-ssl",
+    "aws s3 ls --ca-bundle /tmp/x.pem",
+    "aws s3 ls s3://b --no-sign-request",
+  ]) {
+    assert.throws(() => cmd(bad), { code: "INVALID_ARGUMENT", message: /is not allowed/ }, bad);
+  }
+});
+
+test("a delete inside escaped JSON and bucket lifecycle rules are blocked", () => {
+  assert.ok(blockedChange(cmd('aws route53 change-resource-record-sets --hosted-zone-id Z1 --change-batch "{\\"Changes\\":[{\\"Action\\":\\"DELETE\\",\\"ResourceRecordSet\\":{}}]}"')));
+  assert.ok(blockedChange(cmd("aws s3api put-bucket-lifecycle-configuration --bucket b --lifecycle-configuration x")));
+  assert.equal(blockedChange(cmd('aws route53 change-resource-record-sets --hosted-zone-id Z1 --change-batch "{\\"Changes\\":[{\\"Action\\":\\"UPSERT\\"}]}"')), "");
+});
+
+test("a decrypted value and a registry token are left out of the output", () => {
+  const out = redact('{"Plaintext": "c2VjcmV0", "AuthorizationToken": "QVdTOnRva2Vu", "KeyId": "k1"}');
+  assert.doesNotMatch(out, /c2VjcmV0|QVdTOnRva2Vu/);
+  assert.match(out, /"KeyId": "k1"/);
+});
+
+test("a profile setting that is not a profile name is reported, never used or suggested", async (t) => {
+  const { aws, launches } = setup(t, { awsProfile: "bad name; rm -rf ~" });
+  const status = await aws.run({ action: "status" });
+  assert.match(status.profile_problem, /not a profile name/);
+  await assert.rejects(aws.run({ action: "read", command: "aws ec2 describe-instances" }), { code: "INVALID_SETTING" });
+  await assert.rejects(aws.run({ action: "change", command: "aws ec2 start-instances --instance-ids i-1" }), { code: "INVALID_SETTING" });
+  assert.deepEqual(launches, []);
+  assert.doesNotMatch(hintFor("Token has expired", "bad name; rm -rf ~"), /rm -rf/);
+});
+
+test("parallel reads share one read-only server", async (t) => {
+  const { aws, launches } = setup(t);
+  const results = await Promise.all([
+    aws.run({ action: "read", command: "aws ec2 describe-instances" }),
+    aws.run({ action: "read", command: "aws ec2 describe-instance-status" }),
+    aws.run({ action: "read", command: "aws ec2 describe-volumes" }),
+  ]);
+  assert.equal(results.length, 3);
+  assert.deepEqual(launches, ["read-only"]);
+});
+
+test("an approved change AWS never answers is recorded as spent, so it cannot run twice", async (t) => {
+  const { aws, hub, launches } = setup(t, {}, { budgetMs: 1500, recordMarginMs: 200, minCallMs: 300 });
+  hub.approve();
+  const started = Date.now();
+  await assert.rejects(aws.run({ action: "change", command: "aws ec2 start-instances --instance-ids i-1 hang-forever" }), {
+    code: "AWS_ERROR",
+    message: /may have run/,
+  });
+  assert.ok(Date.now() - started < 1500, "it ends inside its budget");
+  assert.deepEqual(launches, ["changes"]);
+  const executed = hub.calls.find((c) => c[1] === EXECUTED);
+  assert.equal(executed[2].ok, 0);
+  assert.match(executed[2].log, /may have run/);
+});
+
+test("with too little time left an approved change is not started at all", async (t) => {
+  const { aws, hub, launches } = setup(t, {}, { budgetMs: 100, recordMarginMs: 200, minCallMs: 300 });
+  hub.approve();
+  await assert.rejects(aws.run({ action: "change", command: "aws ec2 start-instances --instance-ids i-1" }), { code: "TIMEOUT", message: /nothing has run/ });
+  assert.deepEqual(launches, []);
+  assert.equal(hub.calls.find((c) => c[1] === EXECUTED), undefined);
+});
+
+test("an upload is approved for its content: a changed file needs a new approval", async (t) => {
+  const { aws, hub, dataDir } = setup(t);
+  const site = path.join(dataDir, "aws-workdir", "site");
+  fs.mkdirSync(path.join(site, "css"), { recursive: true });
+  fs.writeFileSync(path.join(site, "index.html"), "<h1>v2</h1>");
+  fs.writeFileSync(path.join(site, "css", "main.css"), "h1{}");
+  const command = "aws s3 cp site s3://example-bucket/ --recursive";
+  const first = await aws.run({ action: "change", command });
+  assert.equal(first.status, "waiting for approval");
+  const [lookup1, ask] = hub.calls;
+  assert.match(lookup1[2].payload.content_sha256, /^[0-9a-f]{64}$/);
+  assert.match(ask[2].details, /uploads site: 2 files, \d+ bytes, sha256 [0-9a-f]{16}/);
+  fs.writeFileSync(path.join(site, "index.html"), "<h1>v2, edited after the approval</h1>");
+  await aws.run({ action: "change", command });
+  const lookup2 = hub.calls.filter((c) => c[1] === APPROVED)[1];
+  assert.notEqual(lookup2[2].payload.content_sha256, lookup1[2].payload.content_sha256);
+  // a command with no local source carries no digest
+  await aws.run({ action: "change", command: "aws s3 cp s3://example-bucket s3://example-backup/b1/ --recursive" });
+  assert.equal(hub.calls.filter((c) => c[1] === APPROVED)[2][2].payload.content_sha256, undefined);
 });
