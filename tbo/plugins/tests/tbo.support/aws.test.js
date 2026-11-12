@@ -457,3 +457,117 @@ test("an upload is approved for its content: a changed file needs a new approval
   await aws.run({ action: "change", command: "aws s3 cp s3://example-bucket s3://example-backup/b1/ --recursive" });
   assert.equal(hub.calls.filter((c) => c[1] === APPROVED)[2][2].payload.content_sha256, undefined);
 });
+
+// --- CodeRabbit's second review of PR #24 ---------------------------------------------------------
+
+test("reads that return environment variables or user data are refused, in any form", () => {
+  for (const blocked of [
+    "aws lambda get-function-configuration --function-name app",
+    "aws lambda get-function-configuration --function-name app --query Environment.Variables.DB_PASSWORD --output text",
+    "aws lambda get-function --function-name app",
+    "aws ecs describe-task-definition --task-definition web",
+    "aws elasticbeanstalk describe-configuration-settings --application-name a --environment-name e",
+    "aws codebuild batch-get-projects --names build",
+    "aws ec2 describe-launch-template-versions --launch-template-id lt-1",
+    "aws ec2 describe-instance-attribute --instance-id i-1 --attribute userData",
+    "aws ec2 describe-instance-attribute --instance-id i-1 --attribute=userData",
+  ]) {
+    assert.ok(secretRead(cmd(blocked)), blocked);
+  }
+  assert.ok(!secretRead(cmd("aws ec2 describe-instance-attribute --instance-id i-1 --attribute instanceType")));
+  assert.ok(!secretRead(cmd("aws lambda list-functions")));
+});
+
+test("a secret-bearing read never reaches the server", async (t) => {
+  const { aws, launches } = setup(t);
+  await assert.rejects(aws.run({ action: "read", command: "aws lambda get-function-configuration --function-name app" }), { code: "BLOCKED" });
+  assert.deepEqual(launches, []);
+});
+
+test("parameters as a JSON or YAML document are refused for every command", async (t) => {
+  for (const bad of [
+    `aws ssm get-parameter --cli-input-json '{"Name":"/x/password","WithDecryption":true}'`,
+    "aws ssm get-parameters --cli-input-yaml=Names:[a]",
+    `aws ec2 start-instances --cli-input-json '{"InstanceIds":["i-1"]}'`,
+  ]) {
+    assert.throws(() => cmd(bad), { code: "INVALID_ARGUMENT", message: /write each parameter as its own option/ }, bad);
+  }
+  const { aws, hub, launches } = setup(t);
+  await assert.rejects(aws.run({ action: "change", command: `aws ec2 start-instances --cli-input-json '{"InstanceIds":["i-1"]}'` }), { code: "INVALID_ARGUMENT" });
+  assert.equal(hub.calls.length, 0);
+  assert.deepEqual(launches, []);
+});
+
+test("the approval names the region the command will run in", async (t) => {
+  assert.equal(cmd("aws --region us-east-1 ec2 start-instances --instance-ids i-1").region, "us-east-1");
+  assert.equal(cmd("aws ec2 start-instances --instance-ids i-1 --region=eu-west-1").region, "eu-west-1");
+  assert.equal(cmd("aws ec2 start-instances --instance-ids i-1").region, null);
+  assert.throws(() => cmd("aws --region us-east-1 ec2 start-instances --instance-ids i-1 --region eu-west-1"), { code: "INVALID_ARGUMENT", message: /two different regions/ });
+  const { aws, hub } = setup(t); // settings: ap-south-1
+  await aws.run({ action: "change", command: "aws --region us-east-1 ec2 start-instances --instance-ids i-1" });
+  const [lookup, ask] = hub.calls;
+  assert.equal(lookup[2].payload.region, "us-east-1");
+  assert.equal(ask[2].payload.region, "us-east-1");
+  assert.match(ask[2].details, /region us-east-1/);
+  await aws.run({ action: "change", command: "aws ec2 start-instances --instance-ids i-2" });
+  assert.equal(hub.calls.filter((c) => c[1] === APPROVED)[1][2].payload.region, "ap-south-1");
+});
+
+test("the upload's source is the first of two arguments, whatever options stand before it", async (t) => {
+  const { aws, hub, dataDir } = setup(t);
+  const work = path.join(dataDir, "aws-workdir");
+  for (const name of ["site-old", "site-new"]) {
+    fs.mkdirSync(path.join(work, name), { recursive: true });
+    fs.writeFileSync(path.join(work, name, "index.html"), `<h1>${name}</h1>`);
+  }
+  await aws.run({ action: "change", command: "aws s3 cp --exclude site-old site-new s3://example-bucket/ --recursive" });
+  await aws.run({ action: "change", command: "aws s3 cp site-new s3://example-bucket/ --recursive" });
+  await aws.run({ action: "change", command: "aws s3 cp site-old s3://example-bucket/ --recursive" });
+  const [withOption, plainNew, plainOld] = hub.calls.filter((c) => c[1] === APPROVED).map((c) => c[2].payload.content_sha256);
+  assert.equal(withOption, plainNew);
+  assert.notEqual(withOption, plainOld);
+  const ask = hub.calls.find((c) => c[1] === REQUEST);
+  assert.match(ask[2].details, /uploads site-new: 1 files/);
+});
+
+test("an upload needs exactly a source and a destination inside the work folder, with no links", async (t) => {
+  const { aws, hub, dataDir } = setup(t);
+  const work = path.join(dataDir, "aws-workdir");
+  fs.mkdirSync(path.join(work, "site"), { recursive: true });
+  fs.writeFileSync(path.join(work, "site", "index.html"), "<h1>x</h1>");
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "tbo-aws-outside-"));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(outside, "secret.txt"), "not for upload");
+  for (const [command, message] of [
+    ["aws s3 cp site extra s3://example-bucket/ --recursive", /exactly a source and a destination/],
+    ["aws s3 cp ../../outside s3://example-bucket/ --recursive", /not in the AWS tool's work folder|must be inside/],
+    [`aws s3 cp ${outside} s3://example-bucket/ --recursive`, /must be inside the AWS tool's work folder/],
+    ["aws s3 cp missing s3://example-bucket/", /not in the AWS tool's work folder/],
+  ]) {
+    await assert.rejects(aws.run({ action: "change", command }), { code: "INVALID_ARGUMENT", message }, command);
+  }
+  fs.symlinkSync(path.join(outside, "secret.txt"), path.join(work, "site", "link.txt"));
+  await assert.rejects(aws.run({ action: "change", command: "aws s3 cp site s3://example-bucket/ --recursive" }), {
+    code: "INVALID_ARGUMENT",
+    message: /contains a link \(link\.txt\)/,
+  });
+  assert.equal(hub.calls.length, 0);
+  // a download names nothing local to approve
+  await aws.run({ action: "change", command: "aws s3 cp s3://example-bucket/index.html site/index.html" });
+  assert.equal(hub.calls.filter((c) => c[1] === APPROVED)[0][2].payload.content_sha256, undefined);
+});
+
+test("hashing an upload stops at the call's time limit and at 5,000 files, before asking anyone", async (t) => {
+  const slow = setup(t, {}, { budgetMs: 50, recordMarginMs: 100 });
+  const site = path.join(slow.dataDir, "aws-workdir", "site");
+  fs.mkdirSync(site, { recursive: true });
+  fs.writeFileSync(path.join(site, "index.html"), "<h1>x</h1>");
+  await assert.rejects(slow.aws.run({ action: "change", command: "aws s3 cp site s3://example-bucket/ --recursive" }), { code: "TIMEOUT", message: /Nothing was asked/ });
+  assert.equal(slow.hub.calls.length, 0);
+  const many = setup(t);
+  const big = path.join(many.dataDir, "aws-workdir", "big");
+  fs.mkdirSync(big, { recursive: true });
+  for (let i = 0; i <= 5000; i += 1) fs.writeFileSync(path.join(big, `f${i}.txt`), "x");
+  await assert.rejects(many.aws.run({ action: "change", command: "aws s3 cp big s3://example-bucket/ --recursive" }), { code: "TOO_LARGE", message: /5000 files/ });
+  assert.equal(many.hub.calls.length, 0);
+});

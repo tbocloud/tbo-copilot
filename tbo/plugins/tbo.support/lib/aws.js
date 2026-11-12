@@ -37,7 +37,7 @@ const CALL_TIMEOUT_MS = 85000; // the most one AWS call may take; a tool call's 
 const TOOL_BUDGET_MS = 100000;
 const RECORD_MARGIN_MS = 8000;
 const MIN_CALL_MS = 10000; // less than this left: an approved change is not started at all
-const MAX_DIGEST_FILES = 20000;
+const MAX_DIGEST_FILES = 5000;
 const MAX_DIGEST_BYTES = 1024 * 1024 * 1024;
 const PROFILE_NAME = /^[\w.+@-]{1,64}$/;
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
@@ -112,7 +112,22 @@ const GLOBAL_FLAGS = new Set(["--debug", "--no-paginate", "--no-cli-pager", "--c
 // Never from Copilot: another profile than the settings' (the approval names that one), another
 // endpoint, or no TLS check.
 const REFUSED_OPTIONS = new Set(["--profile", "--endpoint-url", "--ca-bundle", "--no-verify-ssl", "--no-sign-request"]);
+// Parameters given as one JSON or YAML document hide them from the checks below (a decrypting
+// parameter read, a delete inside a batch): every parameter must be written as an option.
+const INPUT_DOCUMENTS = new Set(["--cli-input-json", "--cli-input-yaml"]);
 const SHAPE = '"command" must look like "aws <service> <operation> [options]", e.g. "aws ec2 describe-instances".';
+
+// The region the AWS CLI will use: the command's own --region, which wins over the settings'.
+// Null when the command names none; "conflict" when it names two different ones.
+function commandRegion(parts) {
+  const named = [];
+  parts.forEach((p, i) => {
+    if (p === "--region" && i + 1 < parts.length) named.push(parts[i + 1]);
+    else if (p.startsWith("--region=")) named.push(p.slice("--region=".length));
+  });
+  if (!named.length) return null;
+  return new Set(named).size === 1 ? named[0] : "conflict";
+}
 
 function commandArg(args) {
   const raw = args && args.command != null ? String(args.command).trim() : "";
@@ -125,6 +140,15 @@ function commandArg(args) {
   if (refused) {
     throw fail("INVALID_ARGUMENT", `"${refused.split("=")[0]}" is not allowed: Copilot uses the AWS profile in your settings and AWS's own endpoints, with TLS checked.`);
   }
+  const inputDocument = parts.find((p) => INPUT_DOCUMENTS.has(p.split("=")[0]));
+  if (inputDocument) {
+    throw fail(
+      "INVALID_ARGUMENT",
+      `"${inputDocument.split("=")[0]}" is not allowed: write each parameter as its own option (for example --name x), so Copilot's checks can see it.`,
+    );
+  }
+  const region = commandRegion(parts);
+  if (region === "conflict") throw fail("INVALID_ARGUMENT", 'The command names two different regions; write "--region" once.');
   // The service and the operation are the first two words that are not global options or their
   // values, so "aws --region x kms decrypt" is checked as kms decrypt.
   const positional = [];
@@ -143,7 +167,7 @@ function commandArg(args) {
   }
   if (positional.length < 2) throw fail("INVALID_ARGUMENT", SHAPE);
   // kept exactly as written: the approval is for this text, and the second call must match it
-  return { command: raw, service: positional[0].toLowerCase(), operation: positional[1].toLowerCase(), parts };
+  return { command: raw, service: positional[0].toLowerCase(), operation: positional[1].toLowerCase(), parts, region };
 }
 
 // --- what is never run ------------------------------------------------------------
@@ -191,12 +215,24 @@ const SECRET_READS = new Set([
   "rds generate-db-auth-token",
   "ec2 get-password-data",
   "iam create-access-key",
+  // configuration that carries environment variables or user data, where secrets often live;
+  // refused whole, because a --query can return one value that no output cleaning recognises
+  "lambda get-function-configuration",
+  "lambda get-function",
+  "ecs describe-task-definition",
+  "elasticbeanstalk describe-configuration-settings",
+  "codebuild batch-get-projects",
+  "ec2 describe-launch-template-versions",
 ]);
 
 function secretRead({ service, operation, parts }) {
   if (SECRET_READS.has(`${service} ${operation}`)) return true;
-  // SSM parameters are fine to list, not to decrypt
-  return service === "ssm" && /^get-parameter/.test(operation) && parts.includes("--with-decryption");
+  // an instance's attributes are fine to read, its user data is not
+  if (service === "ec2" && operation === "describe-instance-attribute") {
+    return parts.some((p, i) => (p === "--attribute" && parts[i + 1] === "userData") || p === "--attribute=userData");
+  }
+  // SSM parameters are fine to list, not to decrypt (an input document is refused for every command)
+  return service === "ssm" && /^get-parameter/.test(operation) && parts.some((p) => p === "--with-decryption" || p.startsWith("--with-decryption="));
 }
 
 // Why a change is blocked, or "" when it may be asked for.
@@ -523,27 +559,106 @@ function hintFor(errorText, profile) {
   return "";
 }
 
-// The local files an "aws s3 cp/sync" would upload, as one digest: the approval names the content,
-// so files changed after the approval no longer match it. Null for any other command.
-function localSource(cmd, workDir) {
-  if (cmd.service !== "s3" || !["cp", "sync"].includes(cmd.operation)) return null;
-  const opIndex = cmd.parts.findIndex((p, i) => i > 1 && p.toLowerCase() === cmd.operation);
-  for (const word of cmd.parts.slice(opIndex + 1)) {
-    if (word.startsWith("-") || /^s3:\/\//i.test(word)) continue;
-    const full = path.resolve(workDir, word);
-    if (!fs.existsSync(full)) continue;
-    return { path: word, ...digestOf(full) };
+// Options of "aws s3 cp/sync" that take no value. Every other option takes the next word, unless
+// it is written --name=value: an unknown option is assumed to take one, so a word is never
+// mistaken for the source.
+const S3_FLAGS = new Set([
+  "--recursive",
+  "--dryrun",
+  "--quiet",
+  "--only-show-errors",
+  "--no-progress",
+  "--follow-symlinks",
+  "--no-follow-symlinks",
+  "--no-guess-mime-type",
+  "--force-glacier-transfer",
+  "--ignore-glacier-warnings",
+  "--size-only",
+  "--exact-timestamps",
+  "--no-overwrite",
+  "--delete",
+  ...GLOBAL_FLAGS,
+]);
+
+// The words of a command that are neither options nor option values: the service, the operation,
+// then the operation's own arguments.
+function positionals(parts, flags) {
+  const out = [];
+  for (let i = 1; i < parts.length; i += 1) {
+    const word = parts[i];
+    if (word.startsWith("--")) {
+      if (!word.includes("=") && !flags.has(word)) i += 1;
+      continue;
+    }
+    out.push(word);
   }
-  return null;
+  return out;
 }
 
-function digestOf(root) {
+function inside(root, target) {
+  const rel = path.relative(root, target);
+  return rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
+// The local files an "aws s3 cp/sync" would upload, as one digest: the approval names the content,
+// so files changed after the approval no longer match it. Null for a copy within S3 or a download.
+// The source is the first of exactly two arguments, and must sit inside the AWS tool's work folder.
+async function localSource(cmd, workDir, deadline) {
+  if (cmd.service !== "s3" || !["cp", "sync"].includes(cmd.operation)) return null;
+  const args = positionals(cmd.parts, S3_FLAGS).slice(2);
+  if (args.length !== 2) {
+    throw fail(
+      "INVALID_ARGUMENT",
+      `"aws s3 ${cmd.operation}" needs exactly a source and a destination; write every other option as --name value or --name=value.`,
+    );
+  }
+  const [source, destination] = args;
+  if (/^s3:\/\//i.test(source) || !/^s3:\/\//i.test(destination)) return null;
+  const realWork = await fs.promises.realpath(workDir);
+  let real;
+  try {
+    real = await fs.promises.realpath(path.resolve(workDir, source));
+  } catch {
+    throw fail("INVALID_ARGUMENT", `The upload's source "${source}" is not in the AWS tool's work folder (${workDir}).`);
+  }
+  if (!inside(realWork, real)) {
+    throw fail("INVALID_ARGUMENT", `An upload's source must be inside the AWS tool's work folder (${workDir}); "${source}" is not.`);
+  }
+  return { path: source, ...(await digestOf(real, deadline)) };
+}
+
+function fileSha256(full, deadline, timeUp) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(full, { highWaterMark: 1024 * 1024 });
+    stream.on("data", (chunk) => {
+      if (deadline != null && Date.now() > deadline) {
+        stream.destroy();
+        reject(timeUp());
+        return;
+      }
+      hash.update(chunk);
+    });
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+// One digest of a folder or file: each file's path, size and SHA-256, read in chunks without
+// blocking the plugin, within the call's time; links are refused (the approval must cover what is
+// uploaded, not what a link points at).
+async function digestOf(root, deadline) {
   const entries = [];
   let bytes = 0;
-  const walk = (full, rel) => {
-    const stat = fs.statSync(full);
+  const timeUp = () => fail("TIMEOUT", "Reading the upload's files took too long for one call; upload a smaller folder. Nothing was asked or sent.");
+  const walk = async (full, rel) => {
+    if (deadline != null && Date.now() > deadline) throw timeUp();
+    const stat = await fs.promises.lstat(full);
+    if (stat.isSymbolicLink()) {
+      throw fail("INVALID_ARGUMENT", `The upload contains a link (${rel}); put the real files in the work folder, so the approval covers what is uploaded.`);
+    }
     if (stat.isDirectory()) {
-      for (const name of fs.readdirSync(full).sort()) walk(path.join(full, name), rel ? `${rel}/${name}` : name);
+      for (const name of (await fs.promises.readdir(full)).sort()) await walk(path.join(full, name), rel ? `${rel}/${name}` : name);
       return;
     }
     if (!stat.isFile()) return;
@@ -551,10 +666,10 @@ function digestOf(root) {
     if (entries.length >= MAX_DIGEST_FILES || bytes > MAX_DIGEST_BYTES) {
       throw fail("TOO_LARGE", `The upload's source is over ${MAX_DIGEST_FILES} files or 1 GB; upload it in parts.`);
     }
-    const sha = crypto.createHash("sha256").update(fs.readFileSync(full)).digest("hex");
+    const sha = await fileSha256(full, deadline, timeUp);
     entries.push(`${rel || path.basename(full)}\0${stat.size}\0${sha}`);
   };
-  walk(root, "");
+  await walk(root, "");
   return {
     files: entries.length,
     bytes,
@@ -758,7 +873,7 @@ function createAws({
       const hint = hintFor(done.errorText, conf.profile);
       throw fail("AWS_ERROR", `${clip(done.errorText, 800)}${hint ? ` ${hint}` : ""}`);
     }
-    return { command: cmd.command, region: conf.region, output: untrustedOutput(done.output) };
+    return { command: cmd.command, region: cmd.region || conf.region, output: untrustedOutput(done.output) };
   }
 
   async function change(args) {
@@ -773,9 +888,10 @@ function createAws({
     }
     const blocked = blockedChange(cmd) || (secretRead(cmd) ? "That command returns a secret." : "");
     if (blocked) throw fail("BLOCKED", blocked);
-    const local = localSource(cmd, await workDir());
+    const local = await localSource(cmd, await workDir(), deadline - recordMarginMs);
     const client = await hub();
-    const payload = { command: cmd.command, profile: conf.profile || "default", region: conf.region };
+    // the region the CLI will use: the command's own --region wins over the settings'
+    const payload = { command: cmd.command, profile: conf.profile || "default", region: cmd.region || conf.region };
     // an upload is approved for its content: changed files after the approval need a new one
     if (local) payload.content_sha256 = local.digest;
     const approved = await client.method(HUB.approved, { kind: APPROVAL_KIND, payload });

@@ -24,9 +24,13 @@ TBO Copilot (the person's computer)                                  TBO Support
 - **Reads** go to a server started with `READ_OPERATIONS_ONLY=true`: AWS's own list of read operations decides what
   runs. That server stays up for ten minutes between calls. A handful of reads that hand back a secret (a Secrets
   Manager value, a decrypted parameter, a Windows password, STS credentials, registry passwords) are refused before
-  they reach it.
+  they reach it, and so are reads of configuration that carries environment variables or user data, where secrets
+  often live: Lambda function configuration, ECS task definitions, Elastic Beanstalk settings, CodeBuild projects,
+  EC2 launch template versions and an instance's `userData` attribute. They are refused whole, because a `--query`
+  can return one value that no output cleaning recognises.
 - **Changes** are two calls. The first passes the checks below and asks TBO Support for an **action approval** of the
-  exact command, profile and region; an approver gets the card in Teams (or the TBO Support panel) and nothing runs.
+  exact command, profile and region (the command's own `--region` when it names one, else the setting's: the
+  region the AWS CLI will use); an approver gets the card in Teams (or the TBO Support panel) and nothing runs.
   When the person says it is approved, the agent calls `change` again with exactly the same command: TBO Support
   confirms the approval (approved by someone else, within the hour), the plugin starts a server for that one call,
   runs it, and records the outcome on the approval. An approval is spent once it has run, and expires after 60
@@ -34,11 +38,14 @@ TBO Copilot (the person's computer)                                  TBO Support
   that gets no answer in time is recorded as spent ("may have run, check AWS"), so it can never run twice.
 - **An upload is approved for its content.** For `aws s3 cp` or `sync` from a local folder, the tool hashes every
   file when it asks; the card shows the file count and the hash, and the approval names that hash. A file changed
-  after the approval no longer matches, and the tool asks again instead of uploading.
+  after the approval no longer matches, and the tool asks again instead of uploading. The source is the first of
+  exactly two arguments (options are skipped with their values), must sit inside the AWS tool's work folder, and may
+  not contain links; the files are read in chunks within the call's time, at most 5,000 files and 1 GB.
 - **Global options:** the checks read the service and operation after any AWS CLI global options
   (`aws --region x kms decrypt` is checked as `kms decrypt`). `--profile`, `--endpoint-url`, `--ca-bundle`,
   `--no-verify-ssl` and `--no-sign-request` are refused anywhere: the profile is the one in the settings (the one the
-  approval names), and AWS's own endpoints are used with TLS checked.
+  approval names), and AWS's own endpoints are used with TLS checked. `--cli-input-json` and `--cli-input-yaml` are
+  refused too: every parameter is written as its own option, so the checks can see it.
 - **Credentials** never pass through the plugin. The server reads the person's AWS profile (or SSO login) from their
   own `~/.aws`. AWS keys in the app's environment are not passed to the server. AWS output is cleaned of key-shaped
   text (access key ids, secret and session values, private keys) before the model sees it, and is marked as data,
@@ -67,7 +74,9 @@ TBO Copilot (the person's computer)                                  TBO Support
 |---|---|---|
 | **Allowed at once** | Any read AWS classifies as read-only: instances and status checks, CloudWatch metrics, DNS records, buckets and objects listed, CloudFront distributions, Elastic IPs, volumes, Cost Explorer | the app's own tool log |
 | **Allowed after approval** | A change that passes the block list: start, stop or reboot an instance, a DNS record created or changed (`UPSERT`), an upload to a bucket, a CloudFront invalidation, and the like. Needs **Allow AWS changes** on the person's computer and an approver who is not the person | the action approval in TBO Support (who asked, the exact command, who approved, when, the outcome) and HDS Copilot Call Log |
-| **Blocked** | Any operation that deletes or ends something (`delete*`, `terminate*`, `remove*`, `deregister*`, `purge*`, `disassociate*`, `revoke*`, `release*`, `detach*`); `aws s3 rm`, `rb`, `mv`; any `--delete`; a change batch with `DELETE` in it (plain or escaped JSON); S3 bucket lifecycle rules (they expire objects); IAM, STS, Organizations, SSO, KMS, Secrets Manager and account changes; a change that hides its content in `file://`; a change across all regions (`--region *`); the secret-returning reads above | refused before anything is sent |
+| **Blocked** | Any operation that deletes or ends something (`delete*`, `terminate*`, `remove*`, `deregister*`, `purge*`, `disassociate*`, `revoke*`, `release*`, `detach*`); `aws s3 rm`, `rb`, `mv`; any `--delete`; a change batch with `DELETE` in it (plain or escaped JSON); S3 bucket lifecycle rules (they expire objects); IAM, STS, Organizations, SSO, KMS, Secrets Manager and account changes; a change that hides its content in `file://`; a change across all regions (`--region *`); a command that names two different regions; parameters given as a
+`--cli-input-json` or `--cli-input-yaml` document; the secret-returning and secret-bearing reads above; an upload from
+outside the work folder or with links in it | refused before anything is sent |
 
 The AWS permission sets are the second net: the read-only profile cannot change anything even if a check were wrong,
 and the changes profile has no delete or IAM permissions.
