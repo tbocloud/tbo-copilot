@@ -259,5 +259,6 @@ request into `tbo`.
 - [build-plan.md](./build-plan.md): the build plan with a status per phase.
 - [models.md](./models.md): which AI model does which job, the providers' data terms, and the desktop app's setup.
 - [worker-server.md](./worker-server.md): running the Copilot worker server, and what to do when something goes wrong.
+- [frappe-dev.md](./frappe-dev.md): Frappe development from a TBO Support task in the desktop app (the `tbo.frappe-dev` plugin).
 - One plan per phase, approved before building: [Phase 0](./phases/phase-0.md), [Phase 1a](./phases/phase-1a.md),
   [Phase 1b](./phases/phase-1b.md).
