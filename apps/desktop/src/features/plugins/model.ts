@@ -47,6 +47,9 @@ export const PERMISSION_RISK: Record<string, RiskTier> = {
   "agent.tool.register": "high",
   "agent.complete": "high",
   "agent.extension": "high",
+  // Its rows join the model list and are given a key (ADR 0319); listed so the
+  // dialog's tier comes from the matrix, not from the unknown-permission default.
+  "provider.register": "high",
   // Its code runs in the app's own document, so the grant is the boundary.
   "renderer.extension": "high",
   "desktop.control": "high",

@@ -109,6 +109,7 @@ describe("check", () => {
       "agent.tool.register",
       "browser.cdp",
       "audio.capture.background",
+      "provider.register",
     ]) {
       expect(HIGH_RISK_PERMISSIONS).toContain(permission);
     }
