@@ -851,9 +851,24 @@ function copyFile(src, dest, deadline, files, times) {
   });
 }
 
-// A time in nanoseconds, rounded to whole microseconds; and back to the seconds utimes takes (a
-// double holds today's times to well under half a microsecond, so the rounding survives).
-const microseconds = (ns) => (ns + 500n) / 1000n;
+// A file time as the AWS CLI sees it, in whole microseconds: Python's os.stat gives st_mtime as
+// the double sec + nsec * 1e-9, and datetime.fromtimestamp rounds its fraction to microseconds
+// half to even (CPython's _PyTime_ObjectToTimeval). aws s3 sync compares that with S3's time.
+function cliMicroseconds(ns) {
+  const sec = ns / 1000000000n;
+  const t = Number(sec) + Number(ns % 1000000000n) * 1e-9;
+  let whole = Math.trunc(t);
+  const frac = (t - whole) * 1e6;
+  let us = Math.round(frac);
+  if (Math.abs(frac - us) === 0.5) us = 2 * Math.round(frac / 2);
+  if (us >= 1e6) {
+    whole += 1;
+    us -= 1e6;
+  }
+  return BigInt(whole) * 1000000n + BigInt(us);
+}
+// back to the seconds utimes takes: a double holds today's times to about a quarter of a
+// microsecond, so the copy reads back as the same microsecond (and is checked)
 const seconds = (us) => Number(us) / 1e6;
 
 // A folder or file copied into the snapshot, and one digest of what was copied: each file's path,
@@ -882,16 +897,16 @@ async function snapshotOf(root, target, deadline, files) {
     }
     if (!stat.isFile()) return; // a socket or a pipe is not copied, so it is not uploaded either
     if (entries.length >= MAX_DIGEST_FILES || bytes + stat.size > MAX_DIGEST_BYTES) throw tooLarge();
-    // the times to the microsecond, the AWS CLI's resolution (it reads them into Python datetimes)
+    // the times as the AWS CLI reads them, to the microsecond
     const exact = await beforeDeadline(fs.promises.lstat(full, { bigint: true }), deadline);
-    const times = { atime: microseconds(exact.atimeNs), mtime: microseconds(exact.mtimeNs) };
+    const times = { atime: cliMicroseconds(exact.atimeNs), mtime: cliMicroseconds(exact.mtimeNs) };
     const { sha, size } = await copyFile(full, copy, deadline, files, { atime: seconds(times.atime), mtime: seconds(times.mtime) });
     const after = await beforeDeadline(files.lstat(full), deadline);
     if (after.mtimeMs !== stat.mtimeMs || after.size !== size) {
       throw fail("CHANGED", `${rel || path.basename(full)} changed while it was copied; finish the build, then ask again.`);
     }
-    // the digest names the copy's own time, checked against the source's
-    const kept = microseconds((await fs.promises.lstat(copy, { bigint: true })).mtimeNs);
+    // the digest names the copy's own time as the AWS CLI reads it, checked against the source's
+    const kept = cliMicroseconds((await fs.promises.lstat(copy, { bigint: true })).mtimeNs);
     if (kept !== times.mtime) throw fail("TIME_NOT_KEPT", `${rel || path.basename(full)}'s modification time could not be kept to the microsecond on this disk.`);
     bytes += size;
     if (bytes > MAX_DIGEST_BYTES) throw tooLarge();
@@ -1250,6 +1265,7 @@ function createAws({
 
 module.exports = {
   AWS_TOOL,
+  cliMicroseconds,
   SERVER_PACKAGE,
   SERVER_VERSION,
   McpProcess,

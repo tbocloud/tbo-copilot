@@ -16,6 +16,7 @@ const {
   hintFor,
   redact,
   secretRead,
+  cliMicroseconds,
   serverCommand,
   serverEnv,
   unwrap,
@@ -833,7 +834,7 @@ test("modification times are kept to the microsecond, and a sub-millisecond chan
   fs.mkdirSync(site, { recursive: true });
   fs.writeFileSync(path.join(site, "a.html"), "a");
   fs.writeFileSync(path.join(site, "b.html"), "b");
-  const us = (file) => String((fs.statSync(file, { bigint: true }).mtimeNs + 500n) / 1000n);
+  const us = (file) => String(cliMicroseconds(fs.statSync(file, { bigint: true }).mtimeNs));
   // .000100 and .000700 seconds past the same second: the same millisecond would hide the difference
   fs.utimesSync(path.join(site, "a.html"), 1704164645.0001, 1704164645.0001);
   fs.utimesSync(path.join(site, "b.html"), 1704164645.0007, 1704164645.0007);
@@ -845,7 +846,36 @@ test("modification times are kept to the microsecond, and a sub-millisecond chan
   assert.notEqual(moved, first, "a 0.3 ms change is a different upload");
   hub.approve();
   const out = parsedOutput(await aws.run({ action: "change", command }));
-  assert.deepEqual(out.mtimeUs, { "a.html": us(path.join(site, "a.html")), "b.html": us(path.join(site, "b.html")) });
-  assert.equal(out.mtimeUs["a.html"], "1704164645000400");
-  assert.equal(out.mtimeUs["b.html"], "1704164645000700");
+  const seen = Object.fromEntries(Object.entries(out.mtimeNs).map(([k, v]) => [k, String(cliMicroseconds(BigInt(v)))]));
+  assert.deepEqual(seen, { "a.html": us(path.join(site, "a.html")), "b.html": us(path.join(site, "b.html")) });
+  assert.equal(seen["a.html"], "1704164645000400");
+  assert.equal(seen["b.html"], "1704164645000700");
+});
+
+test("the time is the AWS CLI's: Python's float, then microseconds rounded half to even", () => {
+  // checked against CPython: os.stat(...).st_mtime then datetime.fromtimestamp(...).microsecond
+  assert.equal(cliMicroseconds(1704164645000000500n), 1704164645000000n); // .0000005 is a double just under half
+  assert.equal(cliMicroseconds(1704164645000000700n), 1704164645000001n);
+  assert.equal(cliMicroseconds(1704164645999999700n), 1704164646000000n); // rounds into the next second
+  assert.equal(cliMicroseconds(1704164645123456000n), 1704164645123456n);
+  assert.equal(cliMicroseconds(0n), 0n);
+});
+
+test("a source time at a half-microsecond boundary is copied as the AWS CLI reads it", async (t) => {
+  const { aws, hub, dataDir } = setup(t);
+  const site = path.join(dataDir, "aws-workdir", "site");
+  fs.mkdirSync(site, { recursive: true });
+  const file = path.join(site, "index.html");
+  fs.writeFileSync(file, "x");
+  require("node:child_process").execFileSync("touch", ["-d", "2024-01-02T03:04:05.000000500Z", file]);
+  const ns = fs.statSync(file, { bigint: true }).mtimeNs;
+  if (ns % 1000n !== 500n) {
+    t.skip("this file system does not keep nanoseconds");
+    return;
+  }
+  hub.approve();
+  const out = parsedOutput(await aws.run({ action: "change", command: "aws s3 sync site s3://example-bucket/" }));
+  // the source reads as 03:04:05.000000 to the AWS CLI, and so does the copy
+  assert.equal(cliMicroseconds(ns), 1704164645000000n);
+  assert.equal(cliMicroseconds(BigInt(out.mtimeNs["index.html"])), 1704164645000000n);
 });

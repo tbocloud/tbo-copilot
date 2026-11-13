@@ -70,7 +70,7 @@ function callAws(id, command) {
   if (words[1] === "s3" && ["cp", "sync"].includes(words[2]) && !words[3].startsWith("s3://")) {
     out.uploaded = listing(words[3]);
     out.mtimes = listing(words[3], "", {}, (file) => Math.floor(fs.statSync(file).mtimeMs / 1000)); // what sync compares
-    out.mtimeUs = listing(words[3], "", {}, (file) => String((fs.statSync(file, { bigint: true }).mtimeNs + 500n) / 1000n));
+    out.mtimeNs = listing(words[3], "", {}, (file) => String(fs.statSync(file, { bigint: true }).mtimeNs));
   }
   return answer(id, [ok(command, JSON.stringify(out))], command.includes("structured"));
 }
