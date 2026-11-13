@@ -571,3 +571,122 @@ test("hashing an upload stops at the call's time limit and at 5,000 files, befor
   await assert.rejects(many.aws.run({ action: "change", command: "aws s3 cp big s3://example-bucket/ --recursive" }), { code: "TOO_LARGE", message: /5000 files/ });
   assert.equal(many.hub.calls.length, 0);
 });
+
+// --- CodeRabbit's third review of PR #24 ----------------------------------------------------------
+
+test("a command is split the way the AWS server splits it: quotes and backslashes join a word", () => {
+  assert.equal(cmd("aws ec2 start-instances --instance-ids i-1 --reg'ion'=us-east-1").region, "us-east-1");
+  assert.equal(cmd('aws ec2 start-instances --instance-ids i-1 --"region" us-east-1').region, "us-east-1");
+  assert.equal(cmd("aws ec2 start-instances --instance-ids i-1 --reg\\ion us-east-1").region, "us-east-1");
+  assert.deepEqual(cmd(`aws ec2 describe-instances --filters "Name=tag:Name,Values=a \\"b\\" \\c" ''`).parts.slice(4), [
+    'Name=tag:Name,Values=a "b" \\c',
+    "",
+  ]);
+  for (const bad of ["aws ec2 describe-instances --filters 'Name=x", 'aws ec2 describe-instances --query "x', "aws ec2 describe-instances \\"]) {
+    assert.throws(() => cmd(bad), { code: "INVALID_ARGUMENT" }, bad);
+  }
+});
+
+test("a shortened option name the checks read is refused, as AWS would read it as the full one", () => {
+  for (const [bad, full] of [
+    ["aws ec2 start-instances --instance-ids i-1 --re us-east-1", "--region"],
+    ["aws ec2 start-instances --instance-ids i-1 --regi=us-east-1", "--region"],
+    ["aws --regi us-east-1 ec2 start-instances --instance-ids i-1", "--region"],
+    ["aws ec2 start-instances --instance-ids i-1 --prof admin", "--profile"],
+    ["aws sns subscribe --topic-arn t --protocol https --endpoint https://example.com/x", "--endpoint-url"],
+    ["aws ec2 describe-instances --no-verify", "--no-verify-ssl"],
+    [`aws ec2 start-instances --cli-input-js '{"InstanceIds":["i-1"]}'`, "--cli-input-json"],
+    ["aws ssm get-parameter --name /x/password --with-decrypt", "--with-decryption"],
+    ["aws ec2 describe-instance-attribute --instance-id i-1 --attr userData", "--attribute"],
+    ["aws s3 sync site s3://example-bucket/ --del", "--delete"],
+    ["aws s3 cp --recurs site-old site-new s3://example-bucket/", "--recursive"],
+    ["aws s3api put-object --bucket b --key index.html --bo site/index.html", "--body"],
+  ]) {
+    assert.throws(() => cmd(bad), { code: "INVALID_ARGUMENT", message: new RegExp(`short for "${full}"`) }, bad);
+  }
+  assert.throws(() => cmd("aws ec2 start-instances --instance-ids i-1 -- --region us-east-1"), { code: "INVALID_ARGUMENT", message: /bare "--"/ });
+  // full names are untouched, also those that begin like a checked one
+  assert.equal(cmd("aws ec2 describe-regions --region-names ap-south-1").region, null);
+  assert.ok(cmd("aws ec2 stop-instances --instance-ids i-1 --force"));
+  assert.ok(cmd("aws s3 cp site s3://example-bucket/ --recursive --exclude '*.map' --size-only"));
+});
+
+test("quotes cannot hide a delete or a file from the change checks", () => {
+  assert.match(
+    blockedChange(cmd(`aws route53 change-resource-record-sets --hosted-zone-id Z1 --change-batch '{"Changes":[{"Action":"DEL'ETE'"}]}'`)),
+    /deletes something/,
+  );
+  assert.match(blockedChange(cmd("aws s3api put-bucket-policy --bucket b --policy fi'le://'policy.json")), /file:\/\//);
+});
+
+test("a change whose region is hidden by quotes names the region it runs in", async (t) => {
+  const { aws, hub } = setup(t); // settings: ap-south-1
+  await aws.run({ action: "change", command: "aws ec2 start-instances --instance-ids i-1 --reg'ion'=us-east-1" });
+  const [lookup, ask] = hub.calls;
+  assert.equal(lookup[2].payload.region, "us-east-1");
+  assert.match(ask[2].details, /region us-east-1/);
+});
+
+test("an upload of one file by --body is approved for the file's content", async (t) => {
+  const { aws, hub, dataDir } = setup(t);
+  const work = path.join(dataDir, "aws-workdir");
+  fs.mkdirSync(path.join(work, "site"), { recursive: true });
+  fs.writeFileSync(path.join(work, "site", "index.html"), "<h1>v1</h1>");
+  await aws.run({ action: "change", command: "aws s3api put-object --bucket example-bucket --key index.html --body site/index.html" });
+  await aws.run({ action: "change", command: "aws s3api put-object --bucket example-bucket --key index.html --body=site/index.html" });
+  fs.writeFileSync(path.join(work, "site", "index.html"), "<h1>v1, edited after the approval</h1>");
+  await aws.run({ action: "change", command: "aws s3api put-object --bucket example-bucket --key index.html --body site/index.html" });
+  await aws.run({ action: "change", command: "aws glacier upload-archive --vault-name v --body site/index.html" });
+  const [first, equalsForm, edited, glacier] = hub.calls.filter((c) => c[1] === APPROVED).map((c) => c[2].payload.content_sha256);
+  assert.match(first, /^[0-9a-f]{64}$/);
+  assert.equal(equalsForm, first);
+  assert.notEqual(edited, first);
+  assert.equal(glacier, edited);
+  assert.match(hub.calls.find((c) => c[1] === REQUEST)[2].details, /uploads site\/index\.html: 1 files/);
+  // an object with no body names nothing local to approve
+  await aws.run({ action: "change", command: "aws s3api put-object --bucket example-bucket --key empty/" });
+  assert.equal(hub.calls.filter((c) => c[1] === APPROVED).at(-1)[2].payload.content_sha256, undefined);
+});
+
+test("a --body outside the work folder, or given twice, is refused before anyone is asked", async (t) => {
+  const { aws, hub, dataDir } = setup(t);
+  const work = path.join(dataDir, "aws-workdir");
+  fs.mkdirSync(path.join(work, "site"), { recursive: true });
+  fs.writeFileSync(path.join(work, "site", "a.html"), "a");
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "tbo-aws-outside-"));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(outside, "secret.txt"), "not for upload");
+  fs.symlinkSync(path.join(outside, "secret.txt"), path.join(work, "site", "link.txt"));
+  for (const [command, message] of [
+    [`aws s3api put-object --bucket b --key k --body ${path.join(outside, "secret.txt")}`, /must be inside the AWS tool's work folder/],
+    ["aws s3api put-object --bucket b --key k --body site/link.txt", /must be inside the AWS tool's work folder/],
+    ["aws s3api put-object --bucket b --key k --body missing.html", /not in the AWS tool's work folder/],
+    ["aws s3api put-object --bucket b --key k --body site/a.html --body site/a.html", /Write "--body" once/],
+  ]) {
+    await assert.rejects(aws.run({ action: "change", command }), { code: "INVALID_ARGUMENT", message }, command);
+  }
+  assert.equal(hub.calls.length, 0);
+});
+
+test("hashing ends at the deadline when a read stalls or a folder answers late, before anyone is asked", async (t) => {
+  const { PassThrough } = require("node:stream");
+  const stalled = setup(t, {}, { budgetMs: 600, recordMarginMs: 100, files: { createReadStream: () => new PassThrough() } });
+  fs.mkdirSync(path.join(stalled.dataDir, "aws-workdir", "site"), { recursive: true });
+  fs.writeFileSync(path.join(stalled.dataDir, "aws-workdir", "site", "index.html"), "<h1>x</h1>");
+  let started = Date.now();
+  await assert.rejects(stalled.aws.run({ action: "change", command: "aws s3 cp site s3://example-bucket/ --recursive" }), { code: "TIMEOUT", message: /Nothing was asked/ });
+  assert.ok(Date.now() - started < 1500, "a stalled read ends at the deadline");
+  assert.equal(stalled.hub.calls.length, 0);
+
+  const late = (value) =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(value), 3000);
+      timer.unref();
+    });
+  const empty = setup(t, {}, { budgetMs: 600, recordMarginMs: 100, files: { readdir: () => late([]) } });
+  fs.mkdirSync(path.join(empty.dataDir, "aws-workdir", "empty"), { recursive: true });
+  started = Date.now();
+  await assert.rejects(empty.aws.run({ action: "change", command: "aws s3 cp empty s3://example-bucket/ --recursive" }), { code: "TIMEOUT" });
+  assert.ok(Date.now() - started < 1500, "an empty folder that answers late ends at the deadline");
+  assert.equal(empty.hub.calls.length, 0);
+});

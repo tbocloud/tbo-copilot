@@ -84,13 +84,39 @@ function redact(text) {
     .replace(/((?:aws_secret_access_key|aws_session_token)\s*=\s*)\S+/gi, "$1[left out]");
 }
 
-// Splits a command line the way a shell would for plain words and quotes; no
-// shell ever runs it (the AWS server parses it itself).
+// Splits a command line exactly as the AWS server does (Python's shlex.split, POSIX rules): words
+// end at spaces and tabs; quoted and unquoted pieces next to each other are one word
+// ("--reg'ion'" is "--region"); a backslash outside quotes keeps the next character; inside double
+// quotes it keeps only a following " or \. No shell ever runs the command.
+const SPACE = new Set([" ", "\t", "\r", "\n"]);
+
 function words(command) {
   const out = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while ((m = re.exec(command))) out.push(m[1] ?? m[2] ?? m[3]);
+  let word = null; // null between words; "" is an empty quoted word
+  let quote = "";
+  for (let i = 0; i < command.length; i += 1) {
+    const c = command[i];
+    if (quote === "'") {
+      if (c === "'") quote = "";
+      else word += c;
+    } else if (quote === '"') {
+      if (c === '"') quote = "";
+      else if (c === "\\" && (command[i + 1] === '"' || command[i + 1] === "\\")) word += command[(i += 1)];
+      else word += c;
+    } else if (SPACE.has(c)) {
+      if (word !== null) out.push(word);
+      word = null;
+    } else {
+      if (word === null) word = "";
+      if (c === "'" || c === '"') quote = c;
+      else if (c === "\\") {
+        if (i + 1 >= command.length) throw fail("INVALID_ARGUMENT", '"command" ends with a lone backslash.');
+        word += command[(i += 1)];
+      } else word += c;
+    }
+  }
+  if (quote) throw fail("INVALID_ARGUMENT", `"command" has a ${quote} quote that is never closed.`);
+  if (word !== null) out.push(word);
   return out;
 }
 
@@ -117,6 +143,26 @@ const REFUSED_OPTIONS = new Set(["--profile", "--endpoint-url", "--ca-bundle", "
 const INPUT_DOCUMENTS = new Set(["--cli-input-json", "--cli-input-yaml"]);
 const SHAPE = '"command" must look like "aws <service> <operation> [options]", e.g. "aws ec2 describe-instances".';
 
+// The AWS CLI reads any unique beginning of an option's name as the whole name ("--regi" is
+// "--region", "--endpoint" is "--endpoint-url", "--with-decrypt" is "--with-decryption"), and a
+// bare "--" ends the options. The checks read options by their full names, so a shortened form of
+// one they read is refused: what they read must be what AWS reads.
+const CHECKED_OPTIONS = [...GLOBAL_WITH_VALUE, ...GLOBAL_FLAGS, ...INPUT_DOCUMENTS, "--delete"];
+
+function shortenedOption(parts, names) {
+  for (const word of parts.slice(1)) {
+    if (!word.startsWith("--")) continue;
+    const name = word.split("=")[0];
+    if (name === "--") {
+      return 'A bare "--" is not allowed: it makes every word after it an argument, which the checks cannot follow.';
+    }
+    if (names.includes(name)) continue;
+    const full = names.find((n) => n.startsWith(name));
+    if (full) return `"${name}" is short for "${full}", and AWS reads it that way; write option names in full.`;
+  }
+  return "";
+}
+
 // The region the AWS CLI will use: the command's own --region, which wins over the settings'.
 // Null when the command names none; "conflict" when it names two different ones.
 function commandRegion(parts) {
@@ -136,6 +182,8 @@ function commandArg(args) {
   if (/[\r\n`]|\$\(/.test(raw)) throw fail("INVALID_ARGUMENT", '"command" must be one line: one AWS CLI command, nothing else.');
   const parts = words(raw);
   if (parts[0] !== "aws") throw fail("INVALID_ARGUMENT", SHAPE);
+  const shortGlobal = shortenedOption(parts, CHECKED_OPTIONS);
+  if (shortGlobal) throw fail("INVALID_ARGUMENT", shortGlobal);
   const refused = parts.find((p) => REFUSED_OPTIONS.has(p.split("=")[0]));
   if (refused) {
     throw fail("INVALID_ARGUMENT", `"${refused.split("=")[0]}" is not allowed: Copilot uses the AWS profile in your settings and AWS's own endpoints, with TLS checked.`);
@@ -166,8 +214,23 @@ function commandArg(args) {
     positional.push(word);
   }
   if (positional.length < 2) throw fail("INVALID_ARGUMENT", SHAPE);
+  const service = positional[0].toLowerCase();
+  const operation = positional[1].toLowerCase();
+  const shortOwn = shortenedOption(parts, operationOptions(service, operation));
+  if (shortOwn) throw fail("INVALID_ARGUMENT", shortOwn);
   // kept exactly as written: the approval is for this text, and the second call must match it
-  return { command: raw, service: positional[0].toLowerCase(), operation: positional[1].toLowerCase(), parts, region };
+  return { command: raw, service, operation, parts, region };
+}
+
+// The operation's own options that the checks read, so a shortened form of them is refused too.
+function operationOptions(service, operation) {
+  const own = [];
+  if (service === "s3" && (operation === "cp" || operation === "sync")) own.push(...S3_FLAGS);
+  if (service === "ssm" && /^get-parameter/.test(operation)) own.push("--with-decryption", "--no-with-decryption");
+  if (service === "ec2" && operation === "describe-instance-attribute") own.push("--attribute");
+  const input = STREAMING_INPUTS.get(`${service} ${operation}`);
+  if (input) own.push(input);
+  return [...CHECKED_OPTIONS, ...own];
 }
 
 // --- what is never run ------------------------------------------------------------
@@ -238,16 +301,18 @@ function secretRead({ service, operation, parts }) {
 // Why a change is blocked, or "" when it may be asked for.
 function blockedChange(cmd) {
   const { service, operation, parts } = cmd;
+  // the text as written and as AWS reads it, so quotes cannot split "DELETE" or "file://"
+  const text = `${cmd.command}\n${parts.join(" ")}`;
   if (BLOCKED_SERVICES.has(service)) return `Copilot never changes ${service} (identity, keys and secrets stay with TBO's admins).`;
   if (BLOCKED_PREFIXES.some((p) => operation.startsWith(p))) return `Copilot never runs "${operation}": deletes and terminations are blocked in this version.`;
   if (service === "s3" && BLOCKED_S3.has(operation)) return `Copilot never runs "aws s3 ${operation}": it removes objects or buckets.`;
   if (parts.some((p) => p === "--delete" || p.startsWith("--delete="))) return 'Copilot never runs a command with "--delete": it removes what is not in the source.';
   // a batch can carry a delete inside it (a DNS change batch, a batch write), as plain or escaped JSON
-  if (/\\?"?Action\\?"?\s*[:=]\s*\\?"?DELETE\b|DeleteRequest/i.test(cmd.command)) return "Copilot never runs a change batch that deletes something.";
+  if (/\\?"?Action\\?"?\s*[:=]\s*\\?"?DELETE\b|DeleteRequest/i.test(text)) return "Copilot never runs a change batch that deletes something.";
   // lifecycle rules expire, that is delete, objects later
   if (service === "s3api" && operation.startsWith("put-bucket-lifecycle")) return "Copilot never sets bucket lifecycle rules: they expire (delete) objects.";
   // the approver must see the whole change in the command, not in a file
-  if (/\bfileb?:\/\//i.test(cmd.command)) return 'A change must be written out in the command; "file://" hides it from the approver.';
+  if (/\bfileb?:\/\//i.test(text)) return 'A change must be written out in the command; "file://" hides it from the approver.';
   if (parts.some((p, i) => p === "--region" && parts[i + 1] === "*") || parts.includes("--region=*")) {
     return 'A change runs in one region; "--region *" is for reads only.';
   }
@@ -600,10 +665,45 @@ function inside(root, target) {
   return rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
 }
 
-// The local files an "aws s3 cp/sync" would upload, as one digest: the approval names the content,
-// so files changed after the approval no longer match it. Null for a copy within S3 or a download.
-// The source is the first of exactly two arguments, and must sit inside the AWS tool's work folder.
-async function localSource(cmd, workDir, deadline) {
+// Operations whose input is a local file named by an option, read by the AWS CLI itself (a path,
+// not "file://"): every streaming input in the AWS models the pinned server ships.
+const STREAMING_INPUTS = new Map([
+  ["s3api put-object", "--body"],
+  ["s3api upload-part", "--body"],
+  ["s3api write-get-object-response", "--body"],
+  ["s3api put-object-annotation", "--annotation-payload"],
+  ["glacier upload-archive", "--body"],
+  ["glacier upload-multipart-part", "--body"],
+  ["mediastore-data put-object", "--body"],
+  ["ebs put-snapshot-block", "--block-data"],
+  ["lambda invoke-async", "--invoke-args"],
+  ["lex-runtime post-content", "--input-stream"],
+  ["lexv2-runtime recognize-utterance", "--input-stream"],
+  ["cloudsearchdomain upload-documents", "--documents"],
+  ["codeartifact publish-package-version", "--asset-content"],
+  ["omics upload-read-set-part", "--payload"],
+]);
+
+// The values of an option, written "--name value" or "--name=value".
+function optionValues(parts, name) {
+  const values = [];
+  parts.forEach((p, i) => {
+    if (p === name && i + 1 < parts.length) values.push(parts[i + 1]);
+    else if (p.startsWith(`${name}=`)) values.push(p.slice(name.length + 1));
+  });
+  return values;
+}
+
+// The local path a change uploads, or null: the file of a streaming input ("aws s3api put-object
+// --body site/index.html"), or the source of "aws s3 cp/sync", the first of exactly two arguments.
+// Null for a copy within S3 or a download.
+function uploadSource(cmd) {
+  const input = STREAMING_INPUTS.get(`${cmd.service} ${cmd.operation}`);
+  if (input) {
+    const values = optionValues(cmd.parts, input);
+    if (values.length > 1) throw fail("INVALID_ARGUMENT", `Write "${input}" once: the approval covers one file.`);
+    return values.length ? values[0] : null;
+  }
   if (cmd.service !== "s3" || !["cp", "sync"].includes(cmd.operation)) return null;
   const args = positionals(cmd.parts, S3_FLAGS).slice(2);
   if (args.length !== 2) {
@@ -613,52 +713,93 @@ async function localSource(cmd, workDir, deadline) {
     );
   }
   const [source, destination] = args;
-  if (/^s3:\/\//i.test(source) || !/^s3:\/\//i.test(destination)) return null;
-  const realWork = await fs.promises.realpath(workDir);
+  return /^s3:\/\//i.test(source) || !/^s3:\/\//i.test(destination) ? null : source;
+}
+
+// The file system calls an upload's digest makes; tests replace them to stall a read.
+const FILES = {
+  lstat: (p) => fs.promises.lstat(p),
+  readdir: (p) => fs.promises.readdir(p),
+  realpath: (p) => fs.promises.realpath(p),
+  createReadStream: (p, options) => fs.createReadStream(p, options),
+};
+
+const hashTimeUp = () =>
+  fail("TIMEOUT", "Reading the upload's files took too long for one call; upload a smaller folder. Nothing was asked or sent.");
+
+// A file system wait that ends at the deadline: a stalled disk or network share gives the time-up
+// error instead of holding the call.
+function beforeDeadline(promise, deadline) {
+  let timer;
+  const late = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(hashTimeUp()), Math.max(0, deadline - Date.now()));
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+// What a change uploads from this computer, as one digest: the approval names the content, so
+// files changed after the approval no longer match it. The path must resolve inside the AWS tool's
+// work folder; the digest is finished before the deadline or not used.
+async function localSource(cmd, workDir, deadline, files = FILES) {
+  const source = uploadSource(cmd);
+  if (source == null) return null;
+  const realWork = await beforeDeadline(files.realpath(workDir), deadline);
   let real;
   try {
-    real = await fs.promises.realpath(path.resolve(workDir, source));
-  } catch {
+    real = await beforeDeadline(files.realpath(path.resolve(workDir, source)), deadline);
+  } catch (e) {
+    if (e.code === "TIMEOUT") throw e;
     throw fail("INVALID_ARGUMENT", `The upload's source "${source}" is not in the AWS tool's work folder (${workDir}).`);
   }
   if (!inside(realWork, real)) {
     throw fail("INVALID_ARGUMENT", `An upload's source must be inside the AWS tool's work folder (${workDir}); "${source}" is not.`);
   }
-  return { path: source, ...(await digestOf(real, deadline)) };
+  const digest = await digestOf(real, deadline, files);
+  if (Date.now() > deadline) throw hashTimeUp(); // finished late: nothing is asked
+  return { path: source, ...digest };
 }
 
-function fileSha256(full, deadline, timeUp) {
+// One file's SHA-256, read in 1 MB chunks; a read that stalls ends at the deadline.
+function fileSha256(full, deadline, files) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash("sha256");
-    const stream = fs.createReadStream(full, { highWaterMark: 1024 * 1024 });
-    stream.on("data", (chunk) => {
-      if (deadline != null && Date.now() > deadline) {
+    const stream = files.createReadStream(full, { highWaterMark: 1024 * 1024 });
+    let done = false;
+    let timer = null;
+    const finish = (error, value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (error) {
         stream.destroy();
-        reject(timeUp());
-        return;
-      }
-      hash.update(chunk);
+        reject(error);
+      } else resolve(value);
+    };
+    timer = setTimeout(() => finish(hashTimeUp()), Math.max(0, deadline - Date.now()));
+    stream.on("data", (chunk) => {
+      if (Date.now() > deadline) finish(hashTimeUp());
+      else hash.update(chunk);
     });
-    stream.on("error", reject);
-    stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("error", (e) => finish(e));
+    stream.on("end", () => finish(null, hash.digest("hex")));
   });
 }
 
 // One digest of a folder or file: each file's path, size and SHA-256, read in chunks without
 // blocking the plugin, within the call's time; links are refused (the approval must cover what is
 // uploaded, not what a link points at).
-async function digestOf(root, deadline) {
+async function digestOf(root, deadline, files) {
   const entries = [];
   let bytes = 0;
-  const timeUp = () => fail("TIMEOUT", "Reading the upload's files took too long for one call; upload a smaller folder. Nothing was asked or sent.");
   const walk = async (full, rel) => {
-    if (deadline != null && Date.now() > deadline) throw timeUp();
-    const stat = await fs.promises.lstat(full);
+    if (Date.now() > deadline) throw hashTimeUp();
+    const stat = await beforeDeadline(files.lstat(full), deadline);
     if (stat.isSymbolicLink()) {
       throw fail("INVALID_ARGUMENT", `The upload contains a link (${rel}); put the real files in the work folder, so the approval covers what is uploaded.`);
     }
     if (stat.isDirectory()) {
-      for (const name of (await fs.promises.readdir(full)).sort()) await walk(path.join(full, name), rel ? `${rel}/${name}` : name);
+      const names = await beforeDeadline(files.readdir(full), deadline);
+      for (const name of names.sort()) await walk(path.join(full, name), rel ? `${rel}/${name}` : name);
       return;
     }
     if (!stat.isFile()) return;
@@ -666,7 +807,7 @@ async function digestOf(root, deadline) {
     if (entries.length >= MAX_DIGEST_FILES || bytes > MAX_DIGEST_BYTES) {
       throw fail("TOO_LARGE", `The upload's source is over ${MAX_DIGEST_FILES} files or 1 GB; upload it in parts.`);
     }
-    const sha = await fileSha256(full, deadline, timeUp);
+    const sha = await fileSha256(full, deadline, files);
     entries.push(`${rel || path.basename(full)}\0${stat.size}\0${sha}`);
   };
   await walk(root, "");
@@ -692,7 +833,9 @@ function createAws({
   budgetMs = TOOL_BUDGET_MS,
   recordMarginMs = RECORD_MARGIN_MS,
   minCallMs = MIN_CALL_MS,
+  files: fileCalls = {},
 }) {
+  const files = { ...FILES, ...fileCalls };
   let reader = null; // { key, promise, proc, idle }: one read-only server, started once
   let setupState = { state: "not run" };
 
@@ -888,7 +1031,7 @@ function createAws({
     }
     const blocked = blockedChange(cmd) || (secretRead(cmd) ? "That command returns a secret." : "");
     if (blocked) throw fail("BLOCKED", blocked);
-    const local = await localSource(cmd, await workDir(), deadline - recordMarginMs);
+    const local = await localSource(cmd, await workDir(), deadline - recordMarginMs, files);
     const client = await hub();
     // the region the CLI will use: the command's own --region wins over the settings'
     const payload = { command: cmd.command, profile: conf.profile || "default", region: cmd.region || conf.region };

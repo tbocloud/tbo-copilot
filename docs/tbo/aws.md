@@ -36,11 +36,19 @@ TBO Copilot (the person's computer)                                  TBO Support
   runs it, and records the outcome on the approval. An approval is spent once it has run, and expires after 60
   minutes either way. Every read and change ends within 100 seconds, inside the app's 110-second limit; a change
   that gets no answer in time is recorded as spent ("may have run, check AWS"), so it can never run twice.
-- **An upload is approved for its content.** For `aws s3 cp` or `sync` from a local folder, the tool hashes every
-  file when it asks; the card shows the file count and the hash, and the approval names that hash. A file changed
-  after the approval no longer matches, and the tool asks again instead of uploading. The source is the first of
-  exactly two arguments (options are skipped with their values), must sit inside the AWS tool's work folder, and may
-  not contain links; the files are read in chunks within the call's time, at most 5,000 files and 1 GB.
+- **An upload is approved for its content.** For `aws s3 cp` or `sync` from a local folder, and for an operation
+  that reads one local file by an option (`aws s3api put-object --body`, `upload-part`, a Glacier archive and the
+  other streaming inputs in AWS's models), the tool hashes every file when it asks; the card shows the file count and
+  the hash, and the approval names that hash. A file changed after the approval no longer matches, and the tool asks
+  again instead of uploading. The `s3 cp`/`sync` source is the first of exactly two arguments (options are skipped
+  with their values); a file option is written once. The path must sit inside the AWS tool's work folder and may not
+  contain links. The files are read in chunks, at most 5,000 files and 1 GB, and every read and folder listing ends
+  at the call's deadline, even one that stalls; a digest finished late is not used, and nobody is asked.
+- **The command is read as AWS reads it.** It is split into words exactly as the AWS server splits it (POSIX shell
+  rules: quoted and unquoted pieces next to each other are one word, so `--reg'ion'` is `--region`). The AWS CLI
+  takes any unique beginning of an option's name for the whole name (`--regi` is `--region`, `--endpoint` is
+  `--endpoint-url`), so a shortened form of an option the checks read is refused, and so is a bare `--`. The delete
+  and `file://` checks read the command both as written and as split.
 - **Global options:** the checks read the service and operation after any AWS CLI global options
   (`aws --region x kms decrypt` is checked as `kms decrypt`). `--profile`, `--endpoint-url`, `--ca-bundle`,
   `--no-verify-ssl` and `--no-sign-request` are refused anywhere: the profile is the one in the settings (the one the
@@ -74,7 +82,7 @@ TBO Copilot (the person's computer)                                  TBO Support
 |---|---|---|
 | **Allowed at once** | Any read AWS classifies as read-only: instances and status checks, CloudWatch metrics, DNS records, buckets and objects listed, CloudFront distributions, Elastic IPs, volumes, Cost Explorer | the app's own tool log |
 | **Allowed after approval** | A change that passes the block list: start, stop or reboot an instance, a DNS record created or changed (`UPSERT`), an upload to a bucket, a CloudFront invalidation, and the like. Needs **Allow AWS changes** on the person's computer and an approver who is not the person | the action approval in TBO Support (who asked, the exact command, who approved, when, the outcome) and HDS Copilot Call Log |
-| **Blocked** | Any operation that deletes or ends something (`delete*`, `terminate*`, `remove*`, `deregister*`, `purge*`, `disassociate*`, `revoke*`, `release*`, `detach*`); `aws s3 rm`, `rb`, `mv`; any `--delete`; a change batch with `DELETE` in it (plain or escaped JSON); S3 bucket lifecycle rules (they expire objects); IAM, STS, Organizations, SSO, KMS, Secrets Manager and account changes; a change that hides its content in `file://`; a change across all regions (`--region *`); a command that names two different regions; parameters given as a `--cli-input-json` or `--cli-input-yaml` document; the secret-returning and secret-bearing reads above; an upload from outside the work folder or with links in it | refused before anything is sent |
+| **Blocked** | Any operation that deletes or ends something (`delete*`, `terminate*`, `remove*`, `deregister*`, `purge*`, `disassociate*`, `revoke*`, `release*`, `detach*`); `aws s3 rm`, `rb`, `mv`; any `--delete`; a change batch with `DELETE` in it (plain or escaped JSON); S3 bucket lifecycle rules (they expire objects); IAM, STS, Organizations, SSO, KMS, Secrets Manager and account changes; a change that hides its content in `file://`; a change across all regions (`--region *`); a command that names two different regions; parameters given as a `--cli-input-json` or `--cli-input-yaml` document; the secret-returning and secret-bearing reads above; an upload from outside the work folder or with links in it; a shortened name of an option the checks read (`--regi` for `--region`) or a bare `--` | refused before anything is sent |
 
 The AWS permission sets are the second net: the read-only profile cannot change anything even if a check were wrong,
 and the changes profile has no delete or IAM permissions.
