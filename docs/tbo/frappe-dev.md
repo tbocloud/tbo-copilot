@@ -1,9 +1,10 @@
 # Frappe development from a task (`tbo.frappe-dev`)
 
 **Status:** built for TBO Copilot Phase 20 (TASK-2026-00021). A bundled plugin, `tbo/plugins/tbo.frappe-dev/`, with
-two agent tools and four skills. The task itself is read through the `tbo.support` plugin's `tbo_support` tool:
-`my_tasks`, `get_task` and `start_task` come with TBO Support plugin **0.4.0**. With an earlier TBO Support plugin the
-start-task skill asks the person for the task's subject, and the person starts the task's timer in TBO Support.
+two agent tools and four skills. The task itself is read through the `tbo.support` plugin's `tbo_support` tool
+(`my_tasks`, `get_task`), and its timer started with `tbo_support_change` `start_task`, which the app asks the person
+about first; all three come with TBO Support plugin **0.4.0**. With an earlier TBO Support plugin the start-task skill
+asks the person for the task's subject, and the person starts the task's timer in TBO Support.
 
 A developer builds a Frappe or ERPNext feature from a TBO Support task in the desktop app. Copilot starts a branch
 named after the task, writes the code the way TBO writes Frappe code, runs the module's tests and the linters the
@@ -14,7 +15,7 @@ its GitHub sync (`helpdesk/github_sync.py`).
 
 ```
 /start-task TASK-…  ──► tbo_support get_task ──► tbo_dev start_work ──► feature/TASK-…-short-name (from origin's base)
-                        tbo_support start_task (timer on; TBO Support plugin 0.4.0)
+                        tbo_support_change start_task (timer on, once allowed; TBO Support plugin 0.4.0)
 code and tests      ──► conventional commits
                     ──► tbo_dev run_tests  (bench --site <test site> run-tests --module …, in the background)
                     ──► tbo_dev check      (pre-commit, Semgrep, commit titles: what CI runs, in the background)
