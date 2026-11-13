@@ -29,8 +29,11 @@ TBO Copilot (the person's computer)                                  TBO Support
   EC2 launch template versions and an instance's `userData` attribute. They are refused whole, because a `--query`
   can return one value that no output cleaning recognises.
 - **Changes** are two calls. The first passes the checks below and asks TBO Support for an **action approval** of the
-  exact command, profile and region (the command's own `--region` when it names one, else the setting's: the
-  region the AWS CLI will use); an approver gets the card in Teams (or the TBO Support panel) and nothing runs.
+  exact command, profile and region; an approver gets the card in Teams (or the TBO Support panel) and nothing runs.
+  The region is the one the AWS server will run it in: a service AWS pins to one region (Route 53 Domains, Global
+  Accelerator and the like) names that one, else the command's own `--region`, else the setting's. A command
+  without `--region` runs with the approved region written in, so an ARN of another region cannot move it there
+  (it fails instead).
   When the person says it is approved, the agent calls `change` again with exactly the same command: TBO Support
   confirms the approval (approved by someone else, within the hour), the plugin starts a server for that one call,
   runs it, and records the outcome on the approval. An approval is spent once it has run, and expires after 60
@@ -38,12 +41,14 @@ TBO Copilot (the person's computer)                                  TBO Support
   that gets no answer in time is recorded as spent ("may have run, check AWS"), so it can never run twice.
 - **An upload is approved for its content.** For `aws s3 cp` or `sync` from a local folder, and for an operation
   that reads one local file by an option (`aws s3api put-object --body`, `upload-part`, a Glacier archive and the
-  other streaming inputs in AWS's models), the tool hashes every file when it asks; the card shows the file count and
-  the hash, and the approval names that hash. A file changed after the approval no longer matches, and the tool asks
-  again instead of uploading. The `s3 cp`/`sync` source is the first of exactly two arguments (options are skipped
-  with their values); a file option is written once. The path must sit inside the AWS tool's work folder and may not
-  contain links. The files are read in chunks, at most 5,000 files and 1 GB, and every read and folder listing ends
-  at the call's deadline, even one that stalls; a digest finished late is not used, and nobody is asked.
+  other streaming inputs in AWS's models), each call first copies the files into a fresh read-only snapshot in the
+  work folder and hashes the bytes as it copies them; the card shows the file count and the hash, and the approval
+  names that hash. An approved change runs from that call's snapshot, so a file edited after the check is never what
+  is uploaded, and a file changed after the approval no longer matches: the tool asks again. The snapshot is removed
+  when the call ends. The `s3 cp`/`sync` source is the first of exactly two arguments (options are skipped with their
+  values); a file option is written once. The path must sit inside the AWS tool's work folder (not be the work
+  folder itself) and may not contain links. At most 5,000 files and 1 GB; every read and folder listing ends at the
+  call's deadline, even one that stalls; a snapshot finished late is not used, and nobody is asked.
 - **The command is read as AWS reads it.** It is split into words exactly as the AWS server splits it (POSIX shell
   rules: quoted and unquoted pieces next to each other are one word, so `--reg'ion'` is `--region`). The AWS CLI
   takes any unique beginning of an option's name for the whole name (`--regi` is `--region`, `--endpoint` is

@@ -645,8 +645,8 @@ const S3_FLAGS = new Set([
   ...GLOBAL_FLAGS,
 ]);
 
-// The words of a command that are neither options nor option values: the service, the operation,
-// then the operation's own arguments.
+// The words of a command that are neither options nor option values, with their place in it: the
+// service, the operation, then the operation's own arguments.
 function positionals(parts, flags) {
   const out = [];
   for (let i = 1; i < parts.length; i += 1) {
@@ -655,7 +655,7 @@ function positionals(parts, flags) {
       if (!word.includes("=") && !flags.has(word)) i += 1;
       continue;
     }
-    out.push(word);
+    out.push({ index: i, value: word });
   }
   return out;
 }
@@ -684,25 +684,25 @@ const STREAMING_INPUTS = new Map([
   ["omics upload-read-set-part", "--payload"],
 ]);
 
-// The values of an option, written "--name value" or "--name=value".
-function optionValues(parts, name) {
-  const values = [];
+// Where an option's value stands: "--name value" (the next word) or "--name=value" (the same word).
+function optionPlaces(parts, name) {
+  const places = [];
   parts.forEach((p, i) => {
-    if (p === name && i + 1 < parts.length) values.push(parts[i + 1]);
-    else if (p.startsWith(`${name}=`)) values.push(p.slice(name.length + 1));
+    if (p === name && i + 1 < parts.length) places.push({ index: i + 1, prefix: "", value: parts[i + 1] });
+    else if (p.startsWith(`${name}=`)) places.push({ index: i, prefix: `${name}=`, value: p.slice(name.length + 1) });
   });
-  return values;
+  return places;
 }
 
-// The local path a change uploads, or null: the file of a streaming input ("aws s3api put-object
-// --body site/index.html"), or the source of "aws s3 cp/sync", the first of exactly two arguments.
-// Null for a copy within S3 or a download.
+// The local path a change uploads and where it stands in the command, or null: the file of a
+// streaming input ("aws s3api put-object --body site/index.html"), or the source of "aws s3
+// cp/sync", the first of exactly two arguments. Null for a copy within S3 or a download.
 function uploadSource(cmd) {
   const input = STREAMING_INPUTS.get(`${cmd.service} ${cmd.operation}`);
   if (input) {
-    const values = optionValues(cmd.parts, input);
-    if (values.length > 1) throw fail("INVALID_ARGUMENT", `Write "${input}" once: the approval covers one file.`);
-    return values.length ? values[0] : null;
+    const places = optionPlaces(cmd.parts, input);
+    if (places.length > 1) throw fail("INVALID_ARGUMENT", `Write "${input}" once: the approval covers one file.`);
+    return places.length ? places[0] : null;
   }
   if (cmd.service !== "s3" || !["cp", "sync"].includes(cmd.operation)) return null;
   const args = positionals(cmd.parts, S3_FLAGS).slice(2);
@@ -713,10 +713,10 @@ function uploadSource(cmd) {
     );
   }
   const [source, destination] = args;
-  return /^s3:\/\//i.test(source) || !/^s3:\/\//i.test(destination) ? null : source;
+  return /^s3:\/\//i.test(source.value) || !/^s3:\/\//i.test(destination.value) ? null : { ...source, prefix: "" };
 }
 
-// The file system calls an upload's digest makes; tests replace them to stall a read.
+// The file system calls an upload's snapshot makes on the source; tests replace them to stall a read.
 const FILES = {
   lstat: (p) => fs.promises.lstat(p),
   readdir: (p) => fs.promises.readdir(p),
@@ -737,12 +737,46 @@ function beforeDeadline(promise, deadline) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-// What a change uploads from this computer, as one digest: the approval names the content, so
-// files changed after the approval no longer match it. The path must resolve inside the AWS tool's
-// work folder; the digest is finished before the deadline or not used.
+// An upload's snapshot: a fresh folder in the work folder (the only place the AWS server reads
+// local files), made for one call and removed when it ends; one left by a crash goes after an hour.
+const SNAPSHOT_PREFIX = ".tbo-upload-";
+const SNAPSHOT_MAX_AGE_MS = 60 * 60 * 1000;
+
+async function removeSnapshot(dir) {
+  const unlock = async (p) => {
+    const stat = await fs.promises.lstat(p);
+    await fs.promises.chmod(p, stat.isDirectory() ? 0o700 : 0o600);
+    if (stat.isDirectory()) for (const name of await fs.promises.readdir(p)) await unlock(path.join(p, name));
+  };
+  try {
+    await unlock(dir);
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  } catch {
+    // best effort: a later call removes it once it is an hour old
+  }
+}
+
+async function removeOldSnapshots(workDir) {
+  try {
+    for (const name of await fs.promises.readdir(workDir)) {
+      if (!name.startsWith(SNAPSHOT_PREFIX)) continue;
+      const full = path.join(workDir, name);
+      if (Date.now() - (await fs.promises.lstat(full)).mtimeMs > SNAPSHOT_MAX_AGE_MS) await removeSnapshot(full);
+    }
+  } catch {
+    // best effort
+  }
+}
+
+// What a change uploads from this computer, copied into a fresh read-only snapshot and hashed from
+// the bytes as they are copied: the approval names that digest, and an approved change runs from
+// the snapshot, so a file changed after the check is never what reaches AWS. The source must
+// resolve inside the work folder (not be the work folder itself); a snapshot not finished before the
+// deadline is removed and nothing is asked.
 async function localSource(cmd, workDir, deadline, files = FILES) {
-  const source = uploadSource(cmd);
-  if (source == null) return null;
+  const place = uploadSource(cmd);
+  if (place == null) return null;
+  const source = place.value;
   const realWork = await beforeDeadline(files.realpath(workDir), deadline);
   let real;
   try {
@@ -754,16 +788,31 @@ async function localSource(cmd, workDir, deadline, files = FILES) {
   if (!inside(realWork, real)) {
     throw fail("INVALID_ARGUMENT", `An upload's source must be inside the AWS tool's work folder (${workDir}); "${source}" is not.`);
   }
-  const digest = await digestOf(real, deadline, files);
-  if (Date.now() > deadline) throw hashTimeUp(); // finished late: nothing is asked
-  return { path: source, ...digest };
+  if (real === realWork) {
+    throw fail("INVALID_ARGUMENT", `Put the upload in a folder inside the AWS tool's work folder (${workDir}), not the work folder itself.`);
+  }
+  await removeOldSnapshots(workDir);
+  const dir = await fs.promises.mkdtemp(path.join(workDir, SNAPSHOT_PREFIX));
+  try {
+    // the copy keeps the source's own name: "aws s3 cp index.html s3://b/" still writes the key index.html
+    const target = path.join(dir, path.basename(path.resolve(workDir, source)));
+    const digest = await snapshotOf(real, target, deadline, files);
+    if (Date.now() > deadline) throw hashTimeUp(); // finished late: nothing is asked
+    return { path: source, index: place.index, prefix: place.prefix, snapshotDir: dir, runPath: path.relative(workDir, target), ...digest };
+  } catch (e) {
+    await removeSnapshot(dir);
+    throw e;
+  }
 }
 
-// One file's SHA-256, read in 1 MB chunks; a read that stalls ends at the deadline.
-function fileSha256(full, deadline, files) {
+// One file copied into the snapshot (then made read-only), its SHA-256 taken from the bytes
+// written, in 1 MB chunks; a read that stalls ends at the deadline.
+function copyFile(src, dest, deadline, files) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash("sha256");
-    const stream = files.createReadStream(full, { highWaterMark: 1024 * 1024 });
+    const input = files.createReadStream(src, { highWaterMark: 1024 * 1024 });
+    const output = fs.createWriteStream(dest, { flags: "wx", mode: 0o600 });
+    let size = 0;
     let done = false;
     let timer = null;
     const finish = (error, value) => {
@@ -771,51 +820,107 @@ function fileSha256(full, deadline, files) {
       done = true;
       clearTimeout(timer);
       if (error) {
-        stream.destroy();
+        input.destroy();
+        output.destroy();
         reject(error);
       } else resolve(value);
     };
     timer = setTimeout(() => finish(hashTimeUp()), Math.max(0, deadline - Date.now()));
-    stream.on("data", (chunk) => {
-      if (Date.now() > deadline) finish(hashTimeUp());
-      else hash.update(chunk);
+    input.on("data", (chunk) => {
+      if (Date.now() > deadline) return finish(hashTimeUp());
+      hash.update(chunk);
+      size += chunk.length;
+      if (!output.write(chunk)) {
+        input.pause();
+        output.once("drain", () => input.resume());
+      }
     });
-    stream.on("error", (e) => finish(e));
-    stream.on("end", () => finish(null, hash.digest("hex")));
+    input.on("error", (e) => finish(e));
+    output.on("error", (e) => finish(e));
+    input.on("end", () => output.end());
+    output.on("finish", () => {
+      fs.promises.chmod(dest, 0o444).then(
+        () => finish(null, { sha: hash.digest("hex"), size }),
+        (e) => finish(e),
+      );
+    });
   });
 }
 
-// One digest of a folder or file: each file's path, size and SHA-256, read in chunks without
-// blocking the plugin, within the call's time; links are refused (the approval must cover what is
-// uploaded, not what a link points at).
-async function digestOf(root, deadline, files) {
+// A folder or file copied into the snapshot, and one digest of what was copied: each file's path,
+// size and SHA-256, within the call's time, at most 5,000 files and 1 GB. Links are refused (the
+// approval must cover what is uploaded, not what a link points at). The copy's folders are made
+// read-only too, so nothing is added to it before it is uploaded.
+async function snapshotOf(root, target, deadline, files) {
   const entries = [];
+  const folders = [];
   let bytes = 0;
-  const walk = async (full, rel) => {
+  const tooLarge = () => fail("TOO_LARGE", `The upload's source is over ${MAX_DIGEST_FILES} files or 1 GB; upload it in parts.`);
+  const walk = async (full, copy, rel) => {
     if (Date.now() > deadline) throw hashTimeUp();
     const stat = await beforeDeadline(files.lstat(full), deadline);
     if (stat.isSymbolicLink()) {
       throw fail("INVALID_ARGUMENT", `The upload contains a link (${rel}); put the real files in the work folder, so the approval covers what is uploaded.`);
     }
     if (stat.isDirectory()) {
+      await fs.promises.mkdir(copy);
+      folders.push(copy);
       const names = await beforeDeadline(files.readdir(full), deadline);
-      for (const name of names.sort()) await walk(path.join(full, name), rel ? `${rel}/${name}` : name);
+      for (const name of names.sort()) await walk(path.join(full, name), path.join(copy, name), rel ? `${rel}/${name}` : name);
       return;
     }
-    if (!stat.isFile()) return;
-    bytes += stat.size;
-    if (entries.length >= MAX_DIGEST_FILES || bytes > MAX_DIGEST_BYTES) {
-      throw fail("TOO_LARGE", `The upload's source is over ${MAX_DIGEST_FILES} files or 1 GB; upload it in parts.`);
-    }
-    const sha = await fileSha256(full, deadline, files);
-    entries.push(`${rel || path.basename(full)}\0${stat.size}\0${sha}`);
+    if (!stat.isFile()) return; // a socket or a pipe is not copied, so it is not uploaded either
+    if (entries.length >= MAX_DIGEST_FILES || bytes + stat.size > MAX_DIGEST_BYTES) throw tooLarge();
+    const { sha, size } = await copyFile(full, copy, deadline, files);
+    bytes += size;
+    if (bytes > MAX_DIGEST_BYTES) throw tooLarge(); // it grew while it was copied
+    entries.push(`${rel || path.basename(copy)}\0${size}\0${sha}`);
   };
-  await walk(root, "");
+  await walk(root, target, "");
+  for (const folder of folders.reverse()) await fs.promises.chmod(folder, 0o555);
   return {
     files: entries.length,
     bytes,
     digest: crypto.createHash("sha256").update(entries.join("\n")).digest("hex"),
   };
+}
+
+// Services the AWS server always sends to one fixed region, whatever the command says (its
+// GLOBAL_SERVICE_REGIONS in the pinned version).
+const FIXED_REGIONS = new Map([
+  ["devicefarm", "us-west-2"],
+  ["ecr-public", "us-east-1"],
+  ["globalaccelerator", "us-west-2"],
+  ["marketplace-catalog", "us-east-1"],
+  ["route53-recovery-control-config", "us-west-2"],
+  ["route53-recovery-readiness", "us-west-2"],
+  ["route53domains", "us-east-1"],
+  ["sagemaker-geospatial", "us-west-2"],
+]);
+
+// The region an approved change runs in, the one its approval names: a fixed-region service's own,
+// else the command's --region, else the settings'. Without --region the AWS server would follow an
+// ARN in the command to its region, so the region is written into the command that runs.
+function executionRegion(cmd, conf) {
+  return FIXED_REGIONS.get(cmd.service) || cmd.region || conf.region;
+}
+
+// Python's shlex.quote: the AWS server splits the command back into exactly these words.
+function shellQuote(word) {
+  if (word === "") return "''";
+  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'"'"'`)}'`;
+}
+
+// The command an approved change runs: the approved one, reading its upload from the snapshot, with
+// the region written in when the command names none.
+function commandToRun(cmd, local, region) {
+  let text = cmd.command;
+  if (local) {
+    const parts = cmd.parts.slice();
+    parts[local.index] = `${local.prefix}${local.runPath}`;
+    text = parts.map(shellQuote).join(" ");
+  }
+  return cmd.region ? text : `${text} --region ${shellQuote(region)}`;
 }
 
 // One AWS tool per plugin: the read-only server is kept for ten minutes between
@@ -1032,9 +1137,19 @@ function createAws({
     const blocked = blockedChange(cmd) || (secretRead(cmd) ? "That command returns a secret." : "");
     if (blocked) throw fail("BLOCKED", blocked);
     const local = await localSource(cmd, await workDir(), deadline - recordMarginMs, files);
+    try {
+      return await approveAndRun(args, cmd, conf, local, deadline);
+    } finally {
+      if (local) await removeSnapshot(local.snapshotDir);
+    }
+  }
+
+  // The approval of this exact command, profile, region and upload; once given, the one run.
+  async function approveAndRun(args, cmd, conf, local, deadline) {
     const client = await hub();
-    // the region the CLI will use: the command's own --region wins over the settings'
-    const payload = { command: cmd.command, profile: conf.profile || "default", region: cmd.region || conf.region };
+    // the region the AWS server will use, written into the command that runs when it names none
+    const region = executionRegion(cmd, conf);
+    const payload = { command: cmd.command, profile: conf.profile || "default", region };
     // an upload is approved for its content: changed files after the approval need a new one
     if (local) payload.content_sha256 = local.digest;
     const approved = await client.method(HUB.approved, { kind: APPROVAL_KIND, payload });
@@ -1045,7 +1160,7 @@ function createAws({
         title: clip(`AWS: aws ${cmd.service} ${cmd.operation}`, 130),
         details: [
           `${cmd.command}`,
-          `profile ${payload.profile}, region ${payload.region}`,
+          `profile ${payload.profile}, region ${payload.region}${cmd.region ? "" : " (written into the command when it runs)"}`,
           local && `uploads ${local.path}: ${local.files} files, ${local.bytes} bytes, sha256 ${local.digest.slice(0, 16)}…`,
           reason && `why: ${reason}`,
         ]
@@ -1067,10 +1182,12 @@ function createAws({
       throw fail("TIMEOUT", `Approved (${approved.name}), but too little time is left in this call to run it safely. Call change again with the same command; nothing has run.`);
     }
     log(`tbo_aws change ${approved.name}: aws ${cmd.service} ${cmd.operation}`);
+    // from the upload's snapshot, the bytes the approval names, and in the region it names
+    const runCommand = commandToRun(cmd, local, region);
     let done;
     const proc = await startServer(conf, false, deadline - recordMarginMs);
     try {
-      done = await callAws(proc, cmd.command, left(deadline) - recordMarginMs);
+      done = await callAws(proc, runCommand, left(deadline) - recordMarginMs);
     } catch (e) {
       // No answer in time: AWS may still have done it, so the approval is spent, never run twice.
       done =
@@ -1088,7 +1205,14 @@ function createAws({
       const hint = hintFor(done.errorText, conf.profile);
       throw fail("AWS_ERROR", `Approved (${approved.name}) but AWS refused it: ${clip(done.errorText, 800)}${hint ? ` ${hint}` : ""}`);
     }
-    return { ran: true, approval: approved.name, approved_by: approved.decided_by, command: cmd.command, output: untrustedOutput(done.output) };
+    return {
+      ran: true,
+      approval: approved.name,
+      approved_by: approved.decided_by,
+      command: cmd.command,
+      ran_as: runCommand,
+      output: untrustedOutput(done.output),
+    };
   }
 
   async function run(args) {

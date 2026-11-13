@@ -4,6 +4,8 @@
 // stdio and answers call_aws the way the real one does, deciding "read" by the
 // operation's verb. It never calls AWS.
 
+const fs = require("node:fs");
+const path = require("node:path");
 const readline = require("node:readline");
 
 const READ_ONLY = process.env.READ_OPERATIONS_ONLY === "true";
@@ -61,7 +63,21 @@ function callAws(id, command) {
     region: process.env.AWS_REGION || null,
     keyForwarded: Boolean(process.env.AWS_ACCESS_KEY_ID),
   };
+  // what an upload would send, read from the server's working folder as the real CLI would
+  const words = command.split(/\s+/);
+  const body = words.indexOf("--body");
+  if (body > 0) out.body = fs.readFileSync(path.resolve(words[body + 1]), "utf8");
+  if (words[1] === "s3" && ["cp", "sync"].includes(words[2]) && !words[3].startsWith("s3://")) out.uploaded = listing(words[3]);
   return answer(id, [ok(command, JSON.stringify(out))], command.includes("structured"));
+}
+
+function listing(root, rel = "", out = {}) {
+  for (const name of fs.readdirSync(path.resolve(root, rel)).sort()) {
+    const next = rel ? `${rel}/${name}` : name;
+    if (fs.statSync(path.resolve(root, next)).isDirectory()) listing(root, next, out);
+    else out[next] = fs.readFileSync(path.resolve(root, next), "utf8");
+  }
+  return out;
 }
 
 rl.on("line", (line) => {

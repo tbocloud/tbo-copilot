@@ -325,7 +325,9 @@ test("once approved, the same command runs once on a changes server and the outc
   assert.equal(result.approved_by, "approver@example.com");
   const out = parsedOutput(result);
   assert.equal(out.readOnly, false);
-  assert.equal(out.command, TXT_CHANGE);
+  // the region on the card is written into the command that runs
+  assert.equal(out.command, `${TXT_CHANGE} --region ap-south-1`);
+  assert.equal(result.command, TXT_CHANGE);
   assert.deepEqual(launches, ["changes"]);
   const executed = hub.calls.find((c) => c[1] === EXECUTED);
   assert.equal(executed[2].name, "TBO-ACT-2026-00007");
@@ -689,4 +691,96 @@ test("hashing ends at the deadline when a read stalls or a folder answers late, 
   await assert.rejects(empty.aws.run({ action: "change", command: "aws s3 cp empty s3://example-bucket/ --recursive" }), { code: "TIMEOUT" });
   assert.ok(Date.now() - started < 1500, "an empty folder that answers late ends at the deadline");
   assert.equal(empty.hub.calls.length, 0);
+});
+
+// --- CodeRabbit's fourth review of PR #24 ---------------------------------------------------------
+
+function snapshots(dataDir) {
+  return fs.readdirSync(path.join(dataDir, "aws-workdir")).filter((n) => n.startsWith(".tbo-upload-"));
+}
+
+// The hub answers the approval lookup; right after it, something edits the files that were checked.
+function editAfterApproval(hub, edit) {
+  const lookup = hub.client.method;
+  hub.client.method = async (p, params) => {
+    const answer = await lookup(p, params);
+    if (p === APPROVED && answer) edit();
+    return answer;
+  };
+}
+
+test("an approved upload runs from a snapshot of the checked bytes; a later edit is not uploaded", async (t) => {
+  const { aws, hub, dataDir } = setup(t);
+  const site = path.join(dataDir, "aws-workdir", "site");
+  fs.mkdirSync(site, { recursive: true });
+  fs.writeFileSync(path.join(site, "index.html"), "<h1>approved</h1>");
+  const command = `aws s3api put-object --bucket example-bucket --key index.html --metadata '{"note":"two words"}' --body site/index.html`;
+  const asked = await aws.run({ action: "change", command });
+  assert.equal(asked.status, "waiting for approval");
+  assert.deepEqual(snapshots(dataDir), [], "the snapshot of a request is removed");
+  hub.approve();
+  editAfterApproval(hub, () => fs.writeFileSync(path.join(site, "index.html"), "<h1>edited after the check</h1>"));
+  const result = await aws.run({ action: "change", command });
+  assert.equal(result.ran, true);
+  const out = parsedOutput(result);
+  assert.equal(out.body, "<h1>approved</h1>");
+  assert.equal(result.command, command);
+  // the command that ran is the approved one, word for word, but for the snapshot's path and the region
+  const ran = cmd(out.command).parts;
+  const approved = cmd(command).parts;
+  assert.match(ran[approved.length - 1], /^\.tbo-upload-[^/\\]+[/\\]index\.html$/);
+  assert.deepEqual(ran.slice(0, approved.length - 1), approved.slice(0, -1));
+  assert.deepEqual(ran.slice(approved.length), ["--region", "ap-south-1"]);
+  assert.deepEqual(snapshots(dataDir), [], "the snapshot is removed after the run");
+});
+
+test("an approved folder upload sends the folder as checked, not files changed or added later", async (t) => {
+  const { aws, hub, dataDir } = setup(t);
+  const site = path.join(dataDir, "aws-workdir", "site");
+  fs.mkdirSync(path.join(site, "css"), { recursive: true });
+  fs.writeFileSync(path.join(site, "index.html"), "v1");
+  fs.writeFileSync(path.join(site, "css", "main.css"), "h1{}");
+  hub.approve();
+  editAfterApproval(hub, () => {
+    fs.writeFileSync(path.join(site, "index.html"), "v2, not approved");
+    fs.writeFileSync(path.join(site, "extra.html"), "not approved");
+  });
+  const result = await aws.run({ action: "change", command: "aws s3 cp site s3://example-bucket/ --recursive" });
+  assert.deepEqual(parsedOutput(result).uploaded, { "css/main.css": "h1{}", "index.html": "v1" });
+  assert.deepEqual(snapshots(dataDir), []);
+});
+
+test("the work folder itself is not an upload source (its snapshots live there)", async (t) => {
+  const { aws, hub } = setup(t);
+  for (const command of ["aws s3 cp . s3://example-bucket/ --recursive", "aws s3 sync ./ s3://example-bucket/"]) {
+    await assert.rejects(aws.run({ action: "change", command }), { code: "INVALID_ARGUMENT", message: /not the work folder itself/ }, command);
+  }
+  assert.equal(hub.calls.length, 0);
+});
+
+test("a change runs in the region its approval names, even when an ARN names another", async (t) => {
+  const { aws, hub } = setup(t); // settings: ap-south-1
+  const publish = "aws sns publish --topic-arn arn:aws:sns:us-east-1:123456789012:alerts --message test";
+  await aws.run({ action: "change", command: publish });
+  const [lookup, ask] = hub.calls;
+  assert.equal(lookup[2].payload.region, "ap-south-1");
+  assert.match(ask[2].details, /region ap-south-1 \(written into the command when it runs\)/);
+  hub.approve();
+  const ran = await aws.run({ action: "change", command: publish });
+  assert.equal(parsedOutput(ran).command, `${publish} --region ap-south-1`);
+  // a command that names its region runs as written
+  const named = "aws sns publish --topic-arn arn:aws:sns:us-east-1:123456789012:alerts --message test --region us-east-1";
+  assert.equal(parsedOutput(await aws.run({ action: "change", command: named })).command, named);
+});
+
+test("a service AWS pins to one region is approved for that region, whatever the command says", async (t) => {
+  const { aws, hub } = setup(t); // settings: ap-south-1
+  const plain = "aws route53domains update-domain-nameservers --domain-name example.com --nameservers Name=ns1.example.com";
+  await aws.run({ action: "change", command: plain });
+  await aws.run({ action: "change", command: `${plain} --region eu-west-1` });
+  await aws.run({ action: "change", command: "aws globalaccelerator update-accelerator --accelerator-arn arn:aws:globalaccelerator::123456789012:accelerator/a --enabled" });
+  const regions = hub.calls.filter((c) => c[1] === APPROVED).map((c) => c[2].payload.region);
+  assert.deepEqual(regions, ["us-east-1", "us-east-1", "us-west-2"]);
+  hub.approve();
+  assert.equal(parsedOutput(await aws.run({ action: "change", command: plain })).command, `${plain} --region us-east-1`);
 });
