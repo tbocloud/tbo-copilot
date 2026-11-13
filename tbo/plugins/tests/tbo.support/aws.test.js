@@ -867,7 +867,13 @@ test("a source time at a half-microsecond boundary is copied as the AWS CLI read
   fs.mkdirSync(site, { recursive: true });
   const file = path.join(site, "index.html");
   fs.writeFileSync(file, "x");
-  require("node:child_process").execFileSync("touch", ["-d", "2024-01-02T03:04:05.000000500Z", file]);
+  // Node sets times only as doubles; touch -d sets the exact nanoseconds (GNU and BSD touch)
+  try {
+    require("node:child_process").execFileSync("touch", ["-d", "2024-01-02T03:04:05.000000500Z", file], { stdio: "ignore" });
+  } catch {
+    t.skip("no touch -d on this system (Windows)");
+    return;
+  }
   const ns = fs.statSync(file, { bigint: true }).mtimeNs;
   if (ns % 1000n !== 500n) {
     t.skip("this file system does not keep nanoseconds");
