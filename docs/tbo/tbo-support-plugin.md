@@ -123,6 +123,17 @@ TBO Support holds the Press key and the rules (its `press_tools.ACTIONS` table);
 
 Deletes (archive a site, drop a bench, archive a server, and the like) are not offered and TBO Support refuses them.
 
+### 5b. Task actions (0.4.0)
+
+For work on a TBO Support task in the desktop app with the `tbo.frappe-dev` plugin (Phase 20,
+[frappe-dev.md](frappe-dev.md)). They use the hub's task API for agents, the one the mobile app uses.
+
+| Action | Returns or does | Helpdesk API | Inputs | Plan-safe |
+|---|---|---|---|---|
+| `my_tasks` | The signed-in person's open tasks, overdue first: number, subject (untrusted), status, group, project, customer, deadline, priority, timer | `helpdesk.api.mobile.get_tasks` | `group`, `limit` | yes |
+| `get_task` | One task with its description and last ten activity items (untrusted), its pull requests, and `branch_subject`: the subject with only letters, digits, spaces and `._-`, for `tbo_dev` `start_work` | `helpdesk.api.mobile.get_task` | `task` | yes |
+| `start_task` | Starts the person's own timer on the task (Open becomes Working) | `POST helpdesk.api.mobile.start_task` | `task` | no |
+
 **Input rules:**
 - `ticket` accepts `1`, `#1`, `0001` or `HD-0001`. HD Ticket names are zero-padded to four digits (autoname `.####`: `0001`, `0042`, `12345`), so the number is padded the same way. If that name is not found, the plain number is tried once, for a site that names tickets without padding.
 - Text inputs are trimmed and length-checked.
@@ -335,6 +346,8 @@ docs/tbo/tbo-support-plugin.md     # this document
 | `helpdesk.api.customization.get_estimate` | Read permission |
 | `helpdesk.api.article.search` | Signed in |
 | `helpdesk.api.knowledge_base.get_article` | Non-agents see published articles only |
+| `helpdesk.api.mobile.get_tasks`, `get_task` | `@agent_only`; `get_task` checks the task's read permission |
+| `helpdesk.api.mobile.start_task` | `@agent_only` + the task's write permission |
 
 
 ## 15. Build plan

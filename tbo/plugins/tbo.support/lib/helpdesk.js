@@ -4,8 +4,9 @@
 // transport is passed in: pi.net.fetch in the desktop app, Node's fetch on a
 // server. Only the API paths below can be called. Reads use GET. The few POSTs
 // (WRITE_METHODS) never change a ticket: they ask TBO Support for an approval,
-// say how an approved action went, take a Press backup, or ask for a Press
-// action that then waits for an approver (TBO Copilot Phase 18).
+// say how an approved action went, take a Press backup, ask for a Press
+// action that then waits for an approver (TBO Copilot Phase 18), or start the
+// person's timer on their own task (Phase 20).
 
 const READ_METHODS = new Set([
   "frappe.auth.get_logged_user",
@@ -28,6 +29,9 @@ const READ_METHODS = new Set([
   "helpdesk.api.copilot_press.deploy_history",
   "helpdesk.api.copilot_actions.get_action_approval",
   "helpdesk.api.copilot_actions.approved_action",
+  // the person's tasks, for work on a task in the desktop app (Phase 20)
+  "helpdesk.api.mobile.get_tasks",
+  "helpdesk.api.mobile.get_task",
 ]);
 
 const WRITE_METHODS = new Set([
@@ -35,6 +39,8 @@ const WRITE_METHODS = new Set([
   "helpdesk.api.copilot_actions.mark_action_executed",
   "helpdesk.api.copilot_press.backup",
   "helpdesk.api.copilot_press.request_action",
+  // starts the person's own timer on a task they work on (Open becomes Working)
+  "helpdesk.api.mobile.start_task",
 ]);
 
 const READ_DOCTYPES = new Set(["HD Ticket"]);

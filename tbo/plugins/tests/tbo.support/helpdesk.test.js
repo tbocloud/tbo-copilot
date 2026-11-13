@@ -142,6 +142,7 @@ test("the write list never lets the app approve its own request", () => {
     "helpdesk.api.copilot_actions.request_action_approval",
     "helpdesk.api.copilot_press.backup",
     "helpdesk.api.copilot_press.request_action",
+    "helpdesk.api.mobile.start_task",
   ]);
   for (const p of WRITE_METHODS) assert.ok(!READ_METHODS.has(p), p);
 });
