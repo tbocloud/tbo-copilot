@@ -784,3 +784,45 @@ test("a service AWS pins to one region is approved for that region, whatever the
   hub.approve();
   assert.equal(parsedOutput(await aws.run({ action: "change", command: plain })).command, `${plain} --region us-east-1`);
 });
+
+// --- CodeRabbit's fifth review of PR #24 ----------------------------------------------------------
+
+test("an approved sync uploads files with their own modification times, which the approval covers", async (t) => {
+  const { aws, hub, dataDir } = setup(t);
+  const site = path.join(dataDir, "aws-workdir", "site");
+  fs.mkdirSync(site, { recursive: true });
+  const old = new Date("2024-01-02T03:04:05Z");
+  for (const name of ["index.html", "about.html"]) {
+    fs.writeFileSync(path.join(site, name), name);
+    fs.utimesSync(path.join(site, name), old, old);
+  }
+  const command = "aws s3 sync site s3://example-bucket/";
+  await aws.run({ action: "change", command });
+  // touching a file (same bytes, a new time) changes what sync would upload, so the digest changes
+  const later = new Date("2025-06-07T08:09:10Z");
+  fs.utimesSync(path.join(site, "about.html"), later, later);
+  await aws.run({ action: "change", command });
+  const [first, touched] = hub.calls.filter((c) => c[1] === APPROVED).map((c) => c[2].payload.content_sha256);
+  assert.notEqual(touched, first);
+  hub.approve();
+  const out = parsedOutput(await aws.run({ action: "change", command }));
+  assert.deepEqual(out.mtimes, { "about.html": later.getTime() / 1000, "index.html": old.getTime() / 1000 });
+  assert.deepEqual(out.uploaded, { "about.html": "about.html", "index.html": "index.html" });
+});
+
+test("a file that changes while it is copied is refused, and nothing is asked", async (t) => {
+  const seen = new Map();
+  const lstat = async (p) => {
+    const stat = await fs.promises.lstat(p);
+    const count = (seen.get(p) || 0) + 1;
+    seen.set(p, count);
+    // the second look at a file (after its copy) sees a newer time, as if a build wrote it meanwhile
+    return stat.isFile() && count === 2 ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { mtimeMs: stat.mtimeMs + 1000 }) : stat;
+  };
+  const { aws, hub, dataDir } = setup(t, {}, { files: { lstat } });
+  fs.mkdirSync(path.join(dataDir, "aws-workdir", "site"), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, "aws-workdir", "site", "index.html"), "x");
+  await assert.rejects(aws.run({ action: "change", command: "aws s3 sync site s3://example-bucket/" }), { code: "CHANGED", message: /changed while it was copied/ });
+  assert.equal(hub.calls.length, 0);
+  assert.deepEqual(fs.readdirSync(path.join(dataDir, "aws-workdir")).filter((n) => n.startsWith(".tbo-upload-")), []);
+});

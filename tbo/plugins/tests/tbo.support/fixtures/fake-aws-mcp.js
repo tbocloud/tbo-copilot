@@ -67,15 +67,18 @@ function callAws(id, command) {
   const words = command.split(/\s+/);
   const body = words.indexOf("--body");
   if (body > 0) out.body = fs.readFileSync(path.resolve(words[body + 1]), "utf8");
-  if (words[1] === "s3" && ["cp", "sync"].includes(words[2]) && !words[3].startsWith("s3://")) out.uploaded = listing(words[3]);
+  if (words[1] === "s3" && ["cp", "sync"].includes(words[2]) && !words[3].startsWith("s3://")) {
+    out.uploaded = listing(words[3]);
+    out.mtimes = listing(words[3], "", {}, (file) => Math.floor(fs.statSync(file).mtimeMs / 1000)); // what sync compares
+  }
   return answer(id, [ok(command, JSON.stringify(out))], command.includes("structured"));
 }
 
-function listing(root, rel = "", out = {}) {
+function listing(root, rel = "", out = {}, read = (file) => fs.readFileSync(file, "utf8")) {
   for (const name of fs.readdirSync(path.resolve(root, rel)).sort()) {
     const next = rel ? `${rel}/${name}` : name;
-    if (fs.statSync(path.resolve(root, next)).isDirectory()) listing(root, next, out);
-    else out[next] = fs.readFileSync(path.resolve(root, next), "utf8");
+    if (fs.statSync(path.resolve(root, next)).isDirectory()) listing(root, next, out, read);
+    else out[next] = read(path.resolve(root, next));
   }
   return out;
 }

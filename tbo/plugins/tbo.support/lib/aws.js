@@ -805,9 +805,10 @@ async function localSource(cmd, workDir, deadline, files = FILES) {
   }
 }
 
-// One file copied into the snapshot (then made read-only), its SHA-256 taken from the bytes
-// written, in 1 MB chunks; a read that stalls ends at the deadline.
-function copyFile(src, dest, deadline, files) {
+// One file copied into the snapshot with the source's modification time (aws s3 sync compares
+// it with S3's), then made read-only; its SHA-256 taken from the bytes written, in 1 MB chunks; a
+// read that stalls ends at the deadline.
+function copyFile(src, dest, deadline, files, times) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash("sha256");
     const input = files.createReadStream(src, { highWaterMark: 1024 * 1024 });
@@ -839,7 +840,10 @@ function copyFile(src, dest, deadline, files) {
     output.on("error", (e) => finish(e));
     input.on("end", () => output.end());
     output.on("finish", () => {
-      fs.promises.chmod(dest, 0o444).then(
+      fs.promises
+        .utimes(dest, times.atime, times.mtime)
+        .then(() => fs.promises.chmod(dest, 0o444))
+        .then(
         () => finish(null, { sha: hash.digest("hex"), size }),
         (e) => finish(e),
       );
@@ -848,7 +852,9 @@ function copyFile(src, dest, deadline, files) {
 }
 
 // A folder or file copied into the snapshot, and one digest of what was copied: each file's path,
-// size and SHA-256, within the call's time, at most 5,000 files and 1 GB. Links are refused (the
+// size, modification time and SHA-256, within the call's time, at most 5,000 files and 1 GB. The
+// time is part of the digest because aws s3 sync decides by it what to upload; a file that
+// changes while it is copied is refused. Links are refused (the
 // approval must cover what is uploaded, not what a link points at). The copy's folders are made
 // read-only too, so nothing is added to it before it is uploaded.
 async function snapshotOf(root, target, deadline, files) {
@@ -871,10 +877,14 @@ async function snapshotOf(root, target, deadline, files) {
     }
     if (!stat.isFile()) return; // a socket or a pipe is not copied, so it is not uploaded either
     if (entries.length >= MAX_DIGEST_FILES || bytes + stat.size > MAX_DIGEST_BYTES) throw tooLarge();
-    const { sha, size } = await copyFile(full, copy, deadline, files);
+    const { sha, size } = await copyFile(full, copy, deadline, files, { atime: stat.atime, mtime: stat.mtime });
+    const after = await beforeDeadline(files.lstat(full), deadline);
+    if (after.mtimeMs !== stat.mtimeMs || after.size !== size) {
+      throw fail("CHANGED", `${rel || path.basename(full)} changed while it was copied; finish the build, then ask again.`);
+    }
     bytes += size;
-    if (bytes > MAX_DIGEST_BYTES) throw tooLarge(); // it grew while it was copied
-    entries.push(`${rel || path.basename(copy)}\0${size}\0${sha}`);
+    if (bytes > MAX_DIGEST_BYTES) throw tooLarge();
+    entries.push(`${rel || path.basename(copy)}\0${size}\0${Math.floor(stat.mtimeMs)}\0${sha}`);
   };
   await walk(root, target, "");
   for (const folder of folders.reverse()) await fs.promises.chmod(folder, 0o555);
