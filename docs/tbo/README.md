@@ -53,6 +53,7 @@ five plugins, the one-approval flow, traceability, sign-in and AI models.
 | **TBO plugins** in `tbo/plugins/`; the installers bundle `tbo.theme` and `tbo.support`, copied in at build time; CI tests and packs them | `tbo/plugins/`, `scripts/tbo/bundled-plugins.json`, `scripts/tbo/fetch-plugins.mjs`, `.gitignore`, `tbo-release.yml`, `.github/workflows/tbo-plugins.yml` and their tests | New files; one `.gitignore` block |
 | **A 429 that says the account is out of credit or quota is not retried** (OpenAI `insufficient_quota`, Moonshot "insufficient balance" / `exceeded_current_quota_error`); other 429s are retried as before. Without it, a turn kept backing off for many minutes on an account that could not answer | `packages/agent-runtime/src/agent-errors.ts` (`ACCOUNT_EXHAUSTED_PATTERN`), one test in `agent-errors.test.ts` | Normal commit |
 | **A plugin may configure the provider rows it owns** (ADR 0319): store or clear the API key, write only, and set the base URL when its declaration leaves it out. The bundled `tbo.support` plugin uses it to give the app TBO's AI after the person signs in, so nobody types a key | host-core `plugins/providers/owned.rs` and the `plugin.providers.*` RPC; `apps/desktop/electron/main/plugin-runtime.ts`, `plugin-host-process.mjs`, `services/plugin-services.ts`; `packages/plugin-sdk` (`pi.providers`); tests in `plugins/providers/tests.rs`, `rpc/mod.rs` and `apps/desktop/test/plugin-provider-api.test.mjs` | Normal commit; small and additive, so it can be offered to PI-Desktop |
+| **`provider.register` is listed as high risk** in the install dialog's risk table and the devkit's high-risk list (the matrix rates it high; the dialog showed it high only as an unknown permission). A test checks the dialog never rates a permission below the matrix (Phase 21, [security.md](security.md) F6) | `apps/desktop/src/features/plugins/model.ts` (`PERMISSION_RISK`), `packages/plugin-devkit/src/check.ts` (`HIGH_RISK_PERMISSIONS`) and its test; `apps/desktop/test/tbo-permission-risk.test.mjs` | Normal commit; one line each, can be offered to PI-Desktop |
 | **TBO Copilot worker**: the headless worker that investigates TBO Support tickets read-only (Phase 1c-1) and, with a sandbox runner, writes and tests fixes and opens their pull requests (Phase 1c-2); it uses the engine packages as they are, so the core is unchanged. Its files hold no keys, customer data or evaluation answers; at run time it reads a ticket and the customer's code into a folder that it deletes after the run. See `apps/tbo-worker/README.md` | `apps/tbo-worker/`, its entry in `pnpm-lock.yaml` | New app (upstream never has it) |
 
 ### Brand images
@@ -151,6 +152,10 @@ the ones listed in `scripts/tbo/bundled-plugins.json` (today: `tbo.theme`, the T
   involved.
 - Only ids starting with `tbo.` are accepted, so a TBO plugin can never replace one of upstream's
   bundled plugins (`pi.browser`, `pi.file-manager`). The copied folders are ignored by git.
+- **The shipped copy cannot reach this computer:** the script removes `localhost`, `*.localhost` and
+  loopback addresses from each copied manifest's `net.domains` and says so in its output. To test
+  `tbo.support` against a local bench, load `tbo/plugins/tbo.support` as a development plugin
+  ([security.md](security.md) F4).
 - **Checks:** `.github/workflows/tbo-plugins.yml` runs the plugins' unit tests and validates and packs
   each plugin whenever one changes.
 
@@ -251,6 +256,13 @@ node scripts/tbo/apply-branding.mjs && node scripts/tbo/apply-branding.mjs --che
 
 Resolve any conflict in favour of the TBO changes listed above, run the tests, and open a pull
 request into `tbo`.
+
+## Using TBO Copilot
+
+- [getting-started.md](./getting-started.md): install, sign in, the settings to keep, and what to ask.
+- [teams.md](./teams.md): TBO Copilot in Teams, publishing it for the organisation, and limiting the meetings app's mailbox access.
+- [report-a-problem.md](./report-a-problem.md): reporting what went wrong; each report becomes a task.
+- [security.md](./security.md): the security review (Phase 21): permissions, domains, secrets, writes, logs, and the findings.
 
 ## Design documents
 
