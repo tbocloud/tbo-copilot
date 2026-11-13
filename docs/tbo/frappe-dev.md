@@ -61,7 +61,7 @@ needs them.
 | Tool and action | What it does |
 |---|---|
 | `tbo_dev status` | The repository, its GitHub name, branch and task, its base, uncommitted files; `gh` and its login, `uv`, the bench and the test site |
-| `tbo_dev start_work` | `task`, `subject` (`get_task`'s `branch_subject`), `kind` (`feature` or `fix`), `base`: fetches the base, then creates `feature/TASK-…-short-name` from `origin/<base>` (no upstream until the push), or switches to the task's existing branch, local or on origin. Refuses a dirty tree; never stashes. The base is remembered in the branch's git config |
+| `tbo_dev start_work` | `task`, `subject` (`get_task`'s `branch_subject`), `kind` (`feature` or `fix`), `base`: fetches the base, then creates `feature/TASK-…-short-name` from `<remote>/<base>` (no upstream until the push), or switches to the task's existing branch, local or on the remote. The remote is `origin`, else `upstream` (the name `bench get-app` gives it), else the only one. Refuses a dirty tree; never stashes. The base is remembered in the branch's git config |
 | `tbo_dev check` | The linters CI runs, on the committed branch: see "The checks" |
 | `tbo_dev run_tests` | The test modules the branch touched (a changed test file; `test_<name>.py` beside a changed file; a DocType's own test; `<app>/tests/test_<name>.py`) or the ones named in `modules`, at most 20, one `bench --site <site> run-tests --module …` each. Never the whole suite: CI runs that |
 | `tbo_dev job_status` | A job's outcome, or the latest `check` or `run_tests` |
@@ -92,11 +92,14 @@ records the skipped hooks. Never skip a hook that checks a changed file.
 `open_pr` needs, on the current commit: a clean tree, a passing `check`, and a passing `run_tests` (or
 `no_tests_reason` when no test applies; failed tests block it). Then it:
 
-1. pushes the branch, **fast-forward only**: a branch that moved on GitHub is never overwritten;
+1. pushes the branch to the same remote, **fast-forward only**: a branch that moved on GitHub is never overwritten;
 2. opens the PR as a draft against the branch's base: title `TASK-…: <summary>`, the repository's template (or TBO's,
    the same as TBO Support's), `Closes TASK-…` (or `Refs`), the "What and why" and "How to test" the agent wrote, and a
    "Checks run by Copilot" section with each linter's and test module's result on that commit;
 3. marks it **ready for review** (unless `draft: true`) and asks the reviewers in the settings, if any.
+
+Every `gh` call names the repository (`--repo`, from the remote's address), so a second remote never changes where the PR
+opens.
 
 "Ready for review" moves the task to Pending Review in TBO Support. That needs the repository in **HD GitHub Settings →
 Allowed repos** of the TBO Support site, and GitHub's webhook pointing at it; otherwise the PR still opens, and the

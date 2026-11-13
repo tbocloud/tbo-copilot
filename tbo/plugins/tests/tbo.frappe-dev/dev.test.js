@@ -338,7 +338,7 @@ test("open_pr pushes the branch, opens a draft with the task and the checks, mar
   assert.match(r.task_moves, /Pending Review/);
   assert.equal(w.git(w.origin, "rev-parse", `refs/heads/${branch}`), w.git(w.repo, "rev-parse", "HEAD"));
   const create = w.calls.find((c) => c[0] === "gh" && c[2] === "create");
-  assert.deepEqual(create.slice(1, 10), ["pr", "create", "--draft", "--base", "main", "--head", branch, "--title", r.title]);
+  assert.deepEqual(create.slice(1, 12), ["pr", "create", "--repo", "tbocloud/my_app", "--draft", "--base", "main", "--head", branch, "--title", r.title]);
   const [body] = w.bodies;
   assert.match(body, /\nCloses TASK-2026-00021\n/);
   assert.match(body, /## What and why\n\nDiscounts were unlimited\./);
@@ -423,4 +423,24 @@ test("skip_hooks reaches pre-commit as SKIP and is kept in the result; a bad hoo
   seen = done.result.steps.find((s) => s.name === "pre-commit");
   assert.deepEqual(seen.skipped, ["prettier"]);
   assert.equal(done.state, "passed");
+});
+
+test("a clone made by bench get-app (its remote named upstream) works the same", async (t) => {
+  const w = world(t);
+  w.git(w.repo, "remote", "rename", "origin", "upstream");
+  const s = await w.dev.runDev({ action: "status" });
+  assert.equal(s.github, "tbocloud/my_app");
+  assert.equal(s.default_branch, "main");
+  const r = await w.dev.runDev({ action: "start_work", task: TASK, subject: "Cap the discount per tier" });
+  assert.equal(r.state, "created");
+  w.commit("my_app/selling/discounts.py", "def cap(x):\n    return min(x, 10)\n", "feat(selling): cap the discount per tier");
+  await checkedAndTested(w);
+  const pr = await w.dev.runPr(PR_ARGS);
+  assert.equal(pr.pr, PR_URL);
+  assert.equal(w.git(w.origin, "rev-parse", `refs/heads/${r.branch}`), w.git(w.repo, "rev-parse", "HEAD"));
+  assert.ok(w.calls.some((c) => c[0] === "git" && c[1] === "push" && c.includes("upstream")));
+  // two remotes and neither origin nor upstream: the tools ask which one
+  w.git(w.repo, "remote", "rename", "upstream", "mine");
+  w.git(w.repo, "remote", "add", "theirs", GITHUB_URL);
+  await assert.rejects(w.dev.runDev({ action: "status" }), { code: "NO_REMOTE" });
 });

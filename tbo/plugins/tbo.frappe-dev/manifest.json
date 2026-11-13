@@ -10,7 +10,7 @@
     "agentTools": [
       {
         "name": "tbo_dev",
-        "description": "Build a Frappe/ERPNext change from a TBO Support task, in the repository open in the workspace (or `repo`, a folder inside it). Choose an action:\n- status: the repository, its branch and task, what is installed (git, gh and its login, uv, the bench and test site).\n- start_work: create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from origin's default branch or `base`. Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.\n- check: run the linters the repository's CI runs (pre-commit on changed files, Semgrep with Frappe's rules, commit titles) on the committed branch. Runs in the background: answers with a job.\n- run_tests: run the test modules the branch touched (or `modules`) on the local bench's test site, one by one; never the whole suite. Runs in the background.\n- job_status: the outcome of a check or run_tests job (`job`, or the latest of `kind`).\nCommit with conventional titles (feat: …, fix(scope): …). Then open the PR with tbo_dev_pr.",
+        "description": "Build a Frappe/ERPNext change from a TBO Support task, in the repository open in the workspace (or `repo`, a folder inside it). Choose an action:\n- status: the repository, its branch and task, what is installed (git, gh and its login, uv, the bench and test site).\n- start_work: create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from the remote's default branch or `base` (the remote: origin, else upstream as bench get-app names it). Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.\n- check: run the linters the repository's CI runs (pre-commit on changed files, Semgrep with Frappe's rules, commit titles) on the committed branch. Runs in the background: answers with a job.\n- run_tests: run the test modules the branch touched (or `modules`) on the local bench's test site, one by one; never the whole suite. Runs in the background.\n- job_status: the outcome of a check or run_tests job (`job`, or the latest of `kind`).\nCommit with conventional titles (feat: …, fix(scope): …). Then open the PR with tbo_dev_pr.",
         "risk": "medium",
         "planSafeActions": [
           "status",
@@ -52,7 +52,7 @@
             },
             "base": {
               "type": "string",
-              "description": "start_work: the branch to start from, when the repository's AGENTS.md names one; default origin's default branch."
+              "description": "start_work: the branch to start from, when the repository's AGENTS.md names one; default the remote's default branch."
             },
             "modules": {
               "type": "array",

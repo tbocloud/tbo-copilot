@@ -230,9 +230,9 @@ function createLint({ git, runFn, env, uv, dataDir, log = () => {} }) {
   }
 
   // Runs the plan; every step's outcome is kept, and the run passes when no blocking step failed.
-  async function check(root, base, skip = []) {
+  async function check(root, base, skip = [], remote = "origin") {
     const p = plan(root);
-    const from = await git.mergeBase(root, base);
+    const from = await git.mergeBase(root, base, remote);
     const changed = await git.changedFiles(root, from);
     const steps = [];
     const step = async (name, fromCi, blocking, fn) => {

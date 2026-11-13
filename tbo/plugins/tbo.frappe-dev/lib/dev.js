@@ -26,7 +26,7 @@ const LINKS = ["Closes", "Refs"];
 const TOOL_TEXT = [
   "Build a Frappe/ERPNext change from a TBO Support task, in the repository open in the workspace (or `repo`, a folder inside it). Choose an action:",
   "- status: the repository, its branch and task, what is installed (git, gh and its login, uv, the bench and test site).",
-  "- start_work: create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from origin's default branch or `base`. Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.",
+  "- start_work: create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from the remote's default branch or `base` (the remote: origin, else upstream as bench get-app names it). Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.",
   "- check: run the linters the repository's CI runs (pre-commit on changed files, Semgrep with Frappe's rules, commit titles) on the committed branch. Runs in the background: answers with a job.",
   "- run_tests: run the test modules the branch touched (or `modules`) on the local bench's test site, one by one; never the whole suite. Runs in the background.",
   "- job_status: the outcome of a check or run_tests job (`job`, or the latest of `kind`).",
@@ -46,7 +46,7 @@ const DEV_TOOL = {
       task: { type: "string", description: "start_work: the TBO Support task, e.g. TASK-2026-00021." },
       subject: { type: "string", description: "start_work: the task's subject; it becomes the branch's short name." },
       kind: { type: "string", enum: ["feature", "fix"], description: "start_work: fix for a bug fix, else feature." },
-      base: { type: "string", description: "start_work: the branch to start from, when the repository's AGENTS.md names one; default origin's default branch." },
+      base: { type: "string", description: "start_work: the branch to start from, when the repository's AGENTS.md names one; default the remote's default branch." },
       modules: { type: "array", items: { type: "string" }, description: "run_tests: test modules such as my_app.tests.test_invoices; default the ones the branch touched." },
       job: { type: "string", description: "job_status: the job id check or run_tests answered." },
       job_kind: { type: "string", enum: ["check", "run_tests"], description: "job_status: the latest job of this kind, when no job id is given." },
@@ -166,6 +166,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     const uv = findUv({ configured: conf.uvPath, env, platform });
     return {
       repo: root,
+      remote: info.remote,
       github: info.github,
       branch: info.branch,
       task: info.task,
@@ -193,10 +194,10 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       throw fail("DIRTY", `The working tree has uncommitted changes; commit or put them aside first (nothing is stashed for you):\n${info.dirty.slice(0, 10).join("\n")}`);
     }
     const wanted = String(args.base || info.defaultBranch || "").trim();
-    if (!wanted) throw fail("NO_BASE", 'origin has no default branch here; name the branch to start from as "base".');
+    if (!wanted) throw fail("NO_BASE", `${info.remote} has no default branch here; name the branch to start from as "base".`);
     const base = checkBranchName(wanted, "base");
-    await git.git(root, ["fetch", "--quiet", "origin", base], { timeoutMs: 90000 });
-    const existing = await git.taskBranch(root, task);
+    await git.git(root, ["fetch", "--quiet", info.remote, base], { timeoutMs: 90000 });
+    const existing = await git.taskBranch(root, task, info.remote);
     let branch;
     let state;
     if (existing && existing.where === "local") {
@@ -205,12 +206,12 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       state = "switched to the task's branch";
     } else if (existing) {
       branch = checkBranchName(existing.name, "branch");
-      await git.git(root, ["fetch", "--quiet", "origin", branch], { timeoutMs: 90000 });
-      await git.git(root, ["switch", "--quiet", "--track", "-c", branch, `origin/${branch}`]);
-      state = "continued the task's branch from origin";
+      await git.git(root, ["fetch", "--quiet", info.remote, branch], { timeoutMs: 90000 });
+      await git.git(root, ["switch", "--quiet", "--track", "-c", branch, `${info.remote}/${branch}`]);
+      state = `continued the task's branch from ${info.remote}`;
     } else {
       branch = checkBranchName(branchFor(task, subject, args.kind), "branch");
-      await git.git(root, ["switch", "--quiet", "--no-track", "-c", branch, `origin/${base}`]);
+      await git.git(root, ["switch", "--quiet", "--no-track", "-c", branch, `${info.remote}/${base}`]);
       state = "created";
     }
     if (!(await git.baseOf(root, branch))) await git.setBase(root, branch, base);
@@ -268,7 +269,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     if (info.dirty.length) throw fail("DIRTY", `Commit the changes first; checks run on a commit:\n${info.dirty.slice(0, 10).join("\n")}`);
     const base = (await git.baseOf(root, info.branch)) || info.defaultBranch;
     if (!base) throw fail("NO_BASE", "The branch's base is not known; start the branch with tbo_dev start_work.");
-    await git.git(root, ["fetch", "--quiet", "origin", base], { timeoutMs: 60000 });
+    await git.git(root, ["fetch", "--quiet", info.remote, base], { timeoutMs: 60000 });
     return { info, base };
   }
 
@@ -282,7 +283,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     for (const id of skip) if (!/^[A-Za-z0-9_.-]{1,64}$/.test(id)) throw fail("INVALID_ARGUMENT", `"${id}" is not a pre-commit hook id.`);
     const lint = createLint({ git, runFn, env, uv, dataDir: await getDataPath(), log });
     return startJob("check", root, info.head, async () => {
-      const result = await lint.check(root, base, skip);
+      const result = await lint.check(root, base, skip, info.remote);
       if (result.passed) passedLint.set(`${root}@${info.head}`, result);
       return result;
     });
@@ -296,7 +297,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     if (!bench) throw fail("NO_BENCH", 'No bench found: set "Frappe bench folder" in the plugin settings, or work in <bench>/apps/<app>.');
     const site = findSite(bench, conf.testSite);
     let modules = Array.isArray(args.modules) ? args.modules.map(String) : [];
-    if (!modules.length) modules = testModules(root, await git.changedFiles(root, await git.mergeBase(root, base)));
+    if (!modules.length) modules = testModules(root, await git.changedFiles(root, await git.mergeBase(root, base, info.remote)));
     if (!modules.length) throw fail("NO_TESTS", "The branch changes no file that has tests beside it: name the test modules, or add tests.");
     checkModules(modules); // refused now, not later in the background
     const tests = createTests({ runFn, env, log });
@@ -332,8 +333,8 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     const branch = info.branch;
     if (git.shared(branch, info, base)) throw fail("SHARED_BRANCH", `Copilot never pushes to ${branch}.`);
     const link = LINKS.includes(args.link) ? args.link : "Closes";
-    const ahead = Number(await git.out(root, ["rev-list", "--count", `refs/remotes/origin/${base}..HEAD`]));
-    if (!ahead) throw fail("NOTHING_TO_PR", `The branch has no commits beyond origin/${base}.`);
+    const ahead = Number(await git.out(root, ["rev-list", "--count", `refs/remotes/${info.remote}/${base}..HEAD`]));
+    if (!ahead) throw fail("NOTHING_TO_PR", `The branch has no commits beyond ${info.remote}/${base}.`);
     const lint = passedLint.get(`${root}@${info.head}`);
     if (!lint) throw fail("NOT_CHECKED", `Run tbo_dev check on this commit (${info.head.slice(0, 12)}) first; the PR opens only after the linters pass on it.`);
     const tests = testRuns.get(`${root}@${info.head}`) || null;
@@ -345,7 +346,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     for (const r of reviewers) if (!GITHUB_LOGIN.test(r)) throw fail("INVALID_ARGUMENT", `"${r}" is not a GitHub login.`);
     const login = await ghLogin(root);
     if (!login.ok) throw fail("GH_LOGIN", login.hint);
-    if (!info.github) throw fail("NOT_GITHUB", "origin is not a GitHub repository.");
+    if (!info.github) throw fail("NOT_GITHUB", `${info.remote} is not a GitHub repository.`);
 
     const titleText = pr.title(info.task, args.summary);
     const template = pr.findTemplate(root);
@@ -358,12 +359,12 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     });
 
     // a fast-forward push only: a branch that moved on GitHub is never overwritten
-    const push = await runFn("git", ["push", "--quiet", "--set-upstream", "origin", `HEAD:refs/heads/${branch}`], { cwd: root, env, timeoutMs: 60000 });
+    const push = await runFn("git", ["push", "--quiet", "--set-upstream", info.remote, `HEAD:refs/heads/${branch}`], { cwd: root, env, timeoutMs: 60000 });
     if (push.code !== 0 || push.timedOut) {
       throw fail("PUSH_FAILED", `The push was refused (nothing was forced): ${tail(push.stderr || push.stdout, 6)}\nIf GitHub has newer commits on the branch, pull them (git pull --rebase is fine on your own branch), check again, and retry.`);
     }
 
-    const existing = await runFn("gh", ["pr", "view", branch, "--json", "url,state,isDraft"], { cwd: root, env, timeoutMs: 20000 });
+    const existing = await runFn("gh", ["pr", "view", branch, "--repo", info.github, "--json", "url,state,isDraft"], { cwd: root, env, timeoutMs: 20000 });
     let url;
     let state;
     if (existing.code === 0) {
@@ -377,7 +378,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "tbo-dev-pr-")), "body.md");
       fs.writeFileSync(file, bodyText);
       try {
-        url = (await gh(root, ["pr", "create", "--draft", "--base", base, "--head", branch, "--title", titleText, "--body-file", file], 30000))
+        url = (await gh(root, ["pr", "create", "--repo", info.github, "--draft", "--base", base, "--head", branch, "--title", titleText, "--body-file", file], 30000))
           .split("\n")
           .filter((l) => /^https:\/\//.test(l))
           .pop();
@@ -387,8 +388,8 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       state = "opened";
     }
     // "ready for review" is what moves the task to Pending Review in TBO Support
-    if (!args.draft) await gh(root, ["pr", "ready", url], 20000).catch((e) => log(`tbo_dev_pr ready: ${e.message}`));
-    if (reviewers.length) await gh(root, ["pr", "edit", url, "--add-reviewer", reviewers.join(",")], 20000).catch((e) => log(`tbo_dev_pr reviewers: ${e.message}`));
+    if (!args.draft) await gh(root, ["pr", "ready", url, "--repo", info.github], 20000).catch((e) => log(`tbo_dev_pr ready: ${e.message}`));
+    if (reviewers.length) await gh(root, ["pr", "edit", url, "--repo", info.github, "--add-reviewer", reviewers.join(",")], 20000).catch((e) => log(`tbo_dev_pr reviewers: ${e.message}`));
     return {
       pr: url,
       state,

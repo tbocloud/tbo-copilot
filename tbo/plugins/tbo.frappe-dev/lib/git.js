@@ -102,20 +102,30 @@ function createGit({ runFn = run, env } = {}) {
     throw fail("NOT_A_REPO", `${wanted} is not a git repository.${hint}`);
   }
 
+  // The remote work goes to: origin, else upstream (what bench get-app names it), else the only one.
+  async function remoteOf(root) {
+    const names = (await out(root, ["remote"])).split("\n").filter(Boolean);
+    if (names.includes("origin")) return "origin";
+    if (names.includes("upstream")) return "upstream";
+    if (names.length === 1) return names[0];
+    throw fail("NO_REMOTE", names.length ? `Several remotes (${names.join(", ")}) and none is origin or upstream; name the one to use origin.` : "The repository has no remote.");
+  }
+
   async function info(root) {
+    const remote = await remoteOf(root);
     const branch = (await git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"], { allowFail: true })).stdout.trim() || null;
     const head = (await git(root, ["rev-parse", "--verify", "--quiet", "HEAD"], { allowFail: true })).stdout.trim() || null;
     // the address as configured (not rewritten by url.*.insteadOf): what the hub's GitHub settings name
-    const url = (await git(root, ["config", "--get", "remote.origin.url"], { allowFail: true })).stdout.trim() || null;
+    const url = (await git(root, ["config", "--get", `remote.${remote}.url`], { allowFail: true })).stdout.trim() || null;
     const dirty = (await out(root, ["status", "--porcelain=v1", "--untracked-files=normal"])).split("\n").filter(Boolean);
-    return { root, branch, head, remote: url, github: githubSlug(url), defaultBranch: await defaultBranch(root), dirty, task: taskOf(branch) };
+    return { root, branch, head, remote, url, github: githubSlug(url), defaultBranch: await defaultBranch(root, remote), dirty, task: taskOf(branch) };
   }
 
-  async function defaultBranch(root) {
-    const sym = (await git(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], { allowFail: true })).stdout.trim();
-    if (sym.startsWith("origin/")) return sym.slice("origin/".length);
+  async function defaultBranch(root, remote) {
+    const sym = (await git(root, ["symbolic-ref", "--quiet", "--short", `refs/remotes/${remote}/HEAD`], { allowFail: true })).stdout.trim();
+    if (sym.startsWith(`${remote}/`)) return sym.slice(remote.length + 1);
     for (const name of ["main", "master", "develop"]) {
-      if (await hasRef(root, `refs/remotes/origin/${name}`)) return name;
+      if (await hasRef(root, `refs/remotes/${remote}/${name}`)) return name;
     }
     return null;
   }
@@ -137,19 +147,19 @@ function createGit({ runFn = run, env } = {}) {
     await git(root, ["config", `branch.${branch}.tboBase`, base]);
   }
 
-  // A branch (local or on origin) already named after the task, whatever its short name.
-  async function taskBranch(root, task) {
+  // A branch (local or on the remote) already named after the task, whatever its short name.
+  async function taskBranch(root, task, remote) {
     const local = (await out(root, ["branch", "--list", "--format=%(refname:short)"])).split("\n").filter((b) => taskOf(b) === task);
     if (local.length) return { name: local[0], where: "local" };
-    const remote = (await git(root, ["ls-remote", "--heads", "origin"], { allowFail: true, timeoutMs: 30000 })).stdout
+    const found = (await git(root, ["ls-remote", "--heads", remote], { allowFail: true, timeoutMs: 30000 })).stdout
       .split("\n")
       .map((line) => line.split("refs/heads/")[1])
       .filter((b) => b && taskOf(b) === task);
-    return remote.length ? { name: remote[0], where: "origin" } : null;
+    return found.length ? { name: found[0], where: "remote" } : null;
   }
 
-  async function mergeBase(root, base) {
-    return out(root, ["merge-base", "HEAD", `refs/remotes/origin/${base}`]);
+  async function mergeBase(root, base, remote) {
+    return out(root, ["merge-base", "HEAD", `refs/remotes/${remote}/${base}`]);
   }
 
   async function changedFiles(root, from) {
@@ -167,7 +177,7 @@ function createGit({ runFn = run, env } = {}) {
       });
   }
 
-  return { git, out, resolve, info, hasRef, shared, baseOf, setBase, taskBranch, mergeBase, changedFiles, commitsSince };
+  return { git, out, resolve, remoteOf, info, hasRef, shared, baseOf, setBase, taskBranch, mergeBase, changedFiles, commitsSince };
 }
 
 module.exports = { createGit, taskId, taskOf, shortName, branchFor, checkBranchName, githubSlug, SHARED_BRANCHES };
