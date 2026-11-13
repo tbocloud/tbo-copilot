@@ -13,16 +13,21 @@
 #   The staple and validate action failed! Error 65.
 #
 # Required environment (never echoed, never written to the repo):
-#   APPLE_ID                      Apple ID email in team DUV63RKYTW
+#   APPLE_ID                      Apple ID email in the signing team
 #   APPLE_APP_SPECIFIC_PASSWORD   app-specific password for that Apple ID
-#   APPLE_TEAM_ID                 must be DUV63RKYTW
+#   APPLE_TEAM_ID                 must equal the expected team below
+#
+# Optional environment:
+#   MAC_SIGNING_TEAM_ID           the Apple team that must notarize the DMG
+#                                 (default: DUV63RKYTW, upstream's team; the
+#                                 TBO Copilot release lane sets its own)
 #
 # Usage: scripts/notarize-and-staple-macos-release-dmg.sh [release-dir]
 
 set -euo pipefail
 
 RELEASE_DIR="${1:-apps/desktop/release}"
-EXPECTED_TEAM_ID="DUV63RKYTW"
+EXPECTED_TEAM_ID="${MAC_SIGNING_TEAM_ID:-DUV63RKYTW}"
 # The ticket can take a moment to reach the stapler after Apple accepts, but a
 # retry is only legal once the submission returned Accepted. Overridable so
 # tests do not sleep for real.

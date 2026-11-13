@@ -2,9 +2,10 @@
  * App auto-update via electron-updater against GitHub Releases.
  *
  * The feed (latest*.yml + installers) is attached to each GitHub Release by
- * .github/workflows/release.yml. Discovery always tracks the latest stable
- * release (`allowPrerelease = false`) so RC installs still graduate to newer
- * stables. Delivery mode per install:
+ * .github/workflows/release.yml (TBO Copilot: tbo-release.yml, on signed
+ * `tbo-v*` tags; see update-policy.ts). Discovery always tracks the latest
+ * stable release (`allowPrerelease = false`) so RC installs still graduate to
+ * newer stables. Delivery mode per install:
  *  - Windows NSIS / Linux AppImage / packaged macOS → full in-app flow: silent
  *    background download, "restart to update" prompt, install-on-quit fallback.
  *  - Windows ZIP / legacy portable (`piDistribution = "zip"` or
@@ -47,6 +48,7 @@ import {
   resolveEffectiveUpdatePreference,
   resolveStoredUpdatePreference,
   resolveUpdateMode as resolveUpdateModePolicy,
+  setTboUpdatesBuildFlag,
   supportsAutomaticUpdates,
   type WindowsDistribution,
 } from "./update-policy";
@@ -184,12 +186,32 @@ export class AppUpdaterController {
     }
   }
 
+  /** TBO Copilot: the `tboUpdates` value the release workflow baked in, if any. */
+  private readPackagedTboUpdates(isPackaged: boolean): unknown {
+    if (!isPackaged) return undefined;
+    try {
+      const packageJson = JSON.parse(
+        readFileSync(join(app.getAppPath(), "package.json"), "utf8"),
+      ) as unknown;
+      return typeof packageJson === "object" && packageJson !== null
+        ? (packageJson as Record<string, unknown>).tboUpdates
+        : undefined;
+    } catch (error) {
+      this.logger.app("updater", "warn", "packaged update flag unavailable", {
+        data: { detail: String(error) },
+      });
+      return undefined;
+    }
+  }
+
   constructor(options: UpdaterOptions) {
     this.logger = options.logger;
     this.send = options.send;
     this.getLocale = options.getLocale ?? (() => "en");
     const platform = options.platform ?? process.platform;
     const isPackaged = options.isPackaged ?? app.isPackaged;
+    // TBO Copilot: only a signed release build has updates on (update-policy.ts).
+    setTboUpdatesBuildFlag(this.readPackagedTboUpdates(isPackaged));
     const distribution =
       options.distribution ??
       (platform === "win32"
@@ -597,7 +619,13 @@ export class AppUpdaterController {
   async check(options: { manual?: boolean } = {}): Promise<UpdateState> {
     await this.ensureSettingsLoaded();
     if (this.state.mode === "disabled") {
-      throw new Error("updates are disabled in development builds");
+      // TBO Copilot: a packaged build without the release flag is a test or
+      // unsigned build, not a development run.
+      throw new Error(
+        this.isPackaged
+          ? "Updates are off in this build. Install new versions from the TBO Copilot releases page."
+          : "updates are disabled in development builds",
+      );
     }
     if (
       this.state.status === "checking" ||

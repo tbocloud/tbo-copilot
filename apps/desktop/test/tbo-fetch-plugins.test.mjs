@@ -87,3 +87,50 @@ test("the config only accepts tbo.* plugin ids and a folder inside the repositor
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// TBO Copilot Phase 21 (docs/tbo/security.md): the copy that ships cannot reach this computer.
+test("the shipped copy's net.domains loses local hosts; the source folder keeps them", async () => {
+  const { isLocalHost } = await import("../../../scripts/tbo/fetch-plugins.mjs");
+  for (const host of ["localhost", "LOCALHOST", "tbo.localhost", "*.localhost", "127.0.0.1", "127.1.2.3", "::1", "[::1]", "0.0.0.0"]) {
+    assert.equal(isLocalHost(host), true, host);
+  }
+  for (const host of ["teams.teambackoffice.com", "localhost.example.com", "*.tbocloud.in", "10.0.0.1", "128.0.0.1"]) {
+    assert.equal(isLocalHost(host), false, host);
+  }
+  const root = mkdtempSync(join(tmpdir(), "tbo-fetch-"));
+  try {
+    const source = join(root, "source");
+    const dest = join(root, "dest");
+    const domains = ["teams.teambackoffice.com", "localhost", "*.localhost", "127.0.0.1"];
+    plugin(source, "tbo.support", { id: "tbo.support", version: "1.0.0", permissions: ["net.fetch"], net: { domains } });
+    plugin(source, "tbo.theme", { id: "tbo.theme", version: "1.0.0" });
+
+    const copied = bundlePlugins({ source, dest, plugins: ["tbo.support", "tbo.theme"] });
+
+    assert.deepEqual(copied, ["tbo.support@1.0.0 (without localhost, *.localhost, 127.0.0.1)", "tbo.theme@1.0.0"]);
+    const shipped = JSON.parse(readFileSync(join(dest, "tbo.support", "manifest.json"), "utf8"));
+    assert.deepEqual(shipped.net.domains, ["teams.teambackoffice.com"]);
+    assert.deepEqual(shipped.permissions, ["net.fetch"]);
+    assert.deepEqual(JSON.parse(readFileSync(join(source, "tbo.support", "manifest.json"), "utf8")).net.domains, domains);
+    // a manifest without local hosts is copied byte for byte
+    assert.equal(readFileSync(join(dest, "tbo.theme", "manifest.json"), "utf8"), readFileSync(join(source, "tbo.theme", "manifest.json"), "utf8"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("no plugin this build ships can reach this computer", () => {
+  const config = readConfig();
+  const root = mkdtempSync(join(tmpdir(), "tbo-fetch-"));
+  try {
+    const source = fileURLToPath(new URL(`../../../${config.source}`, import.meta.url));
+    bundlePlugins({ source, dest: root, plugins: config.plugins });
+    for (const id of config.plugins) {
+      const manifest = JSON.parse(readFileSync(join(root, id, "manifest.json"), "utf8"));
+      const local = (manifest.net?.domains ?? []).filter((d) => /localhost|^127\.|^\[?::1\]?$|^0\.0\.0\.0$/i.test(d));
+      assert.deepEqual(local, [], id);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
