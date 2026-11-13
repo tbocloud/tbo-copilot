@@ -1,6 +1,11 @@
 # TBO Support (`tbo.support`)
 
-Signs TBO Copilot in with your **Microsoft** work account through TBO Support, gives it **TBO AI**, and lets the agent **read** TBO Support: tickets and their conversation, internal notes, AI triage, fix brief, session replay, possible duplicates, the suggested reply, the estimate, and the knowledge base. It cannot change anything.
+Signs TBO Copilot in with your **Microsoft** work account through TBO Support, gives it **TBO AI**, and lets the agent **read** TBO Support: tickets and their conversation, internal notes, AI triage, fix brief, session replay, possible duplicates, the suggested reply, the estimate, and the knowledge base. It cannot change a ticket.
+
+It also reads **TBO's Press** (a site's plan, health, apps, last backup), takes a Press backup, and asks for Press
+actions such as a bench restart, which an approver decides in Teams. And the **`tbo_aws`** tool checks TBO's AWS with
+your own AWS login; a change needs **Allow AWS changes** in this plugin's settings and an approver in Teams for every
+command, and delete and terminate operations are blocked. Set-up: [`docs/tbo/aws.md`](../../../docs/tbo/aws.md).
 
 Design: [`docs/tbo/tbo-support-plugin.md`](../../../docs/tbo/tbo-support-plugin.md).
 
@@ -14,6 +19,8 @@ Design: [`docs/tbo/tbo-support-plugin.md`](../../../docs/tbo/tbo-support-plugin.
    - "Summarise TBO Support ticket 1234 and show its fix brief."
    - "List my open TBO Support tickets."
    - "Find tickets like 1234 and check the knowledge base for 'print format'."
+   - "What's the status of acme.tbo365.cloud?" or "Take a backup of demo.tbo365.cloud."
+   - "How are our AWS servers?" (after the AWS set-up in `docs/tbo/aws.md`)
 
 Other commands: **TBO Support: Check connection**, **TBO Support: Sign out**.
 
