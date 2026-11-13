@@ -9,7 +9,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { taskId, taskOf, shortName, branchFor, checkBranchName, githubSlug } = require("../../tbo.frappe-dev/lib/git");
-const { plan, semgrepConfigs, commitProblem, preCommitHooks, installFailure } = require("../../tbo.frappe-dev/lib/lint");
+const { plan, semgrepConfigs, commitProblem, preCommitHooks, preCommitHookList, hookMayCheck, installFailure } = require("../../tbo.frappe-dev/lib/lint");
+const { run } = require("../../tbo.frappe-dev/lib/run");
 const pr = require("../../tbo.frappe-dev/lib/pr");
 const { findBench, findSite, testModules } = require("../../tbo.frappe-dev/lib/tests");
 
@@ -253,4 +254,56 @@ test("hooks left out are written into the PR's checks", () => {
   const checks = { ...CHECKS, lint: { steps: [{ name: "pre-commit", status: "passed", fromCi: true, skipped: ["prettier"] }] } };
   const body = pr.body(pr.TBO_TEMPLATE, { task: "TASK-2026-00021", link: "Closes", whatAndWhy: "x", howToTest: "y", checks });
   assert.match(body, /- pre-commit: passed \(skipped hooks: prettier\)/);
+});
+
+test("a Semgrep command continued over lines keeps every config", (t) => {
+  const root = tempTree(t, { "ci/rules.yml": "rules: []\n" });
+  const text = ["      - run: |", "          semgrep ci \\", "            --config ./frappe-semgrep-rules/rules \\", "            --config ci/rules.yml", ""].join("\n");
+  assert.deepEqual(semgrepConfigs(text, root), [
+    { kind: "frappe", sub: "rules" },
+    { kind: "local", path: "ci/rules.yml" },
+  ]);
+});
+
+test("a hook's file filters are read from the config, inline or as a list, and decide what it checks", (t) => {
+  const root = tempTree(t, {
+    ".pre-commit-config.yaml": [
+      "repos:",
+      "  - repo: https://github.com/pre-commit/mirrors-prettier",
+      "    hooks:",
+      "      - id: prettier",
+      "        types_or:",
+      "          - javascript",
+      "          - vue",
+      "  - repo: local",
+      "    hooks:",
+      "      - id: only-docs",
+      "        files: ^docs/",
+      "      - id: anything",
+      "      - id: text-hook",
+      "        types: [text]",
+      "",
+    ].join("\n"),
+  });
+  const hooks = Object.fromEntries(preCommitHookList(root).map((h) => [h.id, h]));
+  assert.deepEqual(hooks.prettier.types_or, ["javascript", "vue"]);
+  assert.equal(hookMayCheck(hooks.prettier, "my_app/a.py"), false);
+  assert.equal(hookMayCheck(hooks.prettier, "my_app/public/a.js"), true);
+  assert.equal(hookMayCheck(hooks["only-docs"], "my_app/a.py"), false);
+  assert.equal(hookMayCheck(hooks["only-docs"], "docs/a.md"), true);
+  assert.equal(hookMayCheck(hooks.anything, "my_app/a.py"), null, "no filter: cannot tell");
+  assert.equal(hookMayCheck(hooks["text-hook"], "my_app/a.py"), null, "an unknown type: cannot tell");
+});
+
+test("a DocType change of its JSON alone finds the DocType's test", (t) => {
+  const root = tempTree(t, { "my_app/my_app/doctype/tier/tier.json": "{}", "my_app/my_app/doctype/tier/test_tier.py": "" });
+  assert.deepEqual(testModules(root, ["my_app/my_app/doctype/tier/tier.json"]), ["my_app.my_app.doctype.tier.test_tier"]);
+});
+
+test("a command that outlives its time limit is stopped with everything it started, and the call ends", { skip: process.platform === "win32" }, async () => {
+  const started = Date.now();
+  // the shell leaves a background child holding stdout open after the shell itself is gone
+  const res = await run("sh", ["-c", "sleep 30 & sleep 30"], { timeoutMs: 300 });
+  assert.equal(res.timedOut, true);
+  assert.ok(Date.now() - started < 5000, `ended after ${Date.now() - started} ms`);
 });

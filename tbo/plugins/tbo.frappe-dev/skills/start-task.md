@@ -14,8 +14,10 @@ workspace (or pass `repo`, e.g. `apps/my_app`, when the workspace is a bench).
    up (the answer says how) before writing code. A dirty working tree is the person's own work: ask what to do with it.
 3. **The repository's rules.** Read its `AGENTS.md` (or `CLAUDE.md`) now: it wins over anything here. If it names the
    branch work starts from (helpdesk: `tbo-copilot`), use that as `base`.
-4. **The branch.** `tbo_dev` `start_work` with `task`, `subject` (`get_task`'s `branch_subject`), `kind` (`fix` for a
-   bug, else `feature`) and `base` if step 3 named one. Then `tbo_support` `start_task`, so the task's timer runs.
+4. **The branch.** `tbo_dev` `start_work` with `task`, `subject` (`get_task`'s `branch_subject`, or the subject the
+   person gave), `kind` (`fix` for a bug, else `feature`) and `base` if step 3 named one. Then, if `tbo_support` has a
+   `start_task` action (TBO Support plugin 0.4.0 and later), call it so the task's timer runs. If it has none, say so:
+   the person starts the timer in TBO Support themselves.
 5. **The plan.** Search the code before creating anything (the same helper, field or report may exist). If the task is
    unclear or bigger than its subject says, tell the person your plan in a few lines and wait.
 6. **The change.** Follow the skill "TBO Frappe conventions". Write or update the tests in the same change. Keep it to

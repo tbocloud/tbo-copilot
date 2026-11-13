@@ -62,6 +62,12 @@ function githubSlug(url) {
   return m ? `${m[1]}/${m[2]}` : null;
 }
 
+// Whether `target` is `root` or inside it (both already resolved).
+function within(root, target) {
+  const rel = path.relative(root, target);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
 function createGit({ runFn = run, env } = {}) {
   async function git(cwd, args, { timeoutMs = 60000, allowFail = false } = {}) {
     const res = await runFn("git", args, { cwd, env, timeoutMs });
@@ -84,12 +90,17 @@ function createGit({ runFn = run, env } = {}) {
   async function resolve(workspace, repo) {
     if (!workspace) throw fail("NO_WORKSPACE", "Open the app's folder (or its bench) as the workspace first.");
     const wanted = repo ? path.resolve(workspace, String(repo)) : workspace;
-    const rel = path.relative(fs.realpathSync(workspace), fs.existsSync(wanted) ? fs.realpathSync(wanted) : wanted);
-    if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    const realWorkspace = fs.realpathSync(workspace);
+    if (!within(realWorkspace, fs.existsSync(wanted) ? fs.realpathSync(wanted) : wanted)) {
       throw fail("INVALID_ARGUMENT", `"repo" must be a folder inside the workspace (${workspace}).`);
     }
     const root = fs.existsSync(wanted) ? await isRepo(wanted) : null;
-    if (root) return root;
+    // the repository itself must be inside the workspace too: a folder of a larger repository is not
+    // a repository to branch, check and push
+    if (root && within(realWorkspace, fs.realpathSync(root))) return root;
+    if (root) {
+      throw fail("NOT_A_REPO", `${wanted} belongs to the repository at ${root}, outside the workspace; open that repository as the workspace.`);
+    }
     const found = [];
     for (const parent of [wanted, path.join(wanted, "apps")]) {
       let names = [];
@@ -160,16 +171,16 @@ function createGit({ runFn = run, env } = {}) {
     return found.length ? { name: found[0], where: "remote" } : null;
   }
 
-  async function mergeBase(root, base, remote) {
-    return out(root, ["merge-base", "HEAD", `refs/remotes/${remote}/${base}`]);
+  async function mergeBase(root, base, remote, head = "HEAD") {
+    return out(root, ["merge-base", head, `refs/remotes/${remote}/${base}`]);
   }
 
-  async function changedFiles(root, from) {
-    return (await out(root, ["diff", "--name-only", "--diff-filter=ACMR", from, "HEAD"])).split("\n").filter(Boolean);
+  async function changedFiles(root, from, to = "HEAD") {
+    return (await out(root, ["diff", "--name-only", "--diff-filter=ACMR", from, to])).split("\n").filter(Boolean);
   }
 
-  async function commitsSince(root, from) {
-    const text = await out(root, ["log", "--no-merges", "--format=%h%x00%s", `${from}..HEAD`]);
+  async function commitsSince(root, from, to = "HEAD") {
+    const text = await out(root, ["log", "--no-merges", "--format=%h%x00%s", `${from}..${to}`]);
     return text
       .split("\n")
       .filter(Boolean)
@@ -182,4 +193,4 @@ function createGit({ runFn = run, env } = {}) {
   return { git, out, resolve, remoteOf, info, hasRef, shared, baseOf, setBase, taskBranch, mergeBase, changedFiles, commitsSince };
 }
 
-module.exports = { createGit, taskId, taskOf, shortName, branchFor, checkBranchName, githubSlug, SHARED_BRANCHES };
+module.exports = { createGit, within, taskId, taskOf, shortName, branchFor, checkBranchName, githubSlug, SHARED_BRANCHES };

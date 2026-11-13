@@ -15,10 +15,16 @@ function isBench(dir) {
   return Boolean(dir) && fs.existsSync(path.join(dir, "sites")) && fs.existsSync(path.join(dir, "apps", "frappe"));
 }
 
-// The bench: the setting, or the folder that holds the repository as apps/<app>.
+// The bench: the setting, or the folder that holds the repository as apps/<app>. A configured bench
+// must hold this very checkout in its apps/ folder: the tests run the code the bench loads, and a
+// result counts only for the commit it ran on.
 function findBench(root, configured) {
   if (configured) {
     if (!isBench(configured)) throw fail("NO_BENCH", `"Frappe bench folder" (${configured}) is not a bench: it needs sites/ and apps/frappe.`);
+    const apps = fs.realpathSync(path.join(configured, "apps"));
+    if (path.dirname(fs.realpathSync(root)) !== apps) {
+      throw fail("NO_BENCH", `The bench ${configured} runs the apps in its apps/ folder, and this repository (${root}) is not one of them: work in ${configured}/apps/<app>, or set the bench that holds it.`);
+    }
     return configured;
   }
   const parent = path.dirname(root);
@@ -49,6 +55,9 @@ function testModules(root, changed) {
   const found = new Set();
   const exists = (rel) => fs.existsSync(path.join(root, rel));
   for (const file of changed) {
+    // a DocType's own test, for any file in its folder (its .json, .js or .py)
+    const doctype = /^(.*\/doctype\/([a-z0-9_]+))\//.exec(`${file}`);
+    if (doctype && exists(`${doctype[1]}/test_${doctype[2]}.py`)) found.add(`${doctype[1]}/test_${doctype[2]}.py`);
     if (!file.endsWith(".py")) continue;
     const dir = path.posix.dirname(file);
     const base = path.posix.basename(file, ".py");
@@ -58,8 +67,6 @@ function testModules(root, changed) {
     }
     const beside = `${dir}/test_${base}.py`;
     if (exists(beside)) found.add(beside);
-    const doctype = /^(.*\/doctype\/([a-z0-9_]+))\//.exec(`${file}`);
-    if (doctype && exists(`${doctype[1]}/test_${doctype[2]}.py`)) found.add(`${doctype[1]}/test_${doctype[2]}.py`);
     const pkg = file.split("/")[0];
     if (exists(`${pkg}/tests/test_${base}.py`)) found.add(`${pkg}/tests/test_${base}.py`);
   }
@@ -70,6 +77,14 @@ function summary(output) {
   const ran = /Ran (\d+) tests?/.exec(output);
   const failed = /FAILED \(([^)]*)\)/.exec(output);
   return `${ran ? `${ran[1]} test(s)` : "tests"}${failed ? `, ${failed[1]}` : /\nOK\b/.test(output) ? ", OK" : ""}`;
+}
+
+// A module passed only when its tests ran to the end: at least one test, "OK", no failure. The exit
+// code alone is not enough: without CI set, Frappe 15 exits 0 even when tests fail, and when
+// testing is off for the site.
+function completedOk(output) {
+  const ran = /Ran (\d+) tests?/.exec(output);
+  return Boolean(ran) && Number(ran[1]) > 0 && /(^|\n)OK\b/.test(output) && !/FAILED \(/.test(output);
 }
 
 // Test modules to run: at least one, at most 20, each a dotted Python module path.
@@ -97,8 +112,10 @@ function createTests({ runFn, env, log = () => {} }) {
       const output = `${res.stdout}\n${res.stderr}`;
       let detail = summary(output);
       if (res.timedOut) detail = "took longer than 20 minutes";
-      if (/Testing is disabled/i.test(output)) detail = `testing is off on ${site}: run "bench --site ${site} set-config allow_tests true" once`;
-      results.push({ module, status: res.code === 0 && !res.timedOut ? "passed" : "failed", detail, output: res.code === 0 ? "" : tail(output, 40) });
+      else if (/Testing is disabled/i.test(output)) detail = `testing is off on ${site}: run "bench --site ${site} set-config allow_tests true" once`;
+      else if (/Ran 0 tests/.test(output)) detail = "no test ran: check the module path";
+      const ok = res.code === 0 && !res.timedOut && completedOk(output);
+      results.push({ module, status: ok ? "passed" : "failed", detail, output: ok ? "" : tail(output, 40) });
     }
     return { passed: results.every((r) => r.status === "passed"), site, results };
   }
@@ -106,4 +123,4 @@ function createTests({ runFn, env, log = () => {} }) {
   return { runModules };
 }
 
-module.exports = { createTests, checkModules, findBench, findSite, testModules, isBench };
+module.exports = { createTests, checkModules, completedOk, findBench, findSite, testModules, isBench };

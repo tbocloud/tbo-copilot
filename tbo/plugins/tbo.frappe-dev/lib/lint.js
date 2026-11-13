@@ -61,7 +61,8 @@ function isFrappeApp(root) {
 // the repository. Anything else is left out.
 function semgrepConfigs(text, root) {
   const configs = [];
-  for (const line of text.split("\n")) {
+  // a command continued over lines with a backslash is one command
+  for (const line of text.replace(/\\[ \t]*\r?\n[ \t]*/g, " ").split("\n")) {
     if (!/semgrep/i.test(line)) continue;
     for (const m of line.matchAll(/--config[= ]+("[^"]+"|'[^']+'|\S+)/g)) {
       const value = m[1].replace(/^["']|["']$/g, "");
@@ -121,32 +122,140 @@ function commitProblem(subject) {
   return /\.$/.test(subject) ? "ends with a full stop" : null;
 }
 
-// The hook ids of each repository in .pre-commit-config.yaml (a line-by-line read of its usual layout).
-function preCommitHooks(root) {
-  const hooks = {};
-  let repo = null;
+// The hooks of .pre-commit-config.yaml with their file filters (types, types_or, files), read line by
+// line in the file's usual layout: inline lists ([a, b]) and block lists both.
+function preCommitHookList(root) {
   let text = "";
   try {
     text = fs.readFileSync(path.join(root, ".pre-commit-config.yaml"), "utf8");
   } catch {
-    return hooks;
+    return [];
   }
-  for (const line of text.split("\n")) {
+  const hooks = [];
+  let repo = null;
+  let hook = null;
+  let listKey = null;
+  let listIndent = -1;
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\s+#.*$/, "");
+    if (!line.trim()) continue;
+    const indent = line.search(/\S/);
     const r = /^\s*-?\s*repo:\s*["']?([^\s"']+)/.exec(line);
     if (r) {
       repo = r[1];
-      hooks[repo] = hooks[repo] || [];
+      hook = null;
+      listKey = null;
       continue;
     }
     const id = /^\s*-\s*id:\s*["']?([\w.-]+)/.exec(line);
-    if (id && repo) hooks[repo].push(id[1]);
+    if (id && repo) {
+      hook = { repo, id: id[1], types: [], types_or: [], files: null };
+      hooks.push(hook);
+      listKey = null;
+      continue;
+    }
+    if (!hook) continue;
+    if (listKey && indent > listIndent && /^\s*-\s*\S/.test(line)) {
+      hook[listKey].push(line.replace(/^\s*-\s*/, "").replace(/["']/g, "").trim());
+      continue;
+    }
+    listKey = null;
+    const kv = /^\s*(types|types_or|files)\s*:\s*(.*)$/.exec(line);
+    if (!kv) continue;
+    const [, key, value] = kv;
+    const v = value.trim();
+    if (key === "files") hook.files = v.replace(/^["']|["']$/g, "") || null;
+    else if (v.startsWith("[")) hook[key] = v.replace(/[[\]"']/g, "").split(",").map((x) => x.trim()).filter(Boolean);
+    else if (!v) {
+      listKey = key;
+      listIndent = indent;
+    } else hook[key] = [v.replace(/["']/g, "")];
   }
   return hooks;
+}
+
+// The hook ids of each repository in .pre-commit-config.yaml.
+function preCommitHooks(root) {
+  const byRepo = {};
+  for (const h of preCommitHookList(root)) (byRepo[h.repo] = byRepo[h.repo] || []).push(h.id);
+  return byRepo;
+}
+
+// The file extensions of the identify tags pre-commit hooks filter on (the ones TBO's configs use).
+const TYPE_EXTENSIONS = {
+  python: [".py", ".pyi"],
+  pyi: [".pyi"],
+  javascript: [".js", ".mjs", ".cjs", ".jsx"],
+  jsx: [".jsx"],
+  ts: [".ts", ".mts", ".cts"],
+  tsx: [".tsx"],
+  vue: [".vue"],
+  html: [".html", ".htm"],
+  css: [".css"],
+  scss: [".scss"],
+  sass: [".sass"],
+  less: [".less"],
+  json: [".json"],
+  yaml: [".yaml", ".yml"],
+  markdown: [".md", ".markdown"],
+  toml: [".toml"],
+  shell: [".sh", ".bash"],
+  sql: [".sql"],
+  xml: [".xml"],
+  svg: [".svg"],
+  jinja: [".jinja", ".jinja2", ".j2"],
+};
+
+// Whether a hook may check a file: true, false, or null when its declared filters cannot tell
+// (no filter in the config, or a type this list does not know, such as "text").
+function hookMayCheck(hook, file) {
+  const tags = [...hook.types, ...hook.types_or];
+  if (!tags.length && !hook.files) return null;
+  if (!tags.every((t) => t === "file" || Object.hasOwn(TYPE_EXTENSIONS, t))) return null;
+  if (hook.files) {
+    let re;
+    try {
+      re = new RegExp(hook.files);
+    } catch {
+      return null;
+    }
+    if (!re.test(file)) return false;
+  }
+  const ext = path.extname(file).toLowerCase();
+  const matches = (t) => t === "file" || TYPE_EXTENSIONS[t].includes(ext);
+  if (hook.types.length && !hook.types.every(matches)) return false;
+  if (hook.types_or.length && !hook.types_or.some(matches)) return false;
+  return true;
+}
+
+// A hook may be left out only when a check on this commit could not install its tools, and its own
+// filters show it checks none of the changed files. Otherwise the skip is refused.
+function checkSkips(root, skip, changed, installFailed) {
+  const hooks = preCommitHookList(root);
+  for (const id of skip) {
+    if (!installFailed.includes(id)) {
+      throw fail("SKIP_REFUSED", `"${id}" may be skipped only after a check on this commit said its tools could not be installed.`);
+    }
+    const hook = hooks.find((h) => h.id === id);
+    if (!hook) throw fail("SKIP_REFUSED", `"${id}" is not a hook in .pre-commit-config.yaml.`);
+    for (const file of changed) {
+      const may = hookMayCheck(hook, file);
+      if (may === null) {
+        throw fail("SKIP_REFUSED", `"${id}" does not say in .pre-commit-config.yaml which files it checks, so skipping it cannot be shown safe; fix its install instead.`);
+      }
+      if (may) throw fail("SKIP_REFUSED", `"${id}" checks ${file}, which this branch changes; fix its install instead of skipping it.`);
+    }
+  }
 }
 
 // pre-commit could not install a hook's own tools (not a problem in the code): which, and what to do.
 function installFailure(output, hooks) {
   if (!/An unexpected error has occurred/.test(output)) return null;
+  return installFailureOf(output, hooks).text;
+}
+
+// The repository whose tools failed, its hook ids, and the message.
+function installFailureOf(output, hooks) {
   const repos = [...output.matchAll(/Installing environment for (\S+?)\.?\n/g)].map((m) => m[1]);
   const repo = repos.at(-1) || "a hook";
   const ids = hooks[repo] || [];
@@ -155,7 +264,7 @@ function installFailure(output, hooks) {
   const hint = ids.length
     ? ` If the change has no file ${ids.join(", ")} check${ids.length > 1 ? "" : "s"}, run check again with skip_hooks: [${ids.map((i) => `"${i}"`).join(", ")}], and say so; otherwise fix the install first.`
     : "";
-  return `pre-commit could not install the tools of ${repo} (${cause}). This is not a problem in the code.${npm}${hint}`;
+  return { ids, text: `pre-commit could not install the tools of ${repo} (${cause}). This is not a problem in the code.${npm}${hint}` };
 }
 
 function createLint({ git, runFn, env, uv, dataDir, log = () => {} }) {
@@ -186,18 +295,21 @@ function createLint({ git, runFn, env, uv, dataDir, log = () => {} }) {
     return dir;
   }
 
-  async function preCommit(root, from, changed, skip) {
+  async function preCommit(root, from, head, changed, skip) {
     if (!changed.length) return { status: "skipped", detail: "no changed files" };
     const skipped = skip.length ? { skipped: skip } : {};
-    const res = await runFn(uv, ["tool", "run", "--from", PINS.preCommit, "pre-commit", "run", "--from-ref", from, "--to-ref", "HEAD", "--show-diff-on-failure", "--color=never"], {
+    const res = await runFn(uv, ["tool", "run", "--from", PINS.preCommit, "pre-commit", "run", "--from-ref", from, "--to-ref", head, "--show-diff-on-failure", "--color=never"], {
       cwd: root,
       env: skip.length ? { ...env, SKIP: skip.join(",") } : env,
       timeoutMs: 900000,
     });
     const touched = (await git.out(root, ["status", "--porcelain=v1"])).split("\n").filter(Boolean);
     if (res.timedOut) return { status: "failed", detail: "pre-commit took longer than 15 minutes", ...skipped };
-    const install = installFailure(`${res.stdout}\n${res.stderr}`, preCommitHooks(root));
-    if (install) return { status: "failed", installError: true, detail: install, ...skipped };
+    const output = `${res.stdout}\n${res.stderr}`;
+    if (/An unexpected error has occurred/.test(output)) {
+      const install = installFailureOf(output, preCommitHooks(root));
+      return { status: "failed", installError: true, failedHooks: install.ids, detail: install.text, ...skipped };
+    }
     if (touched.length) {
       return {
         status: "failed",
@@ -225,6 +337,17 @@ function createLint({ git, runFn, env, uv, dataDir, log = () => {} }) {
     } catch {
       return { status: "failed", detail: `Semgrep did not finish: ${tail(res.stderr || res.stdout, 12)}` };
     }
+    // without --error Semgrep exits 0 with or without findings; anything else is a failed scan
+    if (res.code !== 0 && res.code !== 1) {
+      return { status: "failed", detail: `Semgrep stopped with exit code ${res.code}: ${tail(res.stderr, 8)}` };
+    }
+    // a rule or the scan itself failed: the scan did not cover what it should (warnings, such as a
+    // file Semgrep could only partly parse, do not count)
+    const errors = (report.errors || []).filter((e) => (e.level || "error") === "error");
+    if (errors.length) {
+      const first = errors.slice(0, 5).map((e) => String(e.message || e.type || "error").split("\n")[0].slice(0, 200));
+      return { status: "failed", detail: `Semgrep reported ${errors.length} error(s):\n${first.join("\n")}` };
+    }
     const findings = (report.results || []).map(
       (r) => `${r.path}:${r.start && r.start.line} ${String(r.check_id).split(".").pop()}: ${String((r.extra && r.extra.message) || "").split("\n")[0].slice(0, 200)}`,
     );
@@ -249,10 +372,11 @@ function createLint({ git, runFn, env, uv, dataDir, log = () => {} }) {
   }
 
   // Runs the plan; every step's outcome is kept, and the run passes when no blocking step failed.
-  async function check(root, base, skip = [], remote = "origin") {
+  // `head` is the commit the check is for: every step reads it, not whatever HEAD becomes meanwhile.
+  async function check(root, base, skip = [], remote = "origin", head = "HEAD") {
     const p = plan(root);
-    const from = await git.mergeBase(root, base, remote);
-    const changed = await git.changedFiles(root, from);
+    const from = await git.mergeBase(root, base, remote, head);
+    const changed = await git.changedFiles(root, from, head);
     const steps = [];
     const step = async (name, fromCi, blocking, fn) => {
       log(`lint: ${name}`);
@@ -262,11 +386,11 @@ function createLint({ git, runFn, env, uv, dataDir, log = () => {} }) {
         steps.push({ name, fromCi, blocking, status: "failed", detail: e.message });
       }
     };
-    if (p.preCommit) await step("pre-commit", p.preCommit.fromCi, true, () => preCommit(root, from, changed, skip));
+    if (p.preCommit) await step("pre-commit", p.preCommit.fromCi, true, () => preCommit(root, from, head, changed, skip));
     if (p.semgrep) await step("semgrep", p.semgrep.fromCi, true, () => semgrep(root, from, p.semgrep.configs));
     if (p.flake8) await step("flake8", true, true, () => direct(root, "flake8", changed));
     if (p.ruff) await step("ruff", true, true, () => direct(root, "ruff", changed));
-    await step("commit titles", p.commits.fromCi, p.commits.blocking, async () => commits(await git.commitsSince(root, from)));
+    await step("commit titles", p.commits.fromCi, p.commits.blocking, async () => commits(await git.commitsSince(root, from, head)));
     const passed = steps.every((s) => s.status !== "failed" || !s.blocking);
     return { passed, mergeBase: from, changedFiles: changed.length, steps };
   }
@@ -274,4 +398,16 @@ function createLint({ git, runFn, env, uv, dataDir, log = () => {} }) {
   return { check };
 }
 
-module.exports = { createLint, plan, semgrepConfigs, commitProblem, preCommitHooks, installFailure, PINS, CONVENTIONAL };
+module.exports = {
+  createLint,
+  plan,
+  semgrepConfigs,
+  commitProblem,
+  preCommitHooks,
+  preCommitHookList,
+  hookMayCheck,
+  checkSkips,
+  installFailure,
+  PINS,
+  CONVENTIONAL,
+};

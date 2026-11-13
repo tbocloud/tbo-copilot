@@ -83,20 +83,31 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
     tests: { code: 0, stdout: "Ran 3 tests in 0.2s\n\nOK\n" },
     prView: { code: 1, stdout: "", stderr: "no pull requests found for branch" },
     ghAuth: { code: 0, stdout: "", stderr: "✓ Logged in to github.com account dev-user (keyring)" },
+    prReady: { code: 0, stdout: "", stderr: "" },
   };
+  const hooks = { beforeSemgrep: null, beforeAuth: null };
   const runFn = async (cmd, args, opts) => {
     calls.push([cmd === uv ? "uv" : path.basename(cmd), ...args]);
     if (cmd === "git") return run(cmd, args, opts);
-    if (cmd === uv) return args.includes("pre-commit") ? answers.preCommit : answers.semgrep;
+    if (cmd === uv) {
+      if (args.includes("pre-commit")) return answers.preCommit;
+      if (hooks.beforeSemgrep) hooks.beforeSemgrep();
+      return answers.semgrep;
+    }
     if (cmd === "bench") return { ...answers.tests, cwd: opts.cwd };
     if (cmd === "gh") {
       const [a, b] = args;
-      if (a === "auth") return answers.ghAuth;
+      if (a === "auth") {
+        if (hooks.beforeAuth) hooks.beforeAuth();
+        return answers.ghAuth;
+      }
       if (a === "pr" && b === "view") return answers.prView;
       if (a === "pr" && b === "create") {
         bodies.push(fs.readFileSync(args[args.indexOf("--body-file") + 1], "utf8"));
         return { code: 0, stdout: `Creating pull request\n${PR_URL}\n`, stderr: "" };
       }
+      if (a === "pr" && b === "edit" && args.includes("--body-file")) bodies.push(fs.readFileSync(args[args.indexOf("--body-file") + 1], "utf8"));
+      if (a === "pr" && b === "ready") return answers.prReady;
       return { code: 0, stdout: "", stderr: "" };
     }
     throw Object.assign(new Error(`${cmd} missing`), { code: "MISSING" });
@@ -114,7 +125,7 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
     git(repo, "commit", "-q", "-m", message);
     return git(repo, "rev-parse", "HEAD");
   };
-  return { dev, repo, origin, bench, top, git, write, commit, calls, bodies, answers, env, dataDir };
+  return { dev, repo, origin, bench, top, git, write, commit, calls, bodies, answers, hooks, env, dataDir };
 }
 
 async function finished(dev, job) {
@@ -249,9 +260,11 @@ test("check runs what CI runs, on the branch's changes against its merge base, i
     ["commit titles", "passed", true],
   ]);
   const base = w.git(w.repo, "merge-base", "HEAD", "origin/main");
+  const head = w.git(w.repo, "rev-parse", "HEAD");
   const preCommit = w.calls.find((c) => c[0] === "uv" && c.includes("pre-commit"));
   assert.deepEqual(preCommit.slice(1, 5), ["tool", "run", "--from", PINS.preCommit]);
-  assert.deepEqual(preCommit.slice(7, 11), ["--from-ref", base, "--to-ref", "HEAD"]);
+  // the commit the check is for, not whatever HEAD becomes while it runs
+  assert.deepEqual(preCommit.slice(7, 11), ["--from-ref", base, "--to-ref", head]);
   const semgrep = w.calls.find((c) => c[0] === "uv" && c.includes("semgrep"));
   assert.ok(semgrep.includes(PINS.semgrep));
   assert.ok(semgrep.includes(path.join(w.dataDir, "frappe-semgrep-rules", "rules")));
@@ -414,18 +427,48 @@ test("shared branches are never pushed to, and a GitHub login is needed", async 
   }
 });
 
-test("skip_hooks reaches pre-commit as SKIP and is kept in the result; a bad hook id is refused", async (t) => {
+const PRETTIER_INSTALL_FAILS = {
+  code: 3,
+  stdout: "[INFO] Installing environment for https://github.com/pre-commit/mirrors-prettier.\nAn unexpected error has occurred: CalledProcessError: npm install\n    npm error code EALLOWGIT\n",
+};
+const PRE_COMMIT_CONFIG = [
+  "repos:",
+  "  - repo: https://github.com/psf/black",
+  "    rev: 22.6.0",
+  "    hooks:",
+  "      - id: black",
+  "  - repo: https://github.com/pre-commit/mirrors-prettier",
+  "    rev: v2.6.2",
+  "    hooks:",
+  "      - id: prettier",
+  "        types_or: [javascript, vue, html]",
+  "",
+].join("\n");
+
+test("a hook is skipped only after its install failed on this commit, and only when it checks no changed file", async (t) => {
   const w = world(t);
   await readyBranch(w);
+  w.commit(".pre-commit-config.yaml", PRE_COMMIT_CONFIG, "chore: name the hooks");
   await assert.rejects(w.dev.runDev({ action: "check", skip_hooks: ["prettier; rm"] }), { code: "INVALID_ARGUMENT" });
-  let seen = null;
-  const answer = w.answers.preCommit;
-  w.answers.preCommit = answer;
+  await assert.rejects(w.dev.runDev({ action: "check", skip_hooks: ["prettier"] }), { code: "SKIP_REFUSED", message: /only after a check on this commit/ });
+  w.answers.preCommit = PRETTIER_INSTALL_FAILS;
+  const failed = await finished(w.dev, (await w.dev.runDev({ action: "check" })).job);
+  const step = failed.result.steps.find((x) => x.name === "pre-commit");
+  assert.equal(step.installError, true);
+  assert.deepEqual(step.failedHooks, ["prettier"]);
+  // black did not fail to install, so it is never skipped
+  await assert.rejects(w.dev.runDev({ action: "check", skip_hooks: ["black"] }), { code: "SKIP_REFUSED" });
+  w.answers.preCommit = { code: 0, stdout: "black....Passed\nprettier....Skipped\n" };
   const done = await finished(w.dev, (await w.dev.runDev({ action: "check", skip_hooks: ["prettier"] })).job);
-  seen = done.result.steps.find((s) => s.name === "pre-commit");
-  assert.deepEqual(seen.skipped, ["prettier"]);
   assert.equal(done.state, "passed");
+  assert.deepEqual(done.result.steps.find((x) => x.name === "pre-commit").skipped, ["prettier"]);
+  // a change prettier checks: the skip is refused
+  w.commit("my_app/public/js/cap.js", "export const cap = 10;\n", "feat(selling): show the cap");
+  w.answers.preCommit = PRETTIER_INSTALL_FAILS;
+  await finished(w.dev, (await w.dev.runDev({ action: "check" })).job);
+  await assert.rejects(w.dev.runDev({ action: "check", skip_hooks: ["prettier"] }), { code: "SKIP_REFUSED", message: /checks my_app\/public\/js\/cap\.js/ });
 });
+
 
 test("a clone made by bench get-app (its remote named upstream) works the same", async (t) => {
   const w = world(t);
@@ -476,4 +519,113 @@ test("two checks at once download Frappe's rules once", async (t) => {
   const [a, b] = await Promise.all([lint.check(root, "main"), lint.check(root, "main")]);
   assert.equal(clones, 1);
   assert.equal(a.passed && b.passed, true);
+});
+
+test("a new check replaces an earlier pass: the latest result on the commit is the one that counts", async (t) => {
+  const w = world(t);
+  await readyBranch(w);
+  await checkedAndTested(w);
+  w.answers.semgrep = { code: 0, stdout: JSON.stringify({ results: [{ check_id: "x.frappe-manual-commit", path: "a.py", start: { line: 1 }, extra: { message: "m" } }], errors: [] }) };
+  const second = await finished(w.dev, (await w.dev.runDev({ action: "check" })).job);
+  assert.equal(second.state, "failed");
+  await assert.rejects(w.dev.runPr(PR_ARGS), { code: "NOT_CHECKED", message: /latest check on this commit .* failed/ });
+});
+
+test("a result is thrown away when the branch moves while the job runs", async (t) => {
+  const w = world(t);
+  await readyBranch(w);
+  w.hooks.beforeSemgrep = () => {
+    w.hooks.beforeSemgrep = null;
+    w.commit("my_app/selling/discounts.py", "def cap(x):\n    return min(x, 30)\n", "fix(selling): another cap");
+  };
+  const job = await finished(w.dev, (await w.dev.runDev({ action: "check" })).job);
+  assert.equal(job.state, "stale");
+  assert.match(job.error, /run it again/);
+  await assert.rejects(w.dev.runPr({ ...PR_ARGS, no_tests_reason: "x" }), { code: "NOT_CHECKED" });
+});
+
+test("open_pr pushes the commit that passed the checks, even if another commit lands meanwhile", async (t) => {
+  const w = world(t);
+  await readyBranch(w);
+  await checkedAndTested(w);
+  const checked = w.git(w.repo, "rev-parse", "HEAD");
+  w.hooks.beforeAuth = () => {
+    w.hooks.beforeAuth = null;
+    w.commit("my_app/selling/discounts.py", "unchecked = True\n", "feat(selling): not checked");
+  };
+  const r = await w.dev.runPr(PR_ARGS);
+  assert.equal(r.commit, checked);
+  assert.equal(w.git(w.origin, "rev-parse", "refs/heads/feature/TASK-2026-00021-cap-the-discount-per-tier"), checked);
+  neverForced(w.calls);
+});
+
+test("an open PR gets the new title and description, and Refs stays Refs", async (t) => {
+  const w = world(t);
+  await readyBranch(w);
+  await checkedAndTested(w);
+  w.answers.prView = { code: 0, stdout: JSON.stringify({ url: PR_URL, state: "OPEN", isDraft: false }) };
+  const r = await w.dev.runPr({ ...PR_ARGS, link: "Refs" });
+  const edit = w.calls.find((c) => c[0] === "gh" && c[2] === "edit" && c.includes("--title"));
+  assert.ok(edit, "the PR's title and body are rewritten");
+  assert.equal(edit[edit.indexOf("--title") + 1], "TASK-2026-00021: cap the discount per tier");
+  assert.match(w.bodies.at(-1), /\nRefs TASK-2026-00021\n/);
+  assert.equal(r.draft, false);
+  assert.ok(!w.calls.some((c) => c[0] === "gh" && c[2] === "ready"), "an open, ready PR is not marked ready again");
+});
+
+test("a PR that could not be marked ready is reported as a draft, with a warning", async (t) => {
+  const w = world(t);
+  await readyBranch(w);
+  await checkedAndTested(w);
+  w.answers.prReady = { code: 1, stdout: "", stderr: "GraphQL: something went wrong" };
+  const r = await w.dev.runPr(PR_ARGS);
+  assert.equal(r.draft, true);
+  assert.match(r.warnings[0], /still a draft/);
+  assert.match(r.task_moves, /stays Working/);
+});
+
+test("Semgrep passes only when it finished cleanly", async (t) => {
+  const w = world(t);
+  await readyBranch(w);
+  w.answers.semgrep = { code: 2, stdout: JSON.stringify({ results: [], errors: [] }), stderr: "boom" };
+  let job = await finished(w.dev, (await w.dev.runDev({ action: "check" })).job);
+  assert.match(job.result.steps.find((x) => x.name === "semgrep").detail, /exit code 2/);
+  w.answers.semgrep = { code: 0, stdout: JSON.stringify({ results: [], errors: [{ level: "error", message: "Invalid rule schema" }] }) };
+  job = await finished(w.dev, (await w.dev.runDev({ action: "check" })).job);
+  assert.match(job.result.steps.find((x) => x.name === "semgrep").detail, /1 error\(s\):\nInvalid rule schema/);
+  w.answers.semgrep = { code: 0, stdout: JSON.stringify({ results: [], errors: [{ level: "warn", message: "Syntax error in a.py" }] }) };
+  job = await finished(w.dev, (await w.dev.runDev({ action: "check" })).job);
+  assert.equal(job.result.steps.find((x) => x.name === "semgrep").status, "passed");
+});
+
+test("a test module passes only when its tests ran to the end with OK", async (t) => {
+  const w = world(t);
+  await readyBranch(w);
+  for (const [stdout, detail] of [
+    ["Testing is disabled for the site!\n", /allow_tests true/],
+    ["Ran 3 tests in 0.2s\n\nFAILED (failures=1)\n", /failures=1/],
+    ["Ran 0 tests in 0.0s\n\nOK\n", /no test ran/],
+  ]) {
+    w.answers.tests = { code: 0, stdout };
+    const job = await finished(w.dev, (await w.dev.runDev({ action: "run_tests" })).job);
+    assert.equal(job.state, "failed", stdout);
+    assert.match(job.result.results[0].detail, detail);
+  }
+});
+
+test("a configured bench must hold this checkout in its apps/ folder", async (t) => {
+  const w = world(t, { settings: { benchPath: "" } });
+  const other = path.join(w.top, "other-bench");
+  fs.mkdirSync(path.join(other, "apps", "frappe"), { recursive: true });
+  fs.mkdirSync(path.join(other, "sites", "dev.localhost"), { recursive: true });
+  const w2 = world(t, { settings: { benchPath: other } });
+  await readyBranch(w2);
+  await assert.rejects(w2.dev.runDev({ action: "run_tests" }), { code: "NO_BENCH", message: /is not one of them/ });
+});
+
+test("a folder inside a larger repository is not taken for a repository", async (t) => {
+  const w = world(t);
+  const { createGit } = require("../../tbo.frappe-dev/lib/git");
+  const git = createGit({ env: w.env });
+  await assert.rejects(git.resolve(path.join(w.repo, "my_app")), { code: "NOT_A_REPO", message: /belongs to the repository/ });
 });

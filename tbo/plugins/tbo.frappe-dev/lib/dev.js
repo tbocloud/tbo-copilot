@@ -16,7 +16,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { run, tail, fail } = require("./run");
 const { createGit, taskId, taskOf, branchFor, checkBranchName } = require("./git");
-const { createLint } = require("./lint");
+const { createLint, checkSkips } = require("./lint");
 const { createTests, checkModules, findBench, findSite, testModules } = require("./tests");
 const pr = require("./pr");
 
@@ -117,8 +117,9 @@ function findUv({ configured, env, home = os.homedir(), platform = process.platf
 function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = process.env, log = () => {}, platform = process.platform }) {
   const git = createGit({ runFn, env });
   const jobs = new Map(); // id -> job
-  const passedLint = new Map(); // `${root}@${head}` -> the lint result
-  const testRuns = new Map(); // `${root}@${head}` -> the test result
+  // the latest finished check and test run of each commit (`${root}@${head}`): only the latest counts
+  const lintRuns = new Map();
+  const testRuns = new Map();
   let counter = 0;
 
   async function settings() {
@@ -240,7 +241,15 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     return out;
   }
 
-  function startJob(kind, root, head, work) {
+  // A result belongs to the commit it ran on: if the branch moved or the tree changed while it ran
+  // (a commit, a switch), it is thrown away, and the job says to run it again.
+  async function stillAt(root, head) {
+    const now = (await git.git(root, ["rev-parse", "HEAD"], { allowFail: true })).stdout.trim();
+    const dirty = (await git.out(root, ["status", "--porcelain=v1", "--untracked-files=normal"])).split("\n").filter(Boolean);
+    return now === head && !dirty.length;
+  }
+
+  function startJob(kind, root, head, work, keep) {
     const running = [...jobs.values()].find((j) => j.kind === kind && j.repo === root && j.state === "running");
     if (running) return { ...summaryOf(running), note: "already running; ask job_status for it" };
     counter += 1;
@@ -248,9 +257,15 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     jobs.set(job.id, job);
     while (jobs.size > MAX_JOBS) jobs.delete(jobs.keys().next().value);
     work()
-      .then((result) => {
+      .then(async (result) => {
+        if (!(await stillAt(root, head))) {
+          job.state = "stale";
+          job.error = `The branch moved or files changed while this ran, so the result does not belong to ${head.slice(0, 12)}; run it again.`;
+          return;
+        }
         job.result = result;
         job.state = result.passed ? "passed" : "failed";
+        keep(result);
       })
       .catch((e) => {
         job.state = "error";
@@ -282,12 +297,25 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     if (!uv) throw fail("UV_MISSING", "The linters run through uv: install it (https://docs.astral.sh/uv/) or set uv location in the plugin settings.");
     const skip = Array.isArray(args.skip_hooks) ? args.skip_hooks.map(String) : [];
     for (const id of skip) if (!/^[A-Za-z0-9_.-]{1,64}$/.test(id)) throw fail("INVALID_ARGUMENT", `"${id}" is not a pre-commit hook id.`);
+    const key = `${root}@${info.head}`;
+    if (skip.length) {
+      // only hooks whose install failed on this commit, and that check none of its changed files
+      const earlier = lintRuns.get(key);
+      const step = earlier && earlier.steps.find((x) => x.name === "pre-commit");
+      const changed = await git.changedFiles(root, await git.mergeBase(root, base, info.remote, info.head), info.head);
+      checkSkips(root, skip, changed, (step && step.failedHooks) || []);
+    }
     const lint = createLint({ git, runFn, env, uv, dataDir: await getDataPath(), log });
-    return startJob("check", root, info.head, async () => {
-      const result = await lint.check(root, base, skip, info.remote);
-      if (result.passed) passedLint.set(`${root}@${info.head}`, result);
-      return result;
-    });
+    const started = startJob(
+      "check",
+      root,
+      info.head,
+      () => lint.check(root, base, skip, info.remote, info.head),
+      (result) => lintRuns.set(key, result),
+    );
+    // a new check replaces the commit's earlier one, pass or fail, from the moment it starts
+    if (started.state === "running" && !started.note) lintRuns.delete(key);
+    return started;
   }
 
   async function runTests(args) {
@@ -298,15 +326,20 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     if (!bench) throw fail("NO_BENCH", 'No bench found: set "Frappe bench folder" in the plugin settings, or work in <bench>/apps/<app>.');
     const site = findSite(bench, conf.testSite);
     let modules = Array.isArray(args.modules) ? args.modules.map(String) : [];
-    if (!modules.length) modules = testModules(root, await git.changedFiles(root, await git.mergeBase(root, base, info.remote)));
+    if (!modules.length) modules = testModules(root, await git.changedFiles(root, await git.mergeBase(root, base, info.remote, info.head), info.head));
     if (!modules.length) throw fail("NO_TESTS", "The branch changes no file that has tests beside it: name the test modules, or add tests.");
     checkModules(modules); // refused now, not later in the background
     const tests = createTests({ runFn, env, log });
-    return startJob("run_tests", root, info.head, async () => {
-      const result = await tests.runModules({ bench, site, modules, benchCommand: conf.benchCommand });
-      testRuns.set(`${root}@${info.head}`, result);
-      return result;
-    });
+    const key = `${root}@${info.head}`;
+    const started = startJob(
+      "run_tests",
+      root,
+      info.head,
+      () => tests.runModules({ bench, site, modules, benchCommand: conf.benchCommand }),
+      (result) => testRuns.set(key, result),
+    );
+    if (started.state === "running" && !started.note) testRuns.delete(key);
+    return started;
   }
 
   async function jobStatus(args) {
@@ -336,8 +369,11 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     const link = LINKS.includes(args.link) ? args.link : "Closes";
     const ahead = Number(await git.out(root, ["rev-list", "--count", `refs/remotes/${info.remote}/${base}..HEAD`]));
     if (!ahead) throw fail("NOTHING_TO_PR", `The branch has no commits beyond ${info.remote}/${base}.`);
-    const lint = passedLint.get(`${root}@${info.head}`);
+    const running = [...jobs.values()].find((j) => j.repo === root && j.head === info.head && j.state === "running");
+    if (running) throw fail("NOT_CHECKED", `${running.kind} is still running on this commit (${running.id}); wait for it (job_status).`);
+    const lint = lintRuns.get(`${root}@${info.head}`);
     if (!lint) throw fail("NOT_CHECKED", `Run tbo_dev check on this commit (${info.head.slice(0, 12)}) first; the PR opens only after the linters pass on it.`);
+    if (!lint.passed) throw fail("NOT_CHECKED", `The latest check on this commit (${info.head.slice(0, 12)}) failed; fix it and check again.`);
     const tests = testRuns.get(`${root}@${info.head}`) || null;
     if (tests && !tests.passed) throw fail("TESTS_FAILED", "The tests failed on this commit; fix them (or name the modules that apply) before opening the PR.");
     const noTestsReason = String(args.no_tests_reason || "").trim();
@@ -359,50 +395,74 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       checks: { head: info.head, lint, tests, noTestsReason },
     });
 
-    // a fast-forward push only: a branch that moved on GitHub is never overwritten
-    const push = await runFn("git", ["push", "--quiet", "--set-upstream", info.remote, `HEAD:refs/heads/${branch}`], { cwd: root, env, timeoutMs: 60000 });
+    // the very commit that passed the checks, fast-forward only: a branch that moved on GitHub is never
+    // overwritten, and a commit made meanwhile is not pushed unchecked
+    const push = await runFn("git", ["push", "--quiet", info.remote, `${info.head}:refs/heads/${branch}`], { cwd: root, env, timeoutMs: 60000 });
     if (push.code !== 0 || push.timedOut) {
       throw fail("PUSH_FAILED", `The push was refused (nothing was forced): ${tail(push.stderr || push.stdout, 6)}\nIf GitHub has newer commits on the branch, pull them (git pull --rebase is fine on your own branch), check again, and retry.`);
     }
+    await git.git(root, ["fetch", "--quiet", info.remote, branch], { allowFail: true, timeoutMs: 30000 });
+    await git.git(root, ["branch", `--set-upstream-to=${info.remote}/${branch}`, branch], { allowFail: true });
 
     const existing = await runFn("gh", ["pr", "view", branch, "--repo", info.github, "--json", "url,state,isDraft"], { cwd: root, env, timeoutMs: 20000 });
     let url;
     let state;
-    if (existing.code === 0) {
-      const found = JSON.parse(existing.stdout);
-      if (found.state === "OPEN") {
-        url = found.url;
-        state = "updated: the open PR got the new commits";
+    let isDraft = true;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tbo-dev-pr-"));
+    const file = path.join(dir, "body.md");
+    fs.writeFileSync(file, bodyText);
+    try {
+      if (existing.code === 0) {
+        const found = JSON.parse(existing.stdout);
+        if (found.state === "OPEN") {
+          url = found.url;
+          isDraft = Boolean(found.isDraft);
+          // the title, Closes or Refs, and the checks of this commit, not the ones it was opened with
+          await gh(root, ["pr", "edit", url, "--repo", info.github, "--title", titleText, "--body-file", file], 20000);
+          state = "updated: the open PR got the new commits, title and description";
+        }
       }
-    }
-    if (!url) {
-      const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "tbo-dev-pr-")), "body.md");
-      fs.writeFileSync(file, bodyText);
-      try {
+      if (!url) {
         url = (await gh(root, ["pr", "create", "--repo", info.github, "--draft", "--base", base, "--head", branch, "--title", titleText, "--body-file", file], 30000))
           .split("\n")
           .filter((l) => /^https:\/\//.test(l))
           .pop();
-      } finally {
-        fs.rmSync(path.dirname(file), { recursive: true, force: true });
+        state = "opened";
       }
-      state = "opened";
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
+    const warnings = [];
     // "ready for review" is what moves the task to Pending Review in TBO Support
-    if (!args.draft) await gh(root, ["pr", "ready", url, "--repo", info.github], 20000).catch((e) => log(`tbo_dev_pr ready: ${e.message}`));
-    if (reviewers.length) await gh(root, ["pr", "edit", url, "--repo", info.github, "--add-reviewer", reviewers.join(",")], 20000).catch((e) => log(`tbo_dev_pr reviewers: ${e.message}`));
+    if (!args.draft && isDraft) {
+      try {
+        await gh(root, ["pr", "ready", url, "--repo", info.github], 20000);
+        isDraft = false;
+      } catch (e) {
+        warnings.push(`The PR is still a draft: marking it ready failed (${e.message}). Mark it ready on GitHub, or run open_pr again; the task moves only then.`);
+      }
+    }
+    if (reviewers.length) {
+      try {
+        await gh(root, ["pr", "edit", url, "--repo", info.github, "--add-reviewer", reviewers.join(",")], 20000);
+      } catch (e) {
+        warnings.push(`The reviewers were not asked (${e.message}); ask them on GitHub.`);
+      }
+    }
     return {
       pr: url,
       state,
       title: titleText,
       base,
       branch,
+      commit: info.head,
       task: info.task,
       link,
       template: template.source,
-      draft: Boolean(args.draft),
+      draft: isDraft,
       reviewers,
-      task_moves: args.draft
+      warnings: warnings.length ? warnings : undefined,
+      task_moves: isDraft
         ? `${info.task} stays Working while the PR is a draft; marking it ready moves it to Pending Review.`
         : `TBO Support moves ${info.task} to Pending Review when GitHub's webhook arrives (usually within a minute), if ${info.github} is in its GitHub settings' allowed repositories.`,
     };

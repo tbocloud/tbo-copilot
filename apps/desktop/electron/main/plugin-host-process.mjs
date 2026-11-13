@@ -289,6 +289,8 @@ function buildApi() {
               description: tool.description,
               risk: tool.risk,
               schema: tool.schema,
+              // the actions allowed in Plan and Goal mode; without it every plugin tool was refused there
+              planSafeActions: tool.planSafeActions,
             },
           ]);
         } catch (error) {
