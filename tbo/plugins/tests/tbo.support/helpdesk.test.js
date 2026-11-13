@@ -143,7 +143,7 @@ test("a Microsoft sign-in's token is sent as a bearer token", async () => {
   assert.throws(() => createClient({ siteUrl: SITE, credentials: {}, request }), { code: "NOT_SIGNED_IN" });
 });
 
-test("post sends JSON with the sign-in, and only to the four listed paths", async () => {
+test("post sends JSON with the sign-in, and only to the listed paths", async () => {
   const { request, calls } = fakeRequest([{ status: 200, headers: {}, bodyText: '{"message":{"name":"TBO-ACT-2026-00001","status":"Pending"}}' }]);
   const client = createClient({ siteUrl: SITE, credentials: { token: "tok" }, request });
   const out = await client.post("helpdesk.api.copilot_actions.request_action_approval", { kind: "AWS", payload: { command: "aws ec2 start-instances" } });
@@ -164,6 +164,7 @@ test("the write list never lets the app approve its own request", () => {
   assert.deepEqual([...WRITE_METHODS].sort(), [
     "helpdesk.api.copilot_actions.mark_action_executed",
     "helpdesk.api.copilot_actions.request_action_approval",
+    "helpdesk.api.copilot_feedback.report_problem",
     "helpdesk.api.copilot_press.backup",
     "helpdesk.api.copilot_press.request_action",
     "helpdesk.api.mobile.start_task",

@@ -38,6 +38,19 @@
         "category": "TBO Support"
       },
       {
+        "id": "tbo-support.report-problem",
+        "title": "TBO Support: Report a problem",
+        "keywords": [
+          "tbo",
+          "copilot",
+          "feedback",
+          "bug",
+          "problem",
+          "report"
+        ],
+        "category": "TBO Support"
+      },
+      {
         "id": "tbo-support.check",
         "title": "TBO Support: Check connection",
         "keywords": [
@@ -174,7 +187,7 @@
       },
       {
         "name": "tbo_support_change",
-        "description": "Change something through TBO Support or Press, as the signed-in person. The app asks the person before each call: say first what it will do. Choose an action:\n- press_backup: take a backup of a site now; needs site. It runs once the person allows it, and is logged.\n- press_action: ask Press to restart_bench, update_site, migrate_site, change_plan (needs plan), deploy (target: a bench group), restore or new_site; needs press_action and target. It only asks an approver in Teams; TBO Support runs it after Approve. Deletes are never possible.\n- start_task: start the person's timer on their own task (Open becomes Working); needs task.\nSite and bench names are as Press shows them (tbo_support press_status gives a site's bench).",
+        "description": "Change something through TBO Support or Press, as the signed-in person. The app asks the person before each call: say first what it will do. Choose an action:\n- press_backup: take a backup of a site now; needs site. It runs once the person allows it, and is logged.\n- press_action: ask Press to restart_bench, update_site, migrate_site, change_plan (needs plan), deploy (target: a bench group), restore or new_site; needs press_action and target. It only asks an approver in Teams; TBO Support runs it after Approve. Deletes are never possible.\n- start_task: start the person's timer on their own task (Open becomes Working); needs task.\n- report_problem: when the person asks to report a problem with TBO Copilot, send their words as a task for the TBO Copilot team; needs text (never passwords, keys or a customer's personal data).\nSite and bench names are as Press shows them (tbo_support press_status gives a site's bench).",
         "risk": "high",
         "schema": {
           "type": "object",
@@ -184,7 +197,8 @@
               "enum": [
                 "press_backup",
                 "press_action",
-                "start_task"
+                "start_task",
+                "report_problem"
               ],
               "description": "What to do."
             },
@@ -216,6 +230,10 @@
             "task": {
               "type": "string",
               "description": "start_task: the task number, for example TASK-2026-00021."
+            },
+            "text": {
+              "type": "string",
+              "description": "report_problem: what was asked, what was expected and what happened (up to 4,000 characters)."
             }
           },
           "required": [

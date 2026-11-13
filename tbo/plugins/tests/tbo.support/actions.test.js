@@ -33,7 +33,7 @@ function fakeClient(answers) {
 const ENV = { siteUrl: "https://teams.teambackoffice.com" };
 
 test("tbo_support only reads, all of it plan-safe; the Press actions and a task's timer, which do something, are in a high-risk tool", () => {
-  assert.deepEqual(CHANGE_ACTION_NAMES, ["press_backup", "press_action", "start_task"]);
+  assert.deepEqual(CHANGE_ACTION_NAMES, ["press_backup", "press_action", "start_task", "report_problem"]);
   assert.deepEqual(READ_ACTION_NAMES, ACTION_NAMES.filter((a) => !CHANGE_ACTION_NAMES.includes(a)));
   assert.deepEqual(TOOL.planSafeActions, READ_ACTION_NAMES);
   assert.deepEqual(TOOL.schema.properties.action.enum, READ_ACTION_NAMES);
@@ -238,7 +238,7 @@ test("every action calls only allow-listed paths, and only the Press actions and
       return [];
     },
   };
-  const args = { ticket: "1", query: "invoice", article: "a1", site: "acme.tbo365.cloud", press_action: "restart_bench", target: "bench-0020", task: "TASK-2026-00021" };
+  const args = { ticket: "1", query: "invoice", article: "a1", site: "acme.tbo365.cloud", press_action: "restart_bench", target: "bench-0020", task: "TASK-2026-00021", text: "It showed the wrong ticket" };
   for (const action of ACTION_NAMES) {
     current = action;
     await runAction(client, { action, ...args }, ENV, CHANGE_ACTION_NAMES.includes(action) ? CHANGE_TOOL : TOOL);
@@ -246,7 +246,7 @@ test("every action calls only allow-listed paths, and only the Press actions and
   const { READ_METHODS, WRITE_METHODS } = require("../../tbo.support/lib/helpdesk");
   for (const p of seen) assert.ok(READ_METHODS.has(p), `${p} is not on the read allow-list`);
   for (const [, p] of posted) assert.ok(WRITE_METHODS.has(p), `${p} is not on the write allow-list`);
-  assert.deepEqual(posted.map(([action]) => action), ["start_task", "press_backup", "press_action"]);
+  assert.deepEqual(posted.map(([action]) => action), ["start_task", "report_problem", "press_backup", "press_action"]);
 });
 
 test("Press reads go to TBO Support's Press endpoints with the site as Press names it", async () => {
@@ -359,4 +359,21 @@ test("start_task starts the person's own timer through TBO Support", async () =>
   assert.deepEqual(posted, [["helpdesk.api.mobile.start_task", { task: "TASK-2026-00021" }]]);
   assert.equal(r.status, "Working");
   assert.deepEqual(r.timer, { running: true });
+});
+
+test("report_problem sends the person's words to TBO Support's feedback, from the desktop app", async () => {
+  const posted = [];
+  const client = {
+    async post(path, params) {
+      posted.push([path, params]);
+      return { task: "TASK-2026-00099", url: "https://teams.teambackoffice.com/helpdesk/my-work?task=TASK-2026-00099" };
+    },
+  };
+  const r = await runAction(client, { action: "report_problem", text: " The fix card showed the wrong ticket " }, ENV, CHANGE_TOOL);
+  assert.deepEqual(posted, [["helpdesk.api.copilot_feedback.report_problem", { text: "The fix card showed the wrong ticket", where: "Desktop" }]]);
+  assert.equal(r.task, "TASK-2026-00099");
+  assert.match(r.url, /task=TASK-2026-00099$/);
+  await assert.rejects(runAction(client, { action: "report_problem" }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT", message: /needs "text"/ });
+  await assert.rejects(runAction(client, { action: "report_problem", text: "x".repeat(4001) }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT" });
+  assert.equal(posted.length, 1);
 });

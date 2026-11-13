@@ -79,6 +79,8 @@ const hub = {
   tokens: new Set(),
   issued: 0,
   calls: [],
+  reports: [],
+  reportUrl: "https://teams.teambackoffice.com/helpdesk/my-work?task=TASK-2026-00099",
 };
 const ok = (message) => ({ status: 200, headers: {}, bodyText: JSON.stringify({ message }) });
 function newToken() {
@@ -128,6 +130,11 @@ async function hubFetch(input) {
     if (auth === `token ${GOOD.key}:${GOOD.secret}`) return ok("agent@example.com");
     if (auth && auth.startsWith("Bearer ") && hub.tokens.has(auth.slice(7))) return ok("rahul@teambackoffice.com");
     return { status: 401, headers: {}, bodyText: '{"exc_type":"AuthenticationError"}' };
+  }
+  if (path === "helpdesk.api.copilot_feedback.report_problem") {
+    assert.equal(input.method, "POST");
+    hub.reports.push(body);
+    return ok({ task: "TASK-2026-00099", url: hub.reportUrl, project: "PROJ-0001" });
   }
   return { status: 404, headers: {}, bodyText: "{}" };
 }
@@ -204,7 +211,7 @@ async function waitFor(check, ms = 5000) {
   throw new Error("timed out");
 }
 
-test("onLoad registers the three tools and three commands", async () => {
+test("onLoad registers the three tools and four commands", async () => {
   await plugin.onLoad();
   assert.deepEqual(registered.tools.map((t) => t.name), ["tbo_support", "tbo_support_change", "tbo_aws"]);
   assert.deepEqual(registered.tools.map((t) => t.risk), ["low", "high", "medium"]);
@@ -250,6 +257,41 @@ test("Sign in with Microsoft: browser opened, wait for Allow, then TBO Support a
   const me = await tool().execute({ action: "who_am_i" }, { log() {} });
   assert.equal(me.user, "rahul@teambackoffice.com");
   assert.equal(hub.calls.at(-1).auth, "Bearer bearer-1");
+});
+
+test("Report a problem: the command opens the panel's form once, and a report sent there becomes a task", async () => {
+  const command = registered.commands.find((c) => c.id === "tbo-support.report-problem");
+  assert.equal(command.title, "TBO Support: Report a problem");
+  assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askReport, false);
+  await command.run();
+  assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askReport, true);
+  assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askReport, false, "read once");
+
+  const sent = await plugin.onPanelInvoke("tbo-support.report", { text: "  The AWS tool would not start  " });
+  assert.deepEqual(sent, { ok: true, task: "TASK-2026-00099", link: true });
+  assert.deepEqual(hub.reports.at(-1), { text: "The AWS tool would not start", where: "Desktop" });
+  await plugin.onPanelInvoke("tbo-support.open-report");
+  assert.equal(opened.at(-1), hub.reportUrl);
+
+  // an empty report is refused before any call; a link to another site is never opened
+  const before = hub.reports.length;
+  assert.equal((await plugin.onPanelInvoke("tbo-support.report", { text: "   " })).ok, false);
+  assert.equal(hub.reports.length, before);
+  hub.reportUrl = "https://evil.example.com/helpdesk/my-work?task=TASK-2026-00099";
+  assert.deepEqual(await plugin.onPanelInvoke("tbo-support.report", { text: "again" }), { ok: true, task: "TASK-2026-00099", link: false });
+  const openedBefore = opened.length;
+  await plugin.onPanelInvoke("tbo-support.open-report");
+  assert.equal(opened.length, openedBefore);
+  hub.reportUrl = `${SITE}/helpdesk/my-work?task=TASK-2026-00099`;
+});
+
+test("the agent's report_problem goes through the high-risk change tool", async () => {
+  const change = registered.tools.find((t) => t.name === "tbo_support_change");
+  assert.equal(change.risk, "high");
+  const filed = await change.execute({ action: "report_problem", text: "Wrong ticket in the fix card" }, { log() {} });
+  assert.equal(filed.task, "TASK-2026-00099");
+  assert.deepEqual(hub.reports.at(-1), { text: "Wrong ticket in the fix card", where: "Desktop" });
+  await assert.rejects(tool().execute({ action: "report_problem", text: "x" }, { log() {} }), { code: "INVALID_ARGUMENT" });
 });
 
 test("a token TBO Support refuses is renewed once and the call retried", async () => {

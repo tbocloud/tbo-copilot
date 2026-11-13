@@ -7,8 +7,9 @@
 // body so the words stay out of URLs and network logs. The few writes
 // (WRITE_METHODS) never change a ticket: they ask TBO Support for an approval,
 // say how an approved action went, take a Press backup, ask for a Press
-// action that then waits for an approver (TBO Copilot Phase 18), or start the
-// person's timer on their own task (Phase 20).
+// action that then waits for an approver (TBO Copilot Phase 18), start the
+// person's timer on their own task (Phase 20), or file their report of a problem
+// with TBO Copilot as a task for its team (Phase 21).
 
 const READ_METHODS = new Set([
   "frappe.auth.get_logged_user",
@@ -51,6 +52,8 @@ const WRITE_METHODS = new Set([
   "helpdesk.api.copilot_press.request_action",
   // starts the person's own timer on a task they work on (Open becomes Working)
   "helpdesk.api.mobile.start_task",
+  // the person's report for the TBO Copilot team: a task in their project, never a ticket (Phase 21)
+  "helpdesk.api.copilot_feedback.report_problem",
 ]);
 
 const READ_DOCTYPES = new Set(["HD Ticket"]);

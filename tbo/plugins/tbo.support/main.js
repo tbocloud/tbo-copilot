@@ -38,10 +38,15 @@ const COMMANDS = {
   signIn: "tbo-support.sign-in",
   signOut: "tbo-support.sign-out",
   check: "tbo-support.check",
+  report: "tbo-support.report-problem",
 };
 
 let store = null;
 let aws = null;
+// "TBO Support: Report a problem" opens the panel on its report form (read once by the panel)
+let reportAsked = false;
+// the last report sent from the panel: its link opens only from here, never from the panel's input
+let lastReport = null;
 let timer = null;
 let startupTimer = null;
 let pending = null; // a Microsoft sign-in waiting for Allow in the browser
@@ -446,9 +451,32 @@ const NOT_REACHED_ON_SIGN_OUT =
   "Signed out on this computer, but TBO Support could not be reached. A System Manager can end this " +
   "computer's sign-in there now (TBO Desktop Sign-in); otherwise it ends when it runs out.";
 
+// The person typed the report and pressed Send in the panel: that is their yes, so it goes
+// straight to TBO Support (the agent's report_problem goes through the app's prompt instead).
+async function reportFromPanel(payload) {
+  const text = payload && typeof payload.text === "string" ? payload.text : "";
+  const filed = await runSignedIn({ action: "report_problem", text }, CHANGE_TOOL);
+  const site = await currentSite();
+  // the task's page opens only on the signed-in site
+  lastReport = filed.url && sameOrigin(filed.url, site) ? filed : { ...filed, url: null };
+  return { task: filed.task, link: !!lastReport.url };
+}
+
+function sameOrigin(url, site) {
+  try {
+    return new URL(url).origin === new URL(site).origin;
+  } catch {
+    return false;
+  }
+}
+
 async function onPanelInvoke(channel, payload) {
   try {
-    if (channel === "tbo-support.state") return { ok: true, ...(await panelState()) };
+    if (channel === "tbo-support.state") {
+      const askReport = reportAsked;
+      reportAsked = false;
+      return { ok: true, ...(await panelState()), askReport };
+    }
     if (channel === "tbo-support.microsoft") return { ok: true, pending: await startMicrosoft() };
     if (channel === "tbo-support.open-again") {
       if (pending) await pi.shell.openExternal(pending.verifyUrl);
@@ -461,6 +489,11 @@ async function onPanelInvoke(channel, payload) {
     }
     if (channel === "tbo-support.sign-in") return { ok: true, ...(await signInWithKey(payload)) };
     if (channel === "tbo-support.sign-out") return { ok: true, ...(await signOut()) };
+    if (channel === "tbo-support.report") return { ok: true, ...(await reportFromPanel(payload)) };
+    if (channel === "tbo-support.open-report") {
+      if (lastReport && lastReport.url) await pi.shell.openExternal(lastReport.url);
+      return { ok: true };
+    }
   } catch (e) {
     return { ok: false, code: e.code || "ERROR", error: e.message };
   }
@@ -581,6 +614,16 @@ async function onLoad() {
       } catch (e) {
         await pi.ui.showToast(e.message, "error");
       }
+    },
+  });
+
+  await pi.commands.register({
+    id: COMMANDS.report,
+    title: "TBO Support: Report a problem",
+    keywords: ["tbo", "copilot", "feedback", "bug", "problem", "report"],
+    run: () => {
+      reportAsked = true;
+      return pi.ui.openPanel({ title: "TBO Support" });
     },
   });
 

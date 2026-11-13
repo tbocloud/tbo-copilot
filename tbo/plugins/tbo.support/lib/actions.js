@@ -352,6 +352,19 @@ const ACTIONS = {
     return { task: t.name, status: t.status, timer: t.timer || null, note: "The task is Working and its timer runs; the merge of a Closes PR completes it with the hours." };
   },
 
+  // the person's report as a task for the TBO Copilot team (Phase 21); their last Copilot
+  // actions go with it by number only, which TBO Support adds
+  async report_problem(client, args) {
+    const text = textArg(args, "text", 4000);
+    if (!text) throw fail("INVALID_ARGUMENT", 'report_problem needs "text": what was asked, what was expected and what happened.');
+    const filed = (await client.post("helpdesk.api.copilot_feedback.report_problem", { text, where: "Desktop" })) || {};
+    return {
+      task: filed.task,
+      url: filed.url,
+      next: "The TBO Copilot team has it as a task. Give the person the task's number and link.",
+    };
+  },
+
   async press_backup(client, args) {
     return client.post("helpdesk.api.copilot_press.backup", { site: pressName(args, "site") });
   },
@@ -425,7 +438,7 @@ const ACTION_NAMES = Object.keys(ACTIONS);
 // before each call; tbo_support keeps the reads, which the app runs without asking
 // (TBO Copilot Phase 21, docs/tbo/security.md F3). A task's timer is the person's own work,
 // and still theirs to allow.
-const CHANGE_ACTION_NAMES = ["press_backup", "press_action", "start_task"];
+const CHANGE_ACTION_NAMES = ["press_backup", "press_action", "start_task", "report_problem"];
 const READ_ACTION_NAMES = ACTION_NAMES.filter((a) => !CHANGE_ACTION_NAMES.includes(a));
 // what may run in Plan mode: every read
 const PLAN_SAFE = READ_ACTION_NAMES;
@@ -483,6 +496,7 @@ const CHANGE_DESCRIPTION = [
   "- press_backup: take a backup of a site now; needs site. It runs once the person allows it, and is logged.",
   "- press_action: ask Press to restart_bench, update_site, migrate_site, change_plan (needs plan), deploy (target: a bench group), restore or new_site; needs press_action and target. It only asks an approver in Teams; TBO Support runs it after Approve. Deletes are never possible.",
   "- start_task: start the person's timer on their own task (Open becomes Working); needs task.",
+  "- report_problem: when the person asks to report a problem with TBO Copilot, send their words as a task for the TBO Copilot team; needs text (never passwords, keys or a customer's personal data).",
   "Site and bench names are as Press shows them (tbo_support press_status gives a site's bench).",
 ].join("\n");
 
@@ -495,6 +509,7 @@ const CHANGE_SCHEMA = {
     target: { type: "string", description: "press_action: the site, bench or bench group, as Press names it." },
     plan: { type: "string", description: "press_action change_plan: the plan's name." },
     task: { type: "string", description: "start_task: the task number, for example TASK-2026-00021." },
+    text: { type: "string", description: "report_problem: what was asked, what was expected and what happened (up to 4,000 characters)." },
   },
   required: ["action"],
   additionalProperties: false,
