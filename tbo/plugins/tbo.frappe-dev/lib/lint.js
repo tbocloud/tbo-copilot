@@ -23,6 +23,8 @@ const PINS = {
 const FRAPPE_RULES = "https://github.com/frappe/semgrep-rules.git";
 const DEFAULT_SEMGREP = [{ kind: "frappe", sub: "rules" }, { kind: "registry", name: "r/python.lang.correctness" }];
 const RULES_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// one download or refresh of Frappe's rules at a time per folder, however many checks start
+const rulesInFlight = new Map();
 // @commitlint/config-conventional's types; a header of at most 100 characters
 const COMMIT_TYPES = ["build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test"];
 const CONVENTIONAL = new RegExp(`^(${COMMIT_TYPES.join("|")})(\\([^()\\n]+\\))?!?: \\S`);
@@ -66,7 +68,14 @@ function semgrepConfigs(text, root) {
       const frappe = /frappe-semgrep-rules\/?(.*)$/.exec(value);
       if (frappe) configs.push({ kind: "frappe", sub: frappe[1].replace(/^\/+|\/+$/g, "") || "rules" });
       else if (/^[rps]\/[\w.-]+$/.test(value)) configs.push({ kind: "registry", name: value });
-      else if (!value.includes("..") && fs.existsSync(path.join(root, value))) configs.push({ kind: "local", path: value });
+      else {
+        // a rules file in the repository, never one outside it
+        const full = path.resolve(root, value);
+        const rel = path.relative(root, full);
+        if (rel && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel) && fs.existsSync(full)) {
+          configs.push({ kind: "local", path: rel.split(path.sep).join("/") });
+        }
+      }
     }
   }
   const seen = new Set();
@@ -153,8 +162,18 @@ function createLint({ git, runFn, env, uv, dataDir, log = () => {} }) {
   const uvRun = (cwd, pin, args, timeoutMs) => runFn(uv, ["tool", "run", "--from", pin, ...args], { cwd, env, timeoutMs });
 
   // Frappe's Semgrep rules, as CI clones them, kept in the plugin's data folder and refreshed weekly.
-  async function frappeRules() {
+  function frappeRules() {
     const dir = path.join(dataDir, "frappe-semgrep-rules");
+    if (!rulesInFlight.has(dir)) {
+      rulesInFlight.set(
+        dir,
+        fetchRules(dir).finally(() => rulesInFlight.delete(dir)),
+      );
+    }
+    return rulesInFlight.get(dir);
+  }
+
+  async function fetchRules(dir) {
     const marker = path.join(dir, ".git");
     if (!fs.existsSync(marker)) {
       fs.rmSync(dir, { recursive: true, force: true });

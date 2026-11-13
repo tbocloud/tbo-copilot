@@ -85,7 +85,9 @@ function createGit({ runFn = run, env } = {}) {
     if (!workspace) throw fail("NO_WORKSPACE", "Open the app's folder (or its bench) as the workspace first.");
     const wanted = repo ? path.resolve(workspace, String(repo)) : workspace;
     const rel = path.relative(fs.realpathSync(workspace), fs.existsSync(wanted) ? fs.realpathSync(wanted) : wanted);
-    if (rel.startsWith("..") || path.isAbsolute(rel)) throw fail("INVALID_ARGUMENT", `"repo" must be a folder inside the workspace (${workspace}).`);
+    if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+      throw fail("INVALID_ARGUMENT", `"repo" must be a folder inside the workspace (${workspace}).`);
+    }
     const root = fs.existsSync(wanted) ? await isRepo(wanted) : null;
     if (root) return root;
     const found = [];

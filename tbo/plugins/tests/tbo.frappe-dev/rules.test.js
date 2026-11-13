@@ -94,6 +94,10 @@ test("a Frappe app whose CI runs nothing still gets Semgrep with Frappe's rules 
 
 test("Semgrep configs: Frappe's clone, registry sets and repository files; nothing else", (t) => {
   const root = tempTree(t, { "rules/local.yml": "rules: []\n" });
+  const outside = tempTree(t, { "evil.yml": "rules: []\n" });
+  assert.deepEqual(semgrepConfigs(`run: semgrep ci --config ${path.join(outside, "evil.yml")} --config ${path.join(root, "rules/local.yml")}`, root), [
+    { kind: "local", path: "rules/local.yml" },
+  ]);
   const text = [
     "run: semgrep ci --config ./frappe-semgrep-rules/rules/security --config=p/python --config rules/local.yml --config ../outside.yml --config https://evil.example/r.yml",
     "run: echo --config not-semgrep",

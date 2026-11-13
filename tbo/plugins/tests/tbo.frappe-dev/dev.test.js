@@ -409,7 +409,9 @@ test("shared branches are never pushed to, and a GitHub login is needed", async 
   await checkedAndTested(w);
   w.answers.ghAuth = { code: 1, stdout: "", stderr: "You are not logged into any GitHub hosts." };
   await assert.rejects(w.dev.runPr(PR_ARGS), { code: "GH_LOGIN", message: /gh auth login/ });
-  await assert.rejects(w.dev.runPr({ ...PR_ARGS, reviewers: ["not a login!"] }), { code: "INVALID_ARGUMENT" });
+  for (const bad of ["not a login!", "lead-", "-lead", "le--ad", "x".repeat(40)]) {
+    await assert.rejects(w.dev.runPr({ ...PR_ARGS, reviewers: [bad] }), { code: "INVALID_ARGUMENT" }, bad);
+  }
 });
 
 test("skip_hooks reaches pre-commit as SKIP and is kept in the result; a bad hook id is refused", async (t) => {
@@ -443,4 +445,35 @@ test("a clone made by bench get-app (its remote named upstream) works the same",
   w.git(w.repo, "remote", "rename", "upstream", "mine");
   w.git(w.repo, "remote", "add", "theirs", GITHUB_URL);
   await assert.rejects(w.dev.runDev({ action: "status" }), { code: "NO_REMOTE" });
+});
+
+test("a folder named like ..something inside the workspace is still inside it", async (t) => {
+  const w = world(t, { workspace: "bench" });
+  fs.mkdirSync(path.join(w.bench, "..apps"), { recursive: true });
+  await assert.rejects(w.dev.runDev({ action: "status", repo: "..apps" }), { code: "NOT_A_REPO" });
+});
+
+test("two checks at once download Frappe's rules once", async (t) => {
+  const { createLint } = require("../../tbo.frappe-dev/lib/lint");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tbo-dev-rules-"));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  let clones = 0;
+  const runFn = async (cmd, args) => {
+    if (cmd === "git" && args[0] === "clone") {
+      clones += 1;
+      await new Promise((r) => setTimeout(r, 50));
+      fs.mkdirSync(path.join(args.at(-1), ".git"), { recursive: true });
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    return { code: 0, stdout: JSON.stringify({ results: [], errors: [] }), stderr: "" };
+  };
+  const git = { mergeBase: async () => "abc", changedFiles: async () => [], commitsSince: async () => [], out: async () => "" };
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tbo-dev-app-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, "my_app"));
+  fs.writeFileSync(path.join(root, "my_app", "hooks.py"), "");
+  const lint = createLint({ git, runFn, env: process.env, uv: "uv", dataDir });
+  const [a, b] = await Promise.all([lint.check(root, "main"), lint.check(root, "main")]);
+  assert.equal(clones, 1);
+  assert.equal(a.passed && b.passed, true);
 });

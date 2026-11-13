@@ -86,7 +86,8 @@ const PR_TOOL = {
   },
 };
 
-const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+// GitHub's rule: letters, digits and single hyphens between them, at most 39 characters
+const GITHUB_LOGIN = /^(?=.{1,39}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/;
 
 function uvCandidates(home, platform) {
   const exe = platform === "win32" ? "uv.exe" : "uv";
