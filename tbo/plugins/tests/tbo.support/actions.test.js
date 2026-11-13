@@ -2,7 +2,15 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { runAction, ACTION_NAMES, TOOL, MAX_RESULT_CHARS } = require("../../tbo.support/lib/actions");
+const {
+  runAction,
+  ACTION_NAMES,
+  READ_ACTION_NAMES,
+  CHANGE_ACTION_NAMES,
+  TOOL,
+  CHANGE_TOOL,
+  MAX_RESULT_CHARS,
+} = require("../../tbo.support/lib/actions");
 const { untrusted, UNTRUSTED_NOTE } = require("../../tbo.support/lib/shape");
 
 // A fake helpdesk client that records calls and answers from a table.
@@ -24,11 +32,34 @@ function fakeClient(answers) {
 
 const ENV = { siteUrl: "https://teams.teambackoffice.com" };
 
-test("every read is plan-safe; the two Press actions that do something are not", () => {
-  assert.deepEqual(TOOL.planSafeActions, ACTION_NAMES.filter((a) => a !== "press_backup" && a !== "press_action"));
-  assert.deepEqual(TOOL.schema.properties.action.enum, ACTION_NAMES);
+test("tbo_support only reads, all of it plan-safe; the two Press actions that do something are in a high-risk tool", () => {
+  assert.deepEqual(CHANGE_ACTION_NAMES, ["press_backup", "press_action"]);
+  assert.deepEqual(READ_ACTION_NAMES, ACTION_NAMES.filter((a) => !CHANGE_ACTION_NAMES.includes(a)));
+  assert.deepEqual(TOOL.planSafeActions, READ_ACTION_NAMES);
+  assert.deepEqual(TOOL.schema.properties.action.enum, READ_ACTION_NAMES);
   assert.equal(TOOL.schema.additionalProperties, false);
   assert.equal(TOOL.risk, "low");
+  // high: the app asks the person before every call (docs/tbo/security.md F3); never offered in Plan mode
+  assert.equal(CHANGE_TOOL.name, "tbo_support_change");
+  assert.equal(CHANGE_TOOL.risk, "high");
+  assert.equal(CHANGE_TOOL.planSafeActions, undefined);
+  assert.deepEqual(CHANGE_TOOL.schema.properties.action.enum, CHANGE_ACTION_NAMES);
+  assert.equal(CHANGE_TOOL.schema.additionalProperties, false);
+  for (const key of ["press_action", "target", "plan"]) {
+    assert.equal(TOOL.schema.properties[key], undefined, `${key} belongs to the change tool`);
+  }
+});
+
+test("each tool runs only its own actions, and says where the other ones are", async () => {
+  const client = { post: async () => assert.fail("nothing may be posted"), method: async () => assert.fail("nothing may be read") };
+  await assert.rejects(runAction(client, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV), {
+    code: "INVALID_ARGUMENT",
+    message: /"press_backup" is an action of tbo_support_change/,
+  });
+  await assert.rejects(runAction(client, { action: "get_ticket", ticket: "1" }, ENV, CHANGE_TOOL), {
+    code: "INVALID_ARGUMENT",
+    message: /"get_ticket" is an action of tbo_support\./,
+  });
 });
 
 test("unknown actions and bad ticket numbers are refused before any call", async () => {
@@ -210,7 +241,7 @@ test("every action calls only allow-listed paths, and only the two Press actions
   const args = { ticket: "1", query: "invoice", article: "a1", site: "acme.tbo365.cloud", press_action: "restart_bench", target: "bench-0020" };
   for (const action of ACTION_NAMES) {
     current = action;
-    await runAction(client, { action, ...args }, ENV);
+    await runAction(client, { action, ...args }, ENV, CHANGE_ACTION_NAMES.includes(action) ? CHANGE_TOOL : TOOL);
   }
   const { READ_METHODS, WRITE_METHODS } = require("../../tbo.support/lib/helpdesk");
   for (const p of seen) assert.ok(READ_METHODS.has(p), `${p} is not on the read allow-list`);
@@ -251,16 +282,16 @@ test("a Press action only asks for an approval, and never one Copilot does not o
       return { name: "TBO-ACT-2026-00009", title: "Change the plan of demo.tbo365.cloud to Pro", assigned_to: "approver@example.com" };
     },
   };
-  const asked = await runAction(client, { action: "press_action", press_action: "change_plan", target: "demo.tbo365.cloud", plan: "Pro" }, ENV);
+  const asked = await runAction(client, { action: "press_action", press_action: "change_plan", target: "demo.tbo365.cloud", plan: "Pro" }, ENV, CHANGE_TOOL);
   assert.equal(asked.status, "waiting for approval");
   assert.equal(asked.approver, "approver@example.com");
   assert.deepEqual(posts[0], ["helpdesk.api.copilot_press.request_action", { action: "change_plan", target: "demo.tbo365.cloud", extra: { plan: "Pro" } }]);
   await assert.rejects(
-    runAction(client, { action: "press_action", press_action: "change_plan", target: "demo.tbo365.cloud" }, ENV),
+    runAction(client, { action: "press_action", press_action: "change_plan", target: "demo.tbo365.cloud" }, ENV, CHANGE_TOOL),
     { code: "INVALID_ARGUMENT", message: /needs "plan"/ },
   );
   for (const bad of ["archive", "delete_site", "drop", ""]) {
-    await assert.rejects(runAction(client, { action: "press_action", press_action: bad, target: "demo.tbo365.cloud" }, ENV), { code: "INVALID_ARGUMENT" }, bad);
+    await assert.rejects(runAction(client, { action: "press_action", press_action: bad, target: "demo.tbo365.cloud" }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT" }, bad);
   }
   assert.equal(posts.length, 1);
 });

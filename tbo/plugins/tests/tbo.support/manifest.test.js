@@ -5,13 +5,13 @@ const assert = require("node:assert/strict");
 const manifest = require("../../tbo.support/manifest.json");
 const fs = require("node:fs");
 const path = require("node:path");
-const { TOOL } = require("../../tbo.support/lib/actions");
+const { TOOL, CHANGE_TOOL } = require("../../tbo.support/lib/actions");
 const { AWS_TOOL } = require("../../tbo.support/lib/aws");
 
 const pick = (t) => ({ name: t.name, description: t.description, risk: t.risk, planSafeActions: t.planSafeActions, schema: t.schema });
 
-test("the manifest's two tools match the code's tools exactly", () => {
-  assert.deepEqual(manifest.contributes.agentTools.map(pick), [pick(TOOL), pick(AWS_TOOL)]);
+test("the manifest's three tools match the code's tools exactly", () => {
+  assert.deepEqual(manifest.contributes.agentTools.map(pick), [pick(TOOL), pick(CHANGE_TOOL), pick(AWS_TOOL)]);
 });
 
 test("every skill exists with a name and a short description", () => {

@@ -1,6 +1,7 @@
 "use strict";
 
-// TBO Support plugin: the tbo_support tool (TBO Support and TBO's Press), the
+// TBO Support plugin: the tbo_support tool (reading TBO Support and TBO's Press),
+// the tbo_support_change tool (a Press backup or action, asked of the person first), the
 // tbo_aws tool (TBO's AWS with the person's own AWS login, Phase 18; lib/aws.js),
 // the TBO AI provider and the sign-in panel. People sign in with their Microsoft
 // account through TBO Support (TBO Copilot Phase 17); TBO Support then gives this
@@ -18,7 +19,7 @@
 
 const os = require("node:os");
 const { createClient, normalizeSite, isLoopback } = require("./lib/helpdesk");
-const { TOOL, runAction } = require("./lib/actions");
+const { TOOL, CHANGE_TOOL, runAction } = require("./lib/actions");
 const { createStore } = require("./lib/credentials");
 const desktop = require("./lib/desktop");
 const { AWS_TOOL, createAws } = require("./lib/aws");
@@ -251,14 +252,15 @@ async function signedInClient() {
 
 // One tool action with the current sign-in; a token refused early (revoked, or
 // the clock is off) is renewed once and the action tried again.
-async function runSignedIn(args) {
+async function runSignedIn(args, tool = TOOL) {
   const { site, session, client } = await signedInClient();
   try {
-    return await runAction(client, args, { siteUrl: site });
+    return await runAction(client, args, { siteUrl: site }, tool);
   } catch (e) {
+    // a 401 is refused before anything runs, so trying once more never repeats a change
     if (e.code !== "AUTH" || !session) throw e;
     const fresh = await renew(site, session, { force: true });
-    return runAction(await clientFor(site, { token: fresh.accessToken }), args, { siteUrl: site });
+    return runAction(await clientFor(site, { token: fresh.accessToken }), args, { siteUrl: site }, tool);
   }
 }
 
@@ -537,6 +539,15 @@ async function onLoad() {
     },
   });
 
+  // the writes: declared high risk, so the app asks the person before each one (Phase 21)
+  await pi.agent.registerTool({
+    ...CHANGE_TOOL,
+    execute: async (args, ctx) => {
+      if (ctx && ctx.log) ctx.log(`tbo_support_change ${args && args.action}`);
+      return runSignedIn(args, CHANGE_TOOL);
+    },
+  });
+
   aws = createAws({
     getSettings: () => pi.plugin.getSettings(),
     getDataPath: () => pi.plugin.getDataPath(),
@@ -613,6 +624,7 @@ async function onUnload() {
   pending = null;
   if (pi.events && pi.events.off) pi.events.off(SETTINGS_EVENT, onSettingsChanged);
   await pi.agent.unregisterTool(TOOL.name).catch(() => {});
+  await pi.agent.unregisterTool(CHANGE_TOOL.name).catch(() => {});
   await pi.agent.unregisterTool(AWS_TOOL.name).catch(() => {});
   if (aws) aws.stop();
   aws = null;

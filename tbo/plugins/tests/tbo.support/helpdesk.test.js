@@ -66,17 +66,41 @@ test("method refuses any path that is not on the read-only allow-list, without a
   assert.equal(calls.length, 0);
 });
 
-test("list reads HD Ticket with JSON fields and filters, and refuses other doctypes", async () => {
-  const { request, calls } = fakeRequest([{ status: 200, headers: {}, bodyText: '{"data":[{"name":1}]}' }]);
+test("list reads HD Ticket by POST, with the filters in the body, and refuses other doctypes", async () => {
+  const { request, calls } = fakeRequest([{ status: 200, headers: {}, bodyText: '{"message":[{"name":1}]}' }]);
   const client = createClient({ siteUrl: SITE, credentials: CREDS, request });
-  const rows = await client.list("HD Ticket", { fields: ["name"], filters: [["status", "=", "Open"]], orderBy: "modified desc", limit: 5 });
+  const filters = [["customer", "=", "Alpha Trading"]];
+  const rows = await client.list("HD Ticket", { fields: ["name"], filters, orderBy: "modified desc", limit: 5 });
   assert.deepEqual(rows, [{ name: 1 }]);
-  const url = new URL(calls[0].url);
-  assert.equal(url.pathname, "/api/resource/HD%20Ticket");
-  assert.equal(url.searchParams.get("fields"), '["name"]');
-  assert.equal(url.searchParams.get("filters"), '[["status","=","Open"]]');
-  assert.equal(url.searchParams.get("limit_page_length"), "5");
+  assert.equal(calls[0].method, "POST");
+  // a customer's name never reaches the URL, so never the app's network log (docs/tbo/security.md F5)
+  assert.equal(calls[0].url, `${SITE}/api/method/frappe.client.get_list`);
+  assert.deepEqual(JSON.parse(calls[0].body), {
+    doctype: "HD Ticket",
+    fields: ["name"],
+    filters,
+    order_by: "modified desc",
+    limit_page_length: 5,
+  });
   await assert.rejects(client.list("User", { fields: [], filters: [], limit: 1 }), { code: "NOT_ALLOWED" });
+  assert.equal(calls.length, 1);
+});
+
+test("reads whose arguments people typed go by POST; reads by number stay GET", async () => {
+  const { READ_METHODS } = require("../../tbo.support/lib/helpdesk");
+  for (const path of ["helpdesk.api.search.search", "helpdesk.api.article.search", "helpdesk.api.copilot_press.sites"]) {
+    assert.ok(READ_METHODS.has(path), path);
+    const { request, calls } = fakeRequest([{ status: 200, headers: {}, bodyText: '{"message":[]}' }]);
+    const client = createClient({ siteUrl: SITE, credentials: CREDS, request });
+    await client.method(path, { query: "invoice for Alpha Trading" });
+    assert.equal(calls[0].method, "POST", path);
+    assert.equal(calls[0].url, `${SITE}/api/method/${path}`);
+    assert.doesNotMatch(calls[0].url, /Alpha|invoice/);
+    assert.deepEqual(JSON.parse(calls[0].body), { query: "invoice for Alpha Trading" });
+  }
+  const { request, calls } = fakeRequest([{ status: 200, headers: {}, bodyText: '{"message":{}}' }]);
+  await createClient({ siteUrl: SITE, credentials: CREDS, request }).method("helpdesk.helpdesk.doctype.hd_ticket.api.get_one", { name: "42" });
+  assert.equal(calls[0].method, "GET");
 });
 
 test("HTTP errors map to clear codes", async () => {
