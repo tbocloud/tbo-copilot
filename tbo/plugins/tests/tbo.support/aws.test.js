@@ -387,6 +387,16 @@ test("another profile, another endpoint or no TLS check is refused anywhere in t
 test("a delete inside escaped JSON and bucket lifecycle rules are blocked", () => {
   assert.ok(blockedChange(cmd('aws route53 change-resource-record-sets --hosted-zone-id Z1 --change-batch "{\\"Changes\\":[{\\"Action\\":\\"DELETE\\",\\"ResourceRecordSet\\":{}}]}"')));
   assert.ok(blockedChange(cmd("aws s3api put-bucket-lifecycle-configuration --bucket b --lifecycle-configuration x")));
+  // a template's effect, deletes and uploads included, is not in the command the approver sees
+  for (const change of [
+    "aws cloudformation execute-change-set --change-set-name cs --stack-name app",
+    "aws cloudformation update-stack --stack-name app --template-url https://example.com/t.yaml",
+    "aws cloudformation create-stack --stack-name app --template-body {}",
+    "aws cloudformation deploy --template-file site/template.yaml --stack-name app",
+    "aws cloudformation package --template-file site/template.yaml --s3-bucket b",
+  ]) {
+    assert.match(blockedChange(cmd(change)), /never changes CloudFormation stacks/, change);
+  }
   assert.equal(blockedChange(cmd('aws route53 change-resource-record-sets --hosted-zone-id Z1 --change-batch "{\\"Changes\\":[{\\"Action\\":\\"UPSERT\\"}]}"')), "");
 });
 
@@ -478,7 +488,10 @@ test("reads that return environment variables or user data are refused, in any f
     assert.ok(secretRead(cmd(blocked)), blocked);
   }
   assert.ok(!secretRead(cmd("aws ec2 describe-instance-attribute --instance-id i-1 --attribute instanceType")));
-  assert.ok(!secretRead(cmd("aws lambda list-functions")));
+  // the listings carry each function's environment variables (CodeRabbit, PR #24)
+  assert.ok(secretRead(cmd("aws lambda list-functions")));
+  assert.ok(secretRead(cmd("aws lambda list-versions-by-function --function-name app")));
+  assert.ok(!secretRead(cmd("aws lambda list-aliases --function-name app")));
 });
 
 test("a secret-bearing read never reaches the server", async (t) => {
@@ -544,7 +557,7 @@ test("an upload needs exactly a source and a destination inside the work folder,
   for (const [command, message] of [
     ["aws s3 cp site extra s3://example-bucket/ --recursive", /exactly a source and a destination/],
     ["aws s3 cp ../../outside s3://example-bucket/ --recursive", /not in the AWS tool's work folder|must be inside/],
-    [`aws s3 cp ${outside} s3://example-bucket/ --recursive`, /must be inside the AWS tool's work folder/],
+    [`aws s3 cp '${outside}' s3://example-bucket/ --recursive`, /must be inside the AWS tool's work folder/],
     ["aws s3 cp missing s3://example-bucket/", /not in the AWS tool's work folder/],
   ]) {
     await assert.rejects(aws.run({ action: "change", command }), { code: "INVALID_ARGUMENT", message }, command);
@@ -661,7 +674,7 @@ test("a --body outside the work folder, or given twice, is refused before anyone
   fs.writeFileSync(path.join(outside, "secret.txt"), "not for upload");
   fs.symlinkSync(path.join(outside, "secret.txt"), path.join(work, "site", "link.txt"));
   for (const [command, message] of [
-    [`aws s3api put-object --bucket b --key k --body ${path.join(outside, "secret.txt")}`, /must be inside the AWS tool's work folder/],
+    [`aws s3api put-object --bucket b --key k --body '${path.join(outside, "secret.txt")}'`, /must be inside the AWS tool's work folder/],
     ["aws s3api put-object --bucket b --key k --body site/link.txt", /must be inside the AWS tool's work folder/],
     ["aws s3api put-object --bucket b --key k --body missing.html", /not in the AWS tool's work folder/],
     ["aws s3api put-object --bucket b --key k --body site/a.html --body site/a.html", /Write "--body" once/],

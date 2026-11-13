@@ -282,6 +282,9 @@ const SECRET_READS = new Set([
   // refused whole, because a --query can return one value that no output cleaning recognises
   "lambda get-function-configuration",
   "lambda get-function",
+  // the listings return each function's configuration too, environment variables included
+  "lambda list-functions",
+  "lambda list-versions-by-function",
   "ecs describe-task-definition",
   "elasticbeanstalk describe-configuration-settings",
   "codebuild batch-get-projects",
@@ -304,6 +307,11 @@ function blockedChange(cmd) {
   // the text as written and as AWS reads it, so quotes cannot split "DELETE" or "file://"
   const text = `${cmd.command}\n${parts.join(" ")}`;
   if (BLOCKED_SERVICES.has(service)) return `Copilot never changes ${service} (identity, keys and secrets stay with TBO's admins).`;
+  // a stack created, updated or deployed, or a change set run, does what its template says (deletes
+  // included), and "package" uploads the files the template names: none of it is in the command
+  if (service === "cloudformation") {
+    return "Copilot never changes CloudFormation stacks: what a template creates, changes, deletes or uploads is not in the command the approver sees.";
+  }
   if (BLOCKED_PREFIXES.some((p) => operation.startsWith(p))) return `Copilot never runs "${operation}": deletes and terminations are blocked in this version.`;
   if (service === "s3" && BLOCKED_S3.has(operation)) return `Copilot never runs "aws s3 ${operation}": it removes objects or buckets.`;
   if (parts.some((p) => p === "--delete" || p.startsWith("--delete="))) return 'Copilot never runs a command with "--delete": it removes what is not in the source.';
@@ -1280,4 +1288,5 @@ module.exports = {
   serverCommand,
   serverEnv,
   unwrap,
+  words,
 };

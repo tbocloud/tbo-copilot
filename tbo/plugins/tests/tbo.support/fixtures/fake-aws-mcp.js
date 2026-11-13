@@ -7,6 +7,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
+// the AWS server's own word splitting (shlex, POSIX rules), so a quoted Windows path reads as one word
+const { words: splitWords } = require(path.join(__dirname, "../../../tbo.support/lib/aws.js"));
 
 const READ_ONLY = process.env.READ_OPERATIONS_ONLY === "true";
 const READ_VERBS = /^(describe|list|get|head|ls)/;
@@ -64,7 +66,7 @@ function callAws(id, command) {
     keyForwarded: Boolean(process.env.AWS_ACCESS_KEY_ID),
   };
   // what an upload would send, read from the server's working folder as the real CLI would
-  const words = command.split(/\s+/);
+  const words = splitWords(command);
   const body = words.indexOf("--body");
   if (body > 0) out.body = fs.readFileSync(path.resolve(words[body + 1]), "utf8");
   if (words[1] === "s3" && ["cp", "sync"].includes(words[2]) && !words[3].startsWith("s3://")) {
