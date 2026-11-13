@@ -6,20 +6,33 @@
 # Triggers:
 #   - Tag `tbo-v<version>` (e.g. tbo-v0.16.1), where <version> is the version in
 #     apps/desktop/package.json. A rebuild of the same version uses a suffix:
-#     tbo-v0.16.1-2. Tag builds publish a GitHub Release in this repository
-#     with the installers attached.
-#   - Actions → TBO Release → Run workflow: a test build. Installers are kept as
-#     workflow artifacts for 14 days; no release is created.
-#   - A pull request into `tbo` that changes this workflow: the same test build,
-#     so workflow changes are proven before they merge.
+#     tbo-v0.16.1-2. A tag build is a SIGNED RELEASE:
+#       - macOS: Developer ID-signed with TBO's own Apple team, notarised by
+#         Apple and stapled (ADR 0289).
+#       - Windows: signed with Azure Trusted Signing under a fixed publisher
+#         name.
+#       - The app is built with `tboUpdates=enabled`, so it looks for updates
+#         (apps/desktop/electron/main/update-policy.ts).
+#       - The installers, the update feeds (latest.yml, latest-mac.yml) and
+#         the blockmaps go to a DRAFT GitHub Release in this repository.
+#         Publishing the draft by hand is what rolls the version out:
+#         installed copies update from the newest published release.
+#     A missing signing secret or variable fails the tag build: an unsigned
+#     build is never released.
+#   - Actions → TBO Release → Run workflow: an unsigned test build (macOS
+#     ad-hoc signed, updates off). Installers are kept as workflow artifacts
+#     for 14 days; no release is created and no secret is used.
+#   - A pull request into `tbo` that changes this workflow: the same test
+#     build, so workflow changes are proven before they merge.
 #
-# Signing is optional and not configured yet. Installers are unsigned; macOS
-# builds are ad-hoc signed so they run on Apple Silicon. docs/tbo/README.md
-# explains how staff open them and how to add real signing later.
+# The secrets and variables a signed release needs are listed in
+# docs/tbo/README.md ("Signing"). Nothing here prints them.
 #
 # Upstream's release workflow (release.yml) is disabled in this repository's
 # Actions settings: it signs with upstream's Apple team and expects PI-Desktop
-# artifact names. Its file stays unchanged: upstream's own tests read it.
+# artifact names. Its file stays unchanged: upstream's own tests read it. The
+# macOS notarisation and verification scripts it uses take the team and app
+# name as parameters, so this workflow shares them.
 #
 # GitHub-hosted runners are free for this public repository. Intel macOS is
 # opt-in to keep builds short.
@@ -124,11 +137,17 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     needs: verify
+    env:
+      # Only a pushed tbo-v* tag is signed and released. Manual runs and pull
+      # requests make unsigned test builds, so they need no secrets.
+      TBO_SIGNED_RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/tbo-v') }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.verify.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Signing and Apple's notarisation queue add up to 50 minutes in the worst
+    # case (the watchdog budgets below).
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -146,6 +165,58 @@ jobs:
             echo "::error::Expected ${{ matrix.runner_arch }} runner, got $actual_arch."
             exit 1
           fi
+
+      # A tag build fails before anything is built when a signing secret or
+      # variable is missing: an unsigned build is never released (ADR 0289).
+      # Only the names of missing settings are printed, never a value, and
+      # each runner receives only its own platform's secrets.
+
+      - name: Require macOS signing secrets
+        if: matrix.platform == 'macos' && env.TBO_SIGNED_RELEASE == 'true'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!name:-}" ] || missing="$missing secret $name,"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::A tbo-v tag builds signed and notarised macOS installers, and these Actions settings are missing:${missing%,}."
+            echo "::error::Add them under Settings → Secrets and variables → Actions (docs/tbo/README.md, Signing), then re-run this workflow."
+            exit 1
+          fi
+          echo "All macOS signing secrets are present."
+
+      - name: Require Windows signing secrets and variables
+        if: matrix.platform == 'windows' && env.TBO_SIGNED_RELEASE == 'true'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE: ${{ vars.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE }}
+          TBO_WINDOWS_PUBLISHER_NAME: ${{ vars.TBO_WINDOWS_PUBLISHER_NAME }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
+            [ -n "${!name:-}" ] || missing="$missing secret $name,"
+          done
+          for name in AZURE_TRUSTED_SIGNING_ENDPOINT AZURE_TRUSTED_SIGNING_ACCOUNT AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE TBO_WINDOWS_PUBLISHER_NAME; do
+            [ -n "${!name:-}" ] || missing="$missing variable $name,"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::A tbo-v tag builds signed Windows installers, and these Actions settings are missing:${missing%,}."
+            echo "::error::Add them under Settings → Secrets and variables → Actions (docs/tbo/README.md, Signing), then re-run this workflow."
+            exit 1
+          fi
+          echo "All Windows signing secrets and variables are present."
 
       - uses: pnpm/action-setup@v6
 
@@ -178,49 +249,171 @@ jobs:
 
       # Arguments go straight after the script name, without `--`: pnpm 12
       # passes a literal `--` through to the script, and electron-builder then
-      # ignores every option after it (architecture, signing identity).
+      # ignores every option after it (architecture, signing, update flag).
+      #
+      # `-c.extraMetadata.tboUpdates=enabled` is passed in signed builds only:
+      # it writes "tboUpdates": "enabled" into the packaged package.json, which
+      # turns in-app updates on (apps/desktop/electron/main/update-policy.ts).
 
-      - name: Package Windows installers
-        if: matrix.platform == 'windows'
+      - name: Package Windows installers (unsigned test build)
+        if: matrix.platform == 'windows' && env.TBO_SIGNED_RELEASE != 'true'
         # Builds the NSIS installer, the portable EXE and the ZIP. The dist
         # script passes --publish never, so electron-builder never publishes.
         run: pnpm --filter @pi-desktop/desktop run dist:win --${{ matrix.arch }}
 
-      - name: Package macOS installers (ad-hoc signed)
-        if: matrix.platform == 'macos'
+      - name: Configure Windows signing (Azure Trusted Signing)
+        if: matrix.platform == 'windows' && env.TBO_SIGNED_RELEASE == 'true'
         env:
-          # No Developer ID yet: never pick up a certificate from the runner.
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE: ${{ vars.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE }}
+          TBO_WINDOWS_PUBLISHER_NAME: ${{ vars.TBO_WINDOWS_PUBLISHER_NAME }}
+        # Writes build.win.azureSignOptions into apps/desktop/package.json on
+        # this runner only, so all three electron-builder runs (NSIS, ZIP,
+        # portable) sign. No secret is read here.
+        run: node scripts/tbo/configure-windows-signing.mjs
+
+      - name: Package Windows installers (signed)
+        if: matrix.platform == 'windows' && env.TBO_SIGNED_RELEASE == 'true'
+        env:
+          # Microsoft's TrustedSigning module signs as this app registration.
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: pnpm --filter @pi-desktop/desktop run dist:win --${{ matrix.arch }} -c.extraMetadata.tboUpdates=enabled
+
+      - name: Verify the Windows signatures
+        if: matrix.platform == 'windows' && env.TBO_SIGNED_RELEASE == 'true'
+        shell: pwsh
+        env:
+          TBO_WINDOWS_PUBLISHER_NAME: ${{ vars.TBO_WINDOWS_PUBLISHER_NAME }}
+        # The installer, the portable EXE and the app itself must carry a valid
+        # signature whose subject is the publisher name: installed copies
+        # refuse an update signed under any other name.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(Get-ChildItem -Path apps/desktop/release -Filter 'TBO-Copilot-*.exe' | Where-Object { $_.Extension -eq '.exe' })
+          $files += Get-Item -LiteralPath 'apps/desktop/release/win-unpacked/TBO Copilot.exe'
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            $name = if ($signature.SignerCertificate) { $signature.SignerCertificate.GetNameInfo('SimpleName', $false) } else { '' }
+            Write-Output "$($file.Name): $($signature.Status), signed by '$name'"
+            if ($signature.Status -ne 'Valid') { throw "$($file.Name) is not validly signed ($($signature.Status))." }
+            if ($name -cne $env:TBO_WINDOWS_PUBLISHER_NAME) { throw "$($file.Name) is signed by '$name', not the publisher name '$env:TBO_WINDOWS_PUBLISHER_NAME'." }
+          }
+
+      - name: Package macOS installers (ad-hoc signed test build)
+        if: matrix.platform == 'macos' && env.TBO_SIGNED_RELEASE != 'true'
+        env:
+          # No Developer ID in test builds: never pick up a certificate from
+          # the runner.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           # electron-builder skips all signing in pull-request builds, ad-hoc
           # included. Ad-hoc signing uses no secrets, so pull-request test
-          # builds sign the same way as tag builds.
+          # builds sign the same way as manual test builds.
           CSC_FOR_PULL_REQUEST: 'true'
         # identity "-" asks electron-builder for an ad-hoc signature. Without
         # it the app is not signed at all and Apple Silicon reports it as
         # damaged. The entitlements already allow ad-hoc signed libraries.
         run: pnpm --filter @pi-desktop/desktop run dist:mac --${{ matrix.arch }} -c.mac.identity=-
 
-      - name: Verify artifact names
+      - name: Package macOS installers (signed and notarised)
+        if: matrix.platform == 'macos' && env.TBO_SIGNED_RELEASE == 'true'
+        env:
+          # electron-builder imports the Developer ID Application certificate
+          # from CSC_LINK into a temporary keychain, signs the app, its helpers
+          # and the host-core sidecar with the hardened runtime, then notarises
+          # the app with the Apple ID.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Per-file signing and Apple's notarisation wait are otherwise silent.
+          # electron-builder's own debug namespace stays off: it prints a
+          # command line that carries the certificate password. The watchdog
+          # also redacts the secret values from everything it forwards.
+          DEBUG: "electron-osx-sign*,electron-notarize*"
+          PI_SIGNING_TIMEOUT_SECONDS: "1800"
+          PI_SIGNING_STALL_SECONDS: "300"
+        run: |
+          set -euo pipefail
+          node scripts/macos-signing-watchdog.mjs \
+            --label "dist:mac-${{ matrix.arch }}" \
+            -- pnpm --filter @pi-desktop/desktop run dist:mac --${{ matrix.arch }} \
+              -c.mac.forceCodeSigning=true \
+              -c.mac.notarize=true \
+              -c.extraMetadata.tboUpdates=enabled
+
+      - name: Notarise and staple the macOS DMG
+        # electron-builder notarises only the app; the DMG needs its own
+        # submission before its ticket can be stapled.
+        if: matrix.platform == 'macos' && env.TBO_SIGNED_RELEASE == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # TBO's own team (the script's default is upstream's).
+          MAC_SIGNING_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          PI_SIGNING_TIMEOUT_SECONDS: "1200"
+          PI_SIGNING_STALL_SECONDS: "300"
+        run: |
+          set -euo pipefail
+          node scripts/macos-signing-watchdog.mjs \
+            --label "notarize-dmg-${{ matrix.arch }}" \
+            -- scripts/notarize-and-staple-macos-release-dmg.sh apps/desktop/release
+
+      - name: Verify the signed and notarised macOS installers
+        # Developer ID of TBO's team, Gatekeeper "Notarized Developer ID", and
+        # stapled tickets on the app and the DMG.
+        if: matrix.platform == 'macos' && env.TBO_SIGNED_RELEASE == 'true'
+        env:
+          MAC_PRODUCT_NAME: TBO Copilot
+          MAC_SIGNING_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: scripts/verify-macos-release.sh apps/desktop/release
+
+      - name: Verify artifact names and update feeds
         run: |
           set -euo pipefail
           shopt -s nullglob
           release=apps/desktop/release
+          expect_one() {
+            local label="$1"
+            shift
+            if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+              # A plain file name that does not exist is not a match.
+              [ -e "${1:-}" ] || set --
+              echo "::error::Expected one $label in $release, found: ${*:-nothing}."
+              ls -la "$release" || true
+              exit 1
+            fi
+            echo "found: $1"
+          }
           if [ "${{ matrix.platform }}" = "macos" ]; then
-            expected=("$release"/TBO-Copilot-*-${{ matrix.arch }}.dmg "$release"/TBO-Copilot-*-${{ matrix.arch }}-mac.zip)
+            expect_one "DMG" "$release"/TBO-Copilot-*-${{ matrix.arch }}.dmg
+            expect_one "DMG blockmap" "$release"/TBO-Copilot-*-${{ matrix.arch }}.dmg.blockmap
+            expect_one "ZIP" "$release"/TBO-Copilot-*-${{ matrix.arch }}-mac.zip
+            expect_one "ZIP blockmap" "$release"/TBO-Copilot-*-${{ matrix.arch }}-mac.zip.blockmap
+            expect_one "macOS update feed" "$release"/latest-mac.yml
+            feed="$release/latest-mac.yml"
+            update_file="TBO-Copilot-[^ ]*-${{ matrix.arch }}-mac\.zip"
           else
-            expected=("$release"/TBO-Copilot-Setup-*.exe "$release"/TBO-Copilot-Portable-*.exe "$release"/TBO-Copilot-Portable-*.zip)
+            expect_one "NSIS installer" "$release"/TBO-Copilot-Setup-*.exe
+            expect_one "NSIS blockmap" "$release"/TBO-Copilot-Setup-*.exe.blockmap
+            expect_one "portable EXE" "$release"/TBO-Copilot-Portable-*.exe
+            expect_one "portable ZIP" "$release"/TBO-Copilot-Portable-*.zip
+            expect_one "Windows update feed" "$release"/latest.yml
+            feed="$release/latest.yml"
+            update_file="TBO-Copilot-Setup-[^ ]*\.exe"
           fi
-          for pattern_result in "${expected[@]}"; do
-            echo "found: $pattern_result"
-          done
-          want=$([ "${{ matrix.platform }}" = "macos" ] && echo 2 || echo 3)
-          if [ "${#expected[@]}" -ne "$want" ]; then
-            echo "::error::Expected $want TBO Copilot installers, found ${#expected[@]}."
-            ls -la "$release" || true
+          # The feed must offer the file installed copies update from.
+          if ! grep -Eq "^path: $update_file$" "$feed"; then
+            echo "::error::$feed does not point at $update_file."
+            cat "$feed"
             exit 1
           fi
 
-      - name: Check the macOS ad-hoc signature
+      - name: Check the macOS signature
         if: matrix.platform == 'macos'
         run: |
           set -euo pipefail
@@ -250,7 +443,12 @@ jobs:
             echo "bundled: $id"
           done
 
-      - name: Upload installers
+      - name: Name the macOS update feed by architecture
+        # Each macOS runner writes latest-mac.yml; the release job merges them.
+        if: matrix.platform == 'macos'
+        run: mv apps/desktop/release/latest-mac.yml apps/desktop/release/latest-mac-${{ matrix.arch }}.yml
+
+      - name: Upload installers and update feeds
         uses: actions/upload-artifact@v7
         with:
           name: tbo-copilot-${{ matrix.artifact }}
@@ -261,10 +459,14 @@ jobs:
             apps/desktop/release/TBO-Copilot-*.dmg
             apps/desktop/release/TBO-Copilot-*.zip
             apps/desktop/release/TBO-Copilot-*.exe
+            apps/desktop/release/TBO-Copilot-*.blockmap
+            apps/desktop/release/latest*.yml
 
   release:
-    name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/tbo-v')
+    name: Create draft GitHub Release
+    # A pushed tag only: a manual run on a tag ref is an unsigned test build
+    # and is never released.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/tbo-v')
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -279,23 +481,61 @@ jobs:
       - name: List installers
         run: ls -la dist/
 
-      - name: Create GitHub Release
+      - name: Merge the macOS update feeds
+        # One latest-mac.yml lists every macOS architecture built; the updater
+        # picks the ZIP for its own architecture. Intel is optional.
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ruby <<'RUBY'
+          require "yaml"
+
+          load = ->(path) { YAML.safe_load(File.read(path), permitted_classes: [], aliases: false) }
+          paths = Dir["latest-mac-*.yml"].sort
+          abort "Missing the Apple Silicon update feed latest-mac-arm64.yml" unless paths.include?("latest-mac-arm64.yml")
+          unexpected = paths - ["latest-mac-arm64.yml", "latest-mac-x64.yml"]
+          abort "Unexpected macOS update feeds: #{unexpected.join(', ')}" unless unexpected.empty?
+
+          feeds = paths.map(&load)
+          versions = feeds.map { |feed| feed.fetch("version") }.uniq
+          abort "The macOS update feeds disagree on the version: #{versions.join(', ')}" unless versions.length == 1
+          windows_version = load.call("latest.yml").fetch("version")
+          abort "latest.yml (#{windows_version}) and the macOS feeds (#{versions.first}) disagree on the version" unless windows_version == versions.first
+
+          files = feeds.flat_map { |feed| feed.fetch("files") }.uniq { |file| file.fetch("url") }
+          zip = files.find { |file| file.fetch("url").end_with?(".zip") }
+          abort "The macOS update feeds contain no ZIP" if zip.nil?
+
+          merged = feeds.first.merge(
+            "version" => versions.first,
+            "files" => files,
+            "path" => zip.fetch("url"),
+            "sha512" => zip.fetch("sha512"),
+          )
+          File.write("latest-mac.yml", merged.to_yaml)
+          puts "latest-mac.yml: version #{versions.first}, #{files.length} files; latest.yml: version #{windows_version}"
+          RUBY
+          rm latest-mac-*.yml
+
+      - name: Create the draft GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           name: TBO Copilot ${{ github.ref_name }}
+          # A draft is invisible to installed copies. Publishing it (Releases →
+          # Edit → Publish release) makes it the latest release they update to.
+          draft: true
           files: dist/*
           body: |
             TBO Copilot ${{ github.ref_name }}, built from commit ${{ github.sha }}.
 
-            These installers are **not signed yet**:
-            - **macOS:** open the DMG and drag TBO Copilot to Applications. The first time macOS blocks it:
-              - macOS 15 or later: open it once, then System Settings → Privacy & Security → "Open Anyway" next to TBO Copilot.
-              - Older macOS: right-click the app → Open → Open.
-              - Or run once: `xattr -dr com.apple.quarantine "/Applications/TBO Copilot.app"`
-            - **Windows:** run `TBO-Copilot-Setup-*.exe`. If SmartScreen appears, choose More info → Run anyway.
+            **Signed installers:**
+            - **macOS:** `TBO-Copilot-<version>-arm64.dmg` for Apple Silicon (`-x64` for Intel, when built). Signed with TBO's Apple Developer ID and notarised by Apple: open the DMG and drag TBO Copilot to Applications.
+            - **Windows:** run `TBO-Copilot-Setup-<version>.exe` (signed by ${{ vars.TBO_WINDOWS_PUBLISHER_NAME }}). The portable EXE and ZIP do not update themselves: they show a notice when a new version is out.
+
+            **Updates:** TBO Copilot installs new versions by itself from this repository's releases. Settings → Info shows the version and the update setting; Help → Check for Updates checks now.
+
+            **Coming from tbo-v0.16.1, tbo-v0.16.1-2 or tbo-v0.16.1-3?** Those builds are unsigned and never update. Install this one by hand once, over the old app; your settings and data stay. Later versions then arrive by themselves.
 
             TBO Copilot opens on the **TBO Dark** theme. Settings → General → Theme also has **TBO Light**.
 
             **Sign in with Microsoft:** TBO Copilot asks you to sign in when it opens. Your browser opens TBO Support; check the code and press Allow. TBO AI and your TBO Support tickets are then ready, with no key to type.
-
-            Updates are off in this build: install new versions by hand.
