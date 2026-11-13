@@ -7,6 +7,7 @@ import {
   resolveChangelogLocale,
 } from "./changelog.js";
 import { loadChangelogCatalog } from "./changelog-loader.js";
+import { withTboEntries } from "./changelog-tbo.js";
 
 const STABLE_FROM = "0.1.1";
 
@@ -161,7 +162,8 @@ describe("changelog catalog", () => {
   it("loads and caches the catalog for the resolved locale", async () => {
     const catalog = await loadChangelogCatalog("fr-CA");
 
-    expect(catalog).toBe(CHANGELOG.fr);
+    // TBO Copilot: TBO's own versions (changelog-tbo.ts) lead the catalog.
+    expect(catalog).toEqual(withTboEntries(CHANGELOG.fr));
     expect(await loadChangelogCatalog("fr")).toBe(catalog);
   });
 });

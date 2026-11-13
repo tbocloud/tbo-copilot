@@ -7,6 +7,7 @@ import { zhTWEntries } from "./changelog-zh-TW.js";
 import { koEntries } from "./changelog-ko.js";
 import { ptBREntries } from "./changelog-pt-BR.js";
 import { trEntries } from "./changelog-tr.js";
+import { getTboChangelogEntry } from "./changelog-tbo.js";
 import { normalizeChangelogVersion, resolveChangelogLocale } from "./changelog-runtime.js";
 
 export { normalizeChangelogVersion, resolveChangelogLocale } from "./changelog-runtime.js";
@@ -60,6 +61,7 @@ export function getChangelogEntry(
 /**
  * Format highlights as plain multi-line text for UpdateState / compact UI.
  * Returns undefined when the version has no catalog entry or empty highlights.
+ * TBO Copilot: a version in changelog-tbo.ts uses those notes in every locale.
  */
 export function formatChangelogNotes(
   version: string | null | undefined,
@@ -67,6 +69,7 @@ export function formatChangelogNotes(
 ): string | undefined {
   const locale = resolveChangelogLocale(localeInput);
   const entry =
+    getTboChangelogEntry(version) ??
     getChangelogEntry(version, locale) ??
     (locale === "en" ? undefined : getChangelogEntry(version, "en"));
   if (!entry?.highlights.length) return undefined;
