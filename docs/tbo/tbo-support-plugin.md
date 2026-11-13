@@ -88,7 +88,7 @@ The plugin has **no npm dependencies**: plain CommonJS and Node built-ins only. 
 
 ## 5. The tool and its actions (v1)
 
-The plugin registers **`tbo_support`, one tool with an `action` field, for every read**. The host shows it to the model under a plugin-namespaced name. Since Phase 21 the two Press actions that do something are in a second tool, **`tbo_support_change`** (§5a), and the AWS tool is a third (`tbo_aws`, [aws.md](aws.md)).
+The plugin registers **`tbo_support`, one tool with an `action` field, for every read**. The host shows it to the model under a plugin-namespaced name. Since Phase 21 the actions that change something (a Press backup or request, starting a task's timer) are in a second tool, **`tbo_support_change`** (§5a), and the AWS tool is a third (`tbo_aws`, [aws.md](aws.md)).
 
 **Why one tool with actions:**
 1. **Plan mode.** Plugin tools are hidden in Plan and Goal mode unless the tool lists `planSafeActions`, which needs an `action` enum (ADR 0211). Investigations run in Plan mode, so every read-only action is listed as plan-safe.
@@ -113,7 +113,7 @@ The plugin registers **`tbo_support`, one tool with an `action` field, for every
 
 TBO Support holds the Press key and the rules (its `press_tools.ACTIONS` table); the plugin only asks.
 
-The reads are actions of `tbo_support`. The backup and the requests are the actions of **`tbo_support_change`**, which is declared `risk: "high"`, so the app asks the person before every call. It has no plan-safe actions, so Plan and Goal modes never offer it. Each tool refuses the other's actions and names the right tool (Phase 21; finding F3 of the security review, `docs/tbo/security.md`).
+The reads are actions of `tbo_support`. The backup, the requests and `start_task` (§5b) are the actions of **`tbo_support_change`**, which is declared `risk: "high"`, so the app asks the person before every call. It has no plan-safe actions, so Plan and Goal modes never offer it. Each tool refuses the other's actions and names the right tool (Phase 21; finding F3 of the security review, `docs/tbo/security.md`).
 
 | Action | Returns or does | Helpdesk API | Inputs | Plan-safe |
 |---|---|---|---|---|
@@ -124,6 +124,17 @@ The reads are actions of `tbo_support`. The backup and the requests are the acti
 | `press_action` (`tbo_support_change`) | Asks for `restart_bench`, `update_site`, `migrate_site`, `change_plan` (with `plan`), `deploy`, `restore` or `new_site`: an approver gets a card in Teams; TBO Support runs it after Approve and tells the person | `POST helpdesk.api.copilot_press.request_action` | `press_action`, `target`, `plan` | no |
 
 Deletes (archive a site, drop a bench, archive a server, and the like) are not offered and TBO Support refuses them.
+
+### 5b. Task actions (0.4.0)
+
+For work on a TBO Support task in the desktop app with the `tbo.frappe-dev` plugin (Phase 20,
+[frappe-dev.md](frappe-dev.md)). They use the hub's task API for agents, the one the mobile app uses.
+
+| Action | Returns or does | Helpdesk API | Inputs | Plan-safe |
+|---|---|---|---|---|
+| `my_tasks` | The signed-in person's open tasks, overdue first: number, subject (untrusted), status, group, project, customer, deadline, priority, timer | `helpdesk.api.mobile.get_tasks` | `group`, `limit` | yes |
+| `get_task` | One task with its description and last ten activity items (untrusted), its pull requests, and `branch_subject`: the subject with only letters, digits, spaces and `._-`, for `tbo_dev` `start_work` | `helpdesk.api.mobile.get_task` | `task` | yes |
+| `start_task` (`tbo_support_change`) | Starts the person's own timer on the task (Open becomes Working), once they allow the call: a write on their own work is theirs to allow | `POST helpdesk.api.mobile.start_task` | `task` | no |
 
 **Input rules:**
 - `ticket` accepts `1`, `#1`, `0001` or `HD-0001`. HD Ticket names are zero-padded to four digits (autoname `.####`: `0001`, `0042`, `12345`), so the number is padded the same way. If that name is not found, the plain number is tried once, for a site that names tickets without padding.
@@ -337,6 +348,8 @@ docs/tbo/tbo-support-plugin.md     # this document
 | `helpdesk.api.customization.get_estimate` | Read permission |
 | `helpdesk.api.article.search` | Signed in |
 | `helpdesk.api.knowledge_base.get_article` | Non-agents see published articles only |
+| `helpdesk.api.mobile.get_tasks`, `get_task` | `@agent_only`; `get_task` checks the task's read permission |
+| `helpdesk.api.mobile.start_task` | `@agent_only` + the task's write permission |
 
 
 ## 15. Build plan
