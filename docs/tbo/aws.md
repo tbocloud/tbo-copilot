@@ -42,7 +42,7 @@ TBO Copilot (the person's computer)                                  TBO Support
 - **An upload is approved for its content.** For `aws s3 cp` or `sync` from a local folder, and for an operation
   that reads one local file by an option (`aws s3api put-object --body`, `upload-part`, a Glacier archive and the
   other streaming inputs in AWS's models), each call first copies the files into a fresh read-only snapshot in the
-  work folder, keeping each file's modification time (`aws s3 sync` compares it with S3's), and hashes the bytes and
+  work folder, keeping each file's modification time to the microsecond (`aws s3 sync` compares it with S3's), and hashes the bytes and
   times as it copies them; a file that changes during the copy is refused. The card shows the file count and the hash, and the approval
   names that hash. An approved change runs from that call's snapshot, so a file edited after the check is never what
   is uploaded, and a file changed after the approval no longer matches: the tool asks again. The snapshot is removed

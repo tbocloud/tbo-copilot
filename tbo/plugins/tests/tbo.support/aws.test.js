@@ -826,3 +826,26 @@ test("a file that changes while it is copied is refused, and nothing is asked", 
   assert.equal(hub.calls.length, 0);
   assert.deepEqual(fs.readdirSync(path.join(dataDir, "aws-workdir")).filter((n) => n.startsWith(".tbo-upload-")), []);
 });
+
+test("modification times are kept to the microsecond, and a sub-millisecond change needs a new approval", async (t) => {
+  const { aws, hub, dataDir } = setup(t);
+  const site = path.join(dataDir, "aws-workdir", "site");
+  fs.mkdirSync(site, { recursive: true });
+  fs.writeFileSync(path.join(site, "a.html"), "a");
+  fs.writeFileSync(path.join(site, "b.html"), "b");
+  const us = (file) => String((fs.statSync(file, { bigint: true }).mtimeNs + 500n) / 1000n);
+  // .000100 and .000700 seconds past the same second: the same millisecond would hide the difference
+  fs.utimesSync(path.join(site, "a.html"), 1704164645.0001, 1704164645.0001);
+  fs.utimesSync(path.join(site, "b.html"), 1704164645.0007, 1704164645.0007);
+  const command = "aws s3 sync site s3://example-bucket/";
+  await aws.run({ action: "change", command });
+  fs.utimesSync(path.join(site, "a.html"), 1704164645.0004, 1704164645.0004);
+  await aws.run({ action: "change", command });
+  const [first, moved] = hub.calls.filter((c) => c[1] === APPROVED).map((c) => c[2].payload.content_sha256);
+  assert.notEqual(moved, first, "a 0.3 ms change is a different upload");
+  hub.approve();
+  const out = parsedOutput(await aws.run({ action: "change", command }));
+  assert.deepEqual(out.mtimeUs, { "a.html": us(path.join(site, "a.html")), "b.html": us(path.join(site, "b.html")) });
+  assert.equal(out.mtimeUs["a.html"], "1704164645000400");
+  assert.equal(out.mtimeUs["b.html"], "1704164645000700");
+});

@@ -851,8 +851,13 @@ function copyFile(src, dest, deadline, files, times) {
   });
 }
 
+// A time in nanoseconds, rounded to whole microseconds; and back to the seconds utimes takes (a
+// double holds today's times to well under half a microsecond, so the rounding survives).
+const microseconds = (ns) => (ns + 500n) / 1000n;
+const seconds = (us) => Number(us) / 1e6;
+
 // A folder or file copied into the snapshot, and one digest of what was copied: each file's path,
-// size, modification time and SHA-256, within the call's time, at most 5,000 files and 1 GB. The
+// size, modification time (to the microsecond) and SHA-256, within the call's time, at most 5,000 files and 1 GB. The
 // time is part of the digest because aws s3 sync decides by it what to upload; a file that
 // changes while it is copied is refused. Links are refused (the
 // approval must cover what is uploaded, not what a link points at). The copy's folders are made
@@ -877,14 +882,20 @@ async function snapshotOf(root, target, deadline, files) {
     }
     if (!stat.isFile()) return; // a socket or a pipe is not copied, so it is not uploaded either
     if (entries.length >= MAX_DIGEST_FILES || bytes + stat.size > MAX_DIGEST_BYTES) throw tooLarge();
-    const { sha, size } = await copyFile(full, copy, deadline, files, { atime: stat.atime, mtime: stat.mtime });
+    // the times to the microsecond, the AWS CLI's resolution (it reads them into Python datetimes)
+    const exact = await beforeDeadline(fs.promises.lstat(full, { bigint: true }), deadline);
+    const times = { atime: microseconds(exact.atimeNs), mtime: microseconds(exact.mtimeNs) };
+    const { sha, size } = await copyFile(full, copy, deadline, files, { atime: seconds(times.atime), mtime: seconds(times.mtime) });
     const after = await beforeDeadline(files.lstat(full), deadline);
     if (after.mtimeMs !== stat.mtimeMs || after.size !== size) {
       throw fail("CHANGED", `${rel || path.basename(full)} changed while it was copied; finish the build, then ask again.`);
     }
+    // the digest names the copy's own time, checked against the source's
+    const kept = microseconds((await fs.promises.lstat(copy, { bigint: true })).mtimeNs);
+    if (kept !== times.mtime) throw fail("TIME_NOT_KEPT", `${rel || path.basename(full)}'s modification time could not be kept to the microsecond on this disk.`);
     bytes += size;
     if (bytes > MAX_DIGEST_BYTES) throw tooLarge();
-    entries.push(`${rel || path.basename(copy)}\0${size}\0${Math.floor(stat.mtimeMs)}\0${sha}`);
+    entries.push(`${rel || path.basename(copy)}\0${size}\0${kept}\0${sha}`);
   };
   await walk(root, target, "");
   for (const folder of folders.reverse()) await fs.promises.chmod(folder, 0o555);
