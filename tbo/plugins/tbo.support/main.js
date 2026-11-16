@@ -1,10 +1,13 @@
 "use strict";
 
-// TBO Support plugin: the read-only tbo_support tool, the TBO AI provider and
-// the sign-in panel. People sign in with their Microsoft account through TBO
-// Support (TBO Copilot Phase 17); TBO Support then gives this computer a TBO
-// Support token and the person's TBO AI key, so nobody types a key. A local test
-// site can still use an API key. See docs/tbo/tbo-support-plugin.md.
+// TBO Support plugin: the tbo_support tool (reading TBO Support and TBO's Press),
+// the tbo_support_change tool (a Press backup or action, asked of the person first), the
+// tbo_aws tool (TBO's AWS with the person's own AWS login, Phase 18; lib/aws.js),
+// the TBO AI provider and the sign-in panel. People sign in with their Microsoft
+// account through TBO Support (TBO Copilot Phase 17); TBO Support then gives this
+// computer a TBO Support token and the person's TBO AI key, so nobody types a
+// key. A local test site can still use an API key. See
+// docs/tbo/tbo-support-plugin.md and docs/tbo/aws.md.
 //
 // Three rules keep the sign-in consistent when things overlap:
 // - every sign-out (and an API-key sign-in) moves `epoch` on, and a renewal or a
@@ -16,9 +19,10 @@
 
 const os = require("node:os");
 const { createClient, normalizeSite, isLoopback } = require("./lib/helpdesk");
-const { TOOL, runAction } = require("./lib/actions");
+const { TOOL, CHANGE_TOOL, runAction } = require("./lib/actions");
 const { createStore } = require("./lib/credentials");
 const desktop = require("./lib/desktop");
+const { AWS_TOOL, createAws } = require("./lib/aws");
 
 const DEFAULT_SITE = "https://teams.teambackoffice.com";
 const AI_PROVIDER = "tbo-ai";
@@ -37,6 +41,7 @@ const COMMANDS = {
 };
 
 let store = null;
+let aws = null;
 let timer = null;
 let startupTimer = null;
 let pending = null; // a Microsoft sign-in waiting for Allow in the browser
@@ -247,14 +252,15 @@ async function signedInClient() {
 
 // One tool action with the current sign-in; a token refused early (revoked, or
 // the clock is off) is renewed once and the action tried again.
-async function runSignedIn(args) {
+async function runSignedIn(args, tool = TOOL) {
   const { site, session, client } = await signedInClient();
   try {
-    return await runAction(client, args, { siteUrl: site });
+    return await runAction(client, args, { siteUrl: site }, tool);
   } catch (e) {
+    // a 401 is refused before anything runs, so trying once more never repeats a change
     if (e.code !== "AUTH" || !session) throw e;
     const fresh = await renew(site, session, { force: true });
-    return runAction(await clientFor(site, { token: fresh.accessToken }), args, { siteUrl: site });
+    return runAction(await clientFor(site, { token: fresh.accessToken }), args, { siteUrl: site }, tool);
   }
 }
 
@@ -512,6 +518,7 @@ function onSettingsChanged() {
   epoch += 1;
   if (pending) pending.cancelled = true;
   pending = null;
+  if (aws) aws.stop(); // a new AWS profile or region starts a new AWS server
   syncSite().catch(() => {});
 }
 
@@ -529,6 +536,29 @@ async function onLoad() {
       const ticket = args && args.ticket ? ` ticket ${args.ticket}` : "";
       if (ctx && ctx.log) ctx.log(`tbo_support ${action}${ticket}`);
       return runSignedIn(args);
+    },
+  });
+
+  // the writes: declared high risk, so the app asks the person before each one (Phase 21)
+  await pi.agent.registerTool({
+    ...CHANGE_TOOL,
+    execute: async (args, ctx) => {
+      if (ctx && ctx.log) ctx.log(`tbo_support_change ${args && args.action}`);
+      return runSignedIn(args, CHANGE_TOOL);
+    },
+  });
+
+  aws = createAws({
+    getSettings: () => pi.plugin.getSettings(),
+    getDataPath: () => pi.plugin.getDataPath(),
+    // a change asks TBO Support for its approval, as the signed-in person
+    hub: async () => (await signedInClient()).client,
+  });
+  await pi.agent.registerTool({
+    ...AWS_TOOL,
+    execute: async (args, ctx) => {
+      if (ctx && ctx.log) ctx.log(`tbo_aws ${args && args.action}`);
+      return aws.run(args);
     },
   });
 
@@ -594,6 +624,10 @@ async function onUnload() {
   pending = null;
   if (pi.events && pi.events.off) pi.events.off(SETTINGS_EVENT, onSettingsChanged);
   await pi.agent.unregisterTool(TOOL.name).catch(() => {});
+  await pi.agent.unregisterTool(CHANGE_TOOL.name).catch(() => {});
+  await pi.agent.unregisterTool(AWS_TOOL.name).catch(() => {});
+  if (aws) aws.stop();
+  aws = null;
   for (const id of Object.values(COMMANDS)) {
     await pi.commands.unregister(id).catch(() => {});
   }

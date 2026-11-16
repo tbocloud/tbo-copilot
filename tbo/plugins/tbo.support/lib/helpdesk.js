@@ -1,9 +1,13 @@
 "use strict";
 
-// A small, read-only HTTP client for TBO Support (the Frappe app "helpdesk").
-// The transport is passed in: pi.net.fetch in the desktop app, Node's fetch on
-// a server. Only the API paths below can be called, and only with GET, so this
-// client cannot change anything in TBO Support.
+// A small HTTP client for TBO Support (the Frappe app "helpdesk"). The
+// transport is passed in: pi.net.fetch in the desktop app, Node's fetch on a
+// server. Only the API paths below can be called. Reads use GET, except those
+// whose arguments may be words people typed (READ_BY_POST), which go as a POST
+// body so the words stay out of URLs and network logs. The few writes
+// (WRITE_METHODS) never change a ticket: they ask TBO Support for an approval,
+// say how an approved action went, take a Press backup, or ask for a Press
+// action that then waits for an approver (TBO Copilot Phase 18).
 
 const READ_METHODS = new Set([
   "frappe.auth.get_logged_user",
@@ -17,6 +21,30 @@ const READ_METHODS = new Set([
   "helpdesk.api.customization.get_estimate",
   "helpdesk.api.article.search",
   "helpdesk.api.knowledge_base.get_article",
+  // Press and approvals (Phase 18)
+  "helpdesk.api.copilot_press.sites",
+  "helpdesk.api.copilot_press.site_status",
+  "helpdesk.api.copilot_press.jobs",
+  "helpdesk.api.copilot_press.job",
+  "helpdesk.api.copilot_press.failed_jobs",
+  "helpdesk.api.copilot_press.deploy_history",
+  "helpdesk.api.copilot_actions.get_action_approval",
+  "helpdesk.api.copilot_actions.approved_action",
+]);
+
+// a search's words, a customer's name: sent in the body (TBO Copilot Phase 21, docs/tbo/security.md F5).
+// Frappe answers a whitelisted read the same way for GET and POST.
+const READ_BY_POST = new Set([
+  "helpdesk.api.search.search",
+  "helpdesk.api.article.search",
+  "helpdesk.api.copilot_press.sites",
+]);
+
+const WRITE_METHODS = new Set([
+  "helpdesk.api.copilot_actions.request_action_approval",
+  "helpdesk.api.copilot_actions.mark_action_executed",
+  "helpdesk.api.copilot_press.backup",
+  "helpdesk.api.copilot_press.request_action",
 ]);
 
 const READ_DOCTYPES = new Set(["HD Ticket"]);
@@ -143,6 +171,26 @@ function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS })
     } catch (e) {
       throw fail("NETWORK", `Could not reach TBO Support (${e && e.message ? e.message : e}).`);
     }
+    return parseBody(res);
+  }
+
+  async function post(path, params) {
+    let res;
+    try {
+      res = await request({
+        url: `${siteUrl}${path}`,
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(params || {}),
+        timeoutMs,
+      });
+    } catch (e) {
+      throw fail("NETWORK", `Could not reach TBO Support (${e && e.message ? e.message : e}).`);
+    }
+    return parseBody(res);
+  }
+
+  function parseBody(res) {
     if (res.status < 200 || res.status >= 300) throw errorFor(res.status, res.bodyText || "");
     try {
       return JSON.parse(res.bodyText);
@@ -154,20 +202,28 @@ function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS })
   return {
     async method(path, params) {
       if (!READ_METHODS.has(path)) throw fail("NOT_ALLOWED", `The plugin may not call ${path}.`);
-      const body = await get(`/api/method/${path}`, params);
+      const body = READ_BY_POST.has(path) ? await post(`/api/method/${path}`, params) : await get(`/api/method/${path}`, params);
       return body.message;
     },
+    async post(path, params) {
+      if (!WRITE_METHODS.has(path)) throw fail("NOT_ALLOWED", `The plugin may not call ${path}.`);
+      const body = await post(`/api/method/${path}`, params);
+      return body.message;
+    },
+    // the filters may hold a customer's name: a POST to frappe.client.get_list, the same
+    // permission-checked list as GET /api/resource, with nothing in the URL
     async list(doctype, { fields, filters, orderBy, limit }) {
       if (!READ_DOCTYPES.has(doctype)) throw fail("NOT_ALLOWED", `The plugin may not list ${doctype}.`);
-      const body = await get(`/api/resource/${encodeURIComponent(doctype)}`, {
+      const body = await post("/api/method/frappe.client.get_list", {
+        doctype,
         fields,
         filters,
         order_by: orderBy,
-        limit_page_length: String(limit),
+        limit_page_length: limit,
       });
-      return body.data || [];
+      return body.message || [];
     },
   };
 }
 
-module.exports = { createClient, normalizeSite, frappeMessage, hostAllowed, isLoopback, READ_METHODS, READ_DOCTYPES, LOOPBACK_HOSTS };
+module.exports = { createClient, normalizeSite, frappeMessage, hostAllowed, isLoopback, READ_METHODS, WRITE_METHODS, READ_DOCTYPES, LOOPBACK_HOSTS };

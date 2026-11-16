@@ -1,5 +1,6 @@
 import { resolveChangelogLocale } from "./changelog-runtime.js";
 import type { ChangelogEntry, ChangelogLocale } from "./changelog.js";
+import { withTboEntries } from "./changelog-tbo.js";
 
 export { normalizeChangelogVersion, resolveChangelogLocale } from "./changelog-runtime.js";
 
@@ -26,7 +27,8 @@ export function loadChangelogCatalog(
   const existing = catalogRequests.get(locale);
   if (existing) return existing;
 
-  const request = catalogLoaders[locale]();
+  // TBO Copilot: TBO's own versions (changelog-tbo.ts) lead every locale.
+  const request = catalogLoaders[locale]().then(withTboEntries);
   catalogRequests.set(locale, request);
   void request.catch(() => {
     if (catalogRequests.get(locale) === request) catalogRequests.delete(locale);

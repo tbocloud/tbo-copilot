@@ -3,19 +3,41 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const manifest = require("../../tbo.support/manifest.json");
-const { TOOL } = require("../../tbo.support/lib/actions");
+const fs = require("node:fs");
+const path = require("node:path");
+const { TOOL, CHANGE_TOOL } = require("../../tbo.support/lib/actions");
+const { AWS_TOOL } = require("../../tbo.support/lib/aws");
 
-test("the manifest tool matches the code's tool exactly", () => {
-  const [declared] = manifest.contributes.agentTools;
-  assert.equal(manifest.contributes.agentTools.length, 1);
-  assert.deepEqual(
-    { name: declared.name, description: declared.description, risk: declared.risk, planSafeActions: declared.planSafeActions, schema: declared.schema },
-    { name: TOOL.name, description: TOOL.description, risk: TOOL.risk, planSafeActions: TOOL.planSafeActions, schema: TOOL.schema },
-  );
+const pick = (t) => ({ name: t.name, description: t.description, risk: t.risk, planSafeActions: t.planSafeActions, schema: t.schema });
+
+test("the manifest's three tools match the code's tools exactly", () => {
+  assert.deepEqual(manifest.contributes.agentTools.map(pick), [pick(TOOL), pick(CHANGE_TOOL), pick(AWS_TOOL)]);
+});
+
+test("every skill exists with a name and a short description", () => {
+  assert.equal(manifest.contributes.skills.length, 4);
+  for (const file of manifest.contributes.skills) {
+    const text = fs.readFileSync(path.join(__dirname, "../../tbo.support", file), "utf8");
+    const front = /^---\nname: (.+)\ndescription: (.+)\n---\n/.exec(text);
+    assert.ok(front, `${file} has no front matter`);
+    assert.ok(front[2].length <= 240, `${file}'s description is ${front[2].length} characters`);
+  }
+});
+
+test("AWS changes are off by default and no setting holds a key", () => {
+  const settings = Object.fromEntries(manifest.contributes.settings.map((s) => [s.key, s]));
+  assert.equal(settings.awsAllowChanges.default, false);
+  assert.equal(settings.awsAllowChanges.type, "boolean");
+  assert.equal(settings.awsRegion.default, "ap-south-1");
+  for (const s of manifest.contributes.settings) {
+    assert.equal(s.secret, undefined, s.key);
+    assert.doesNotMatch(s.key, /key|secret|token|password/i, s.key);
+  }
 });
 
 test("the plugin asks only for the permissions it uses", () => {
   assert.deepEqual([...manifest.permissions].sort(), [
+    "agent.prompt.inject", // the four AWS skills
     "agent.tool.register",
     "net.fetch",
     "provider.register",

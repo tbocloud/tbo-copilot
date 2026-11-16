@@ -204,9 +204,10 @@ async function waitFor(check, ms = 5000) {
   throw new Error("timed out");
 }
 
-test("onLoad registers the tool and three commands", async () => {
+test("onLoad registers the three tools and three commands", async () => {
   await plugin.onLoad();
-  assert.equal(registered.tools.length, 1);
+  assert.deepEqual(registered.tools.map((t) => t.name), ["tbo_support", "tbo_support_change", "tbo_aws"]);
+  assert.deepEqual(registered.tools.map((t) => t.risk), ["low", "high", "medium"]);
   assert.equal(tool().name, "tbo_support");
   assert.deepEqual(
     registered.commands.map((c) => c.id),

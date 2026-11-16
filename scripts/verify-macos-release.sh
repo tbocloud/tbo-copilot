@@ -5,12 +5,21 @@
 set -euo pipefail
 
 RELEASE_DIR="${1:-apps/desktop/release}"
-PRODUCT_NAME="PI-Desktop"
+# The app bundle name (MAC_PRODUCT_NAME; TBO Copilot sets "TBO Copilot").
+PRODUCT_NAME="${MAC_PRODUCT_NAME:-PI-Desktop}"
 # Accepts either the bare common name ("XingYu Liu (DUV63RKYTW)") or the full
 # certificate label ("Developer ID Application: XingYu Liu (DUV63RKYTW)").
 IDENTITY_NAME="${MAC_SIGNING_IDENTITY:-XingYu Liu (DUV63RKYTW)}"
 IDENTITY_NAME="${IDENTITY_NAME#Developer ID Application: }"
 EXPECTED_IDENTITY="Developer ID Application: ${IDENTITY_NAME}"
+# A lane that pins the Apple team rather than a certificate name sets
+# MAC_SIGNING_TEAM_ID and leaves MAC_SIGNING_IDENTITY unset: any Developer ID
+# Application certificate of that team then passes.
+TEAM_ID=""
+if [[ -n "${MAC_SIGNING_TEAM_ID:-}" && -z "${MAC_SIGNING_IDENTITY:-}" ]]; then
+  TEAM_ID="$MAC_SIGNING_TEAM_ID"
+  EXPECTED_IDENTITY="Developer ID Application: <name> ($TEAM_ID)"
+fi
 
 if [[ ! -d "$RELEASE_DIR" ]]; then
   echo "error: release directory does not exist: $RELEASE_DIR" >&2
@@ -38,7 +47,15 @@ HOST_CORE="$APP/Contents/Resources/bin/pi-desktop-host-core"
 echo "==> Inspecting Developer ID signature: $APP"
 SIGNATURE_INFO="$(codesign -dv --verbose=4 "$APP" 2>&1)"
 printf '%s\n' "$SIGNATURE_INFO"
-if [[ "$SIGNATURE_INFO" != *"Authority=${EXPECTED_IDENTITY}"* ]]; then
+if [[ -n "$TEAM_ID" ]]; then
+  # The first Authority line is the signing certificate (the leaf).
+  AUTHORITY="$(printf '%s\n' "$SIGNATURE_INFO" | awk '/^Authority=/ { sub(/^Authority=/, ""); print; exit }')"
+  if [[ "$AUTHORITY" != "Developer ID Application: "*" ($TEAM_ID)" ||
+        "$SIGNATURE_INFO" != *"TeamIdentifier=${TEAM_ID}"* ]]; then
+    echo "error: $APP is not signed with $EXPECTED_IDENTITY." >&2
+    exit 1
+  fi
+elif [[ "$SIGNATURE_INFO" != *"Authority=${EXPECTED_IDENTITY}"* ]]; then
   echo "error: $APP is not signed with $EXPECTED_IDENTITY." >&2
   exit 1
 fi

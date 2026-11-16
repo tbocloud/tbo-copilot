@@ -13,9 +13,14 @@
 //
 // Only ids that start with "tbo." are accepted, so a TBO plugin can never
 // replace one of upstream's bundled plugins.
+//
+// The copy that ships cannot reach this computer: localhost, *.localhost and
+// loopback addresses are removed from its manifest's net.domains (TBO Copilot
+// Phase 21, docs/tbo/security.md). A developer testing against a local bench
+// loads the repository's folder as a development plugin instead.
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,6 +49,30 @@ export function readConfig(path = CONFIG) {
   return config;
 }
 
+/** True for a net.domains entry that means this computer. */
+export function isLocalHost(domain) {
+  const host = String(domain).trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    /^127(\.\d{1,3}){3}$/.test(host)
+  );
+}
+
+/** The manifest without local hosts in net.domains, and the hosts removed. */
+export function withoutLocalHosts(manifest) {
+  const domains = manifest?.net?.domains;
+  if (!Array.isArray(domains)) return { manifest, removed: [] };
+  const removed = domains.filter(isLocalHost);
+  if (removed.length === 0) return { manifest, removed };
+  return {
+    manifest: { ...manifest, net: { ...manifest.net, domains: domains.filter((d) => !isLocalHost(d)) } },
+    removed,
+  };
+}
+
 /** Copies each listed plugin folder from `source` to `dest/<id>`. */
 export function bundlePlugins({ source, dest, plugins }) {
   const copied = [];
@@ -60,7 +89,11 @@ export function bundlePlugins({ source, dest, plugins }) {
     const to = join(dest, id);
     rmSync(to, { recursive: true, force: true });
     cpSync(from, to, { recursive: true });
-    copied.push(`${id}@${manifest.version}`);
+    const shipped = withoutLocalHosts(manifest);
+    if (shipped.removed.length) {
+      writeFileSync(join(to, "manifest.json"), `${JSON.stringify(shipped.manifest, null, 2)}\n`);
+    }
+    copied.push(`${id}@${manifest.version}${shipped.removed.length ? ` (without ${shipped.removed.join(", ")})` : ""}`);
   }
   return copied;
 }

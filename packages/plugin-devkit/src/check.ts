@@ -35,6 +35,8 @@ export const HIGH_RISK_PERMISSIONS = [
   "browser.cdp",
   "audio.capture.background",
   "speech.adapter.register",
+  // its rows join the model list and receive a key (ADR 0319); the matrix rates it high
+  "provider.register",
 ] as const;
 
 /** Host API surface each permission unlocks, used for the unused-permission hint. */

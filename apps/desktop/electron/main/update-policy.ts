@@ -3,11 +3,32 @@ import type { UpdateMode, UpdatePreference } from "@pi-desktop/shared";
 export type WindowsDistribution = "installed" | "zip" | "portable";
 
 /**
- * TBO Copilot: updates stay off until TBO hosts its own update server
- * (docs/tbo/README.md). `TBO_UPDATES=enabled` restores upstream behaviour.
+ * TBO Copilot: updates come from this repository's GitHub Releases, and only a
+ * signed release build looks for them (docs/tbo/README.md, "Updates").
+ *
+ * The TBO release workflow builds a signed `tbo-v*` tag with
+ * `-c.extraMetadata.tboUpdates=enabled`, which writes `"tboUpdates": "enabled"`
+ * into the packaged app's package.json. The updater reads that value at start
+ * and records it here. Test, pull-request and local builds never carry it, so
+ * their updates stay off.
+ *
+ * `TBO_UPDATES=enabled` in the environment also turns updates on. It exists
+ * for tests and development; no release build relies on it.
  */
+export const TBO_UPDATES_ENABLED = "enabled";
+
+let tboUpdatesBuildFlag: unknown;
+
+/** Records the packaged app's `tboUpdates` value (undefined when absent). */
+export function setTboUpdatesBuildFlag(value: unknown): void {
+  tboUpdatesBuildFlag = value;
+}
+
 export function tboUpdatesEnabled(): boolean {
-  return process.env.TBO_UPDATES === "enabled";
+  return (
+    tboUpdatesBuildFlag === TBO_UPDATES_ENABLED ||
+    process.env.TBO_UPDATES === TBO_UPDATES_ENABLED
+  );
 }
 
 export function supportsAutomaticUpdates(
