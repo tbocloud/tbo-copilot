@@ -87,6 +87,60 @@ test("poll stops on deny, expiry and cancel", async () => {
   );
 });
 
+// --- Phase 23, C3: one failed check never ends a sign-in; TBO Support's reason shows at once ---
+
+test("poll keeps checking through failed checks until the person allows", async () => {
+  const { request, calls } = fakeSite([
+    new Error("ECONNRESET"),
+    reply(429, {}),
+    { status: 502, headers: {}, bodyText: "Bad Gateway" },
+    reply(200, { status: "pending" }),
+    reply(200, APPROVED),
+  ]);
+  const slept = [];
+  const seen = [];
+  const session = await desktop.poll({
+    request,
+    siteUrl: SITE,
+    started: STARTED,
+    sleep: async (ms) => slept.push(ms),
+    now: () => 1000,
+    onWaiting: (info) => seen.push(info),
+  });
+  assert.equal(session.computerToken, "computer-secret");
+  assert.equal(calls.length, 5);
+  // a rate-limited check waits longer before the next one
+  assert.ok(slept[2] > slept[1], JSON.stringify(slept));
+  assert.match(seen[0].problem, /Could not reach TBO Support/);
+  assert.deepEqual(seen.at(-1), { reason: "", problem: "" }); // the pending answer clears the problem
+});
+
+test("poll passes TBO Support's reason on while it waits, and says why it gave up", async () => {
+  const reason = "You are not on TBO Copilot desktop's Allowed People. Ask a System Manager.";
+  const seen = [];
+  const blocked = fakeSite([reply(200, { status: "pending", reason }), reply(200, APPROVED)]);
+  await desktop.poll({ request: blocked.request, siteUrl: SITE, started: STARTED, sleep: async () => {}, onWaiting: (i) => seen.push(i) });
+  assert.equal(seen[0].reason, reason);
+
+  let t = 0;
+  const down = fakeSite(Array.from({ length: 400 }, () => new Error("ENOTFOUND")));
+  await assert.rejects(
+    desktop.poll({ request: down.request, siteUrl: SITE, started: STARTED, sleep: async () => {}, now: () => (t += 5000) }),
+    { code: "EXPIRED", message: /The last check failed: Could not reach TBO Support/ },
+  );
+  const denied = fakeSite([reply(200, { status: "denied", reason: "Denied on the Allow page." })]);
+  await assert.rejects(desktop.poll({ request: denied.request, siteUrl: SITE, started: STARTED, sleep: async () => {} }), {
+    code: "DENIED",
+    message: /Denied on the Allow page/,
+  });
+  // a sign-in TBO Support ends (403 with its reason) still ends at once
+  const refused = fakeSite([reply(403, { status: "signed_out", reason: "Only active TBO Support agents may use TBO Copilot desktop." })]);
+  await assert.rejects(desktop.poll({ request: refused.request, siteUrl: SITE, started: STARTED, sleep: async () => {} }), {
+    code: "SIGNED_OUT",
+    message: /active TBO Support agents/,
+  });
+});
+
 test("refresh keeps the computer token; a 401 means the sign-in is over, with TBO Support's reason", async () => {
   const ok = fakeSite([reply(200, { ...APPROVED, status: undefined, computer_token: undefined, access_token: "bearer-2" })]);
   const fresh = await desktop.refresh({ request: ok.request, siteUrl: SITE, computerToken: "computer-secret", appVersion: "0.16.2", now: () => 0 });

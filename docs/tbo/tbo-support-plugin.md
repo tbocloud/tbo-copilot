@@ -182,8 +182,12 @@ their role allows.
 2. The plugin asks TBO Support for a code (`tbo_desktop.api.start_sign_in`, sending the computer's name and
    system) and opens the browser at TBO Support's Allow page. It opens only a page on the same site.
 3. The person logs in with Microsoft. The page shows the computer's name and the same code as the panel, and they
-   press **Allow**.
-4. The plugin waits (`finish_sign_in`, every few seconds, at most 10 minutes) and gets, once:
+   press **Allow**. If they may not sign in (not on Allowed People, not an active agent, never logged in with
+   Microsoft…), the page says why, and so does the panel at once, under the code, while it keeps waiting: a System
+   Manager can still add them, or they log in with Microsoft from the page's button, and then press Allow.
+4. The plugin waits (`finish_sign_in`, every few seconds, until the code expires, 10 minutes by default). A check
+   that fails for a moment (offline, rate limited, a server error) does not end the wait: the panel says so and
+   it goes on, more slowly after a rate limit. It gets, once:
    - a computer token (30 days);
    - a TBO Support token (a Frappe bearer token, 12 hours);
    - the person's TBO AI key and the gateway's address.

@@ -101,6 +101,7 @@ async function hubFetch(input) {
   }
   if (path === "tbo_desktop.api.finish_sign_in") {
     const next = hub.finishAnswers.shift() || "approved";
+    if (next && typeof next === "object") return next.http ? { status: next.http, headers: {}, bodyText: "{}" } : ok(next);
     if (next !== "approved") return ok({ status: next });
     return ok({
       status: "approved",
@@ -325,7 +326,7 @@ test("when TBO Support ends the sign-in, the session and the AI key are removed"
   hub.refreshStatus = 200;
 });
 
-test("a denied sign-in is reported once and nothing is kept", async () => {
+test("a denied sign-in keeps saying why until the next sign-in, and nothing is kept", async () => {
   hub.finishAnswers = ["denied"];
   await plugin.onPanelInvoke("tbo-support.microsoft");
   await waitFor(async () => {
@@ -333,8 +334,34 @@ test("a denied sign-in is reported once and nothing is kept", async () => {
     return s.pending && s.pending.error;
   });
   assert.equal(sessions.has(HOST), false);
+  // the panel refreshes when the person comes back to it: the reason is still there
   const after = await plugin.onPanelInvoke("tbo-support.state");
-  assert.equal(after.pending, null);
+  assert.match(after.pending.error, /denied/);
+  // the next sign-in starts clean
+  hub.finishAnswers = ["pending", "pending", "pending"];
+  const again = await plugin.onPanelInvoke("tbo-support.microsoft");
+  assert.equal(again.pending.error, "");
+  await plugin.onPanelInvoke("tbo-support.cancel");
+});
+
+// --- Phase 23, C3 ---
+
+test("while it waits, the panel shows TBO Support's reason at once, and a failed check does not end it", async () => {
+  const reason = "You are not on TBO Copilot desktop's Allowed People. Ask a System Manager.";
+  hub.finishAnswers = [{ status: "pending", reason }, { http: 502 }, { http: 502 }, "pending", "pending", "pending", "pending"];
+  await plugin.onPanelInvoke("tbo-support.microsoft");
+  await waitFor(async () => {
+    const s = await plugin.onPanelInvoke("tbo-support.state");
+    return s.pending && s.pending.reason === reason;
+  });
+  await waitFor(async () => {
+    const s = await plugin.onPanelInvoke("tbo-support.state");
+    return s.pending && /HTTP 502/.test(s.pending.problem);
+  });
+  const state = await plugin.onPanelInvoke("tbo-support.state");
+  assert.equal(state.pending.error, ""); // still waiting
+  await plugin.onPanelInvoke("tbo-support.cancel");
+  assert.equal((await plugin.onPanelInvoke("tbo-support.state")).pending, null);
 });
 
 test("cancel stops waiting", async () => {

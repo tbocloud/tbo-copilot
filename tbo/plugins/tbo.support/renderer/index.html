@@ -100,6 +100,9 @@
     <section id="waiting" hidden>
       <p class="help">Your browser opened TBO Support. Check that it shows this code, then press <b>Allow</b>.</p>
       <p class="code" id="code" aria-label="Sign-in code"></p>
+      <!-- TBO Support's reason why you cannot allow it yet, and a check that failed for a moment -->
+      <p class="error" id="waiting-reason" role="alert" hidden></p>
+      <p class="help" id="waiting-problem" hidden></p>
       <div class="row">
         <button id="open-again" type="button">Open the page again</button>
         <button id="cancel" type="button">Cancel</button>
@@ -193,6 +196,12 @@
         $("signed-in").hidden = !state.signedIn;
         $("key-box").hidden = !!state.signedIn || waiting || !state.local;
         if (waiting) $("code").textContent = state.pending.code;
+        const reason = waiting ? state.pending.reason || "" : "";
+        const problem = waiting ? state.pending.problem || "" : "";
+        $("waiting-reason").hidden = !reason;
+        $("waiting-reason").textContent = reason ? `TBO Support says you cannot sign in yet: ${reason}` : "";
+        $("waiting-problem").hidden = !problem;
+        $("waiting-problem").textContent = problem ? `The last check did not get through (${problem}). It keeps checking until the code expires.` : "";
         if (state.signedIn) $("ai").textContent = aiText(state);
         if (state.askProjects) {
           if (state.signedIn) {

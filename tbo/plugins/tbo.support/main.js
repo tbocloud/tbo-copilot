@@ -291,6 +291,8 @@ async function startMicrosoft() {
     expiresAt: Date.now() + Number(started.expires_in || 600) * 1000,
     cancelled: false,
     error: "",
+    reason: "", // TBO Support's reason why the person cannot allow it yet (the Allow page's)
+    problem: "", // the last check that failed for a moment; checking goes on until the code expires
   };
   pending = mine;
   try {
@@ -303,7 +305,18 @@ async function startMicrosoft() {
   }
   const over = () => mine.cancelled || gen !== epoch;
   desktop
-    .poll({ request, siteUrl: site, started, sleep, isCancelled: over })
+    .poll({
+      request,
+      siteUrl: site,
+      started,
+      sleep,
+      isCancelled: over,
+      onWaiting: ({ reason, problem }) => {
+        if (over()) return;
+        mine.reason = reason || "";
+        mine.problem = problem || "";
+      },
+    })
     .then((session) =>
       exclusive(async () => {
         if (over()) return;
@@ -334,7 +347,9 @@ async function startMicrosoft() {
 }
 
 function pendingView(p) {
-  return p ? { code: p.code, verifyUrl: p.verifyUrl, expiresAt: p.expiresAt, error: p.error } : null;
+  return p
+    ? { code: p.code, verifyUrl: p.verifyUrl, expiresAt: p.expiresAt, error: p.error, reason: p.reason || "", problem: p.problem || "" }
+    : null;
 }
 
 // --- the panel -----------------------------------------------------------------
@@ -348,8 +363,9 @@ async function panelState(retried = false) {
   }
   await reconcileAi(site);
   const local = isLoopback(hostOf(site));
+  // a failed attempt keeps its reason until the next sign-in starts, is cancelled or signs out,
+  // so the panel still says why after the person comes back to it
   const waiting = pending && pending.site === site ? pendingView(pending) : null;
-  if (pending && pending.error) pending = null; // shown once
   const session = await store.loadSession(keyOf(site));
   if (session) {
     try {
@@ -631,7 +647,7 @@ async function onPanelInvoke(channel, payload) {
     }
     if (channel === "tbo-support.microsoft") return { ok: true, pending: await startMicrosoft() };
     if (channel === "tbo-support.open-again") {
-      if (pending) await pi.shell.openExternal(pending.verifyUrl);
+      if (pending && !pending.error) await pi.shell.openExternal(pending.verifyUrl);
       return { ok: true, pending: pendingView(pending) };
     }
     if (channel === "tbo-support.cancel") {
