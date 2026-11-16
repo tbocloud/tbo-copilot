@@ -131,6 +131,7 @@ async function hubFetch(input) {
     if (auth && auth.startsWith("Bearer ") && hub.tokens.has(auth.slice(7))) return ok("rahul@teambackoffice.com");
     return { status: 401, headers: {}, bodyText: '{"exc_type":"AuthenticationError"}' };
   }
+  if (path === "helpdesk.api.mobile.get_task" && hub.task) return ok({ v: 1, data: hub.task });
   if (path === "helpdesk.api.copilot_feedback.report_problem") {
     assert.equal(input.method, "POST");
     hub.reports.push(body);
@@ -766,5 +767,49 @@ test("a settings change forgets a task link still waiting for Open", async () =>
     assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, false);
   } finally {
     pi.ui.openPanel = openPanel;
+  }
+});
+
+// --- CodeRabbit round 3 on PR #27 ---
+
+test("an older open that ends after a settings change keeps a newer task link's request", async (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  await plugin.onLoad();
+  settings = { siteUrl: SITE };
+  assert.equal((await plugin.onPanelInvoke("tbo-support.sign-in", { ...GOOD })).ok, true);
+  fs.rmSync("/tmp/tbo-support-test/projects.json", { force: true });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tbo-main-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  hub.task = { name: "TASK-2026-00123", subject: "Fix it", project: "PROJ-0002", project_name: "Alpha ERP" };
+  const before = { fs: pi.fs, desktop: pi.desktop, openPanel: pi.ui.openPanel };
+  const link = `tbo-copilot://task/TASK-2026-00123?site=${encodeURIComponent(SITE)}`;
+  pi.ui.openPanel = async () => {};
+  pi.fs = { requestDirectory: async () => ({ path: dir, name: "app" }) };
+  pi.desktop = {
+    invoke: async ({ operation }) => {
+      if (operation === "session/create") return { session: { id: "s-1" } };
+      if (operation === "agent/prompt") {
+        // the open's last step: the settings change now, and a new link for the same task number arrives
+        await settingsChanged();
+        await plugin.onOpenUrl({ url: link });
+      }
+      return {};
+    },
+  };
+  try {
+    assert.equal((await plugin.onPanelInvoke("tbo-support.add-folder", { project: "PROJ-0002", name: "Alpha ERP", site: SITE })).ok, true);
+    const opened = await plugin.onPanelInvoke("tbo-support.open-task", { task: "TASK-2026-00123", site: SITE });
+    assert.equal(opened.opened, true);
+    // the request made after the change is still waiting for the person's Open
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, true);
+  } finally {
+    pi.fs = before.fs;
+    pi.desktop = before.desktop;
+    pi.ui.openPanel = before.openPanel;
+    hub.task = null;
+    await plugin.onPanelInvoke("tbo-support.dismiss-request");
+    fs.rmSync("/tmp/tbo-support-test/projects.json", { force: true });
   }
 });

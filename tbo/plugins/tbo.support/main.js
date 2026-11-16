@@ -590,7 +590,11 @@ async function openTaskFromPanel(payload) {
       stillCurrent: () => generation === epoch,
     });
   });
-  if (result.opened && openRequest && openRequest.task === result.task) openRequest = null;
+  // the link's request is done only when this open is still the current one: an open started before a
+  // settings change must not clear a newer request for the same task number on the new site
+  if (result.opened && generation === epoch && openRequest && openRequest.task === result.task && sameOrigin(openRequest.site, site)) {
+    openRequest = null;
+  }
   return result;
 }
 
