@@ -223,6 +223,9 @@ their role allows.
 still running drop its answer (a Microsoft sign-in overtaken while it starts opens no browser), and all writes to the saved sign-in and the TBO AI row happen one at a time. So a renewal
 can never put a key back after sign-out, a cancelled sign-in keeps nothing, and the panel never shows a sign-in
 whose TBO AI is still being set up. An API-key sign-in is refused while a Microsoft sign-in is kept for that site.
+Only a change of the site address counts as a site change: changing another plugin setting (the AWS ones) keeps a
+waiting sign-in, a task that is opening and a task link waiting for Open (Phase 23); a change to an AWS setting
+restarts only the AWS tool's server.
 
 **When TBO Support ends the sign-in** (the person lost access, the 30 days are over, a System Manager signed the
 computer out), renewal answers 401. The plugin then removes the session and clears the TBO AI key, and tells the

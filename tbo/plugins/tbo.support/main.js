@@ -62,6 +62,7 @@ let aiApplied = null; // what the TBO AI provider row holds now: { site, baseUrl
 let aiState = { ready: false };
 let aiRetryAt = 0; // when to fetch the TBO AI key again after the app refused it (0: not needed)
 let epoch = 0;
+let knownSettings = null; // { site, aws } as last seen: a settings change acts on what moved
 let chain = Promise.resolve();
 let version = null;
 
@@ -735,15 +736,34 @@ async function check() {
   }
 }
 
-// The site may have changed: work still running for the old one drops its
-// answer (it cannot put that site's key back), then the new site is synced.
-function onSettingsChanged() {
-  openRequest = null; // a task link asked for under the old settings opens nothing now
+// What a settings change is compared with: the site (as normalised, null when the address is not
+// usable) and the AWS tool's settings.
+async function settingsNow() {
+  const settings = (await pi.plugin.getSettings().catch(() => null)) || {};
+  let site = null;
+  try {
+    site = normalizeSite(settings.siteUrl || DEFAULT_SITE, siteHosts());
+  } catch {
+    site = null;
+  }
+  const awsSettings = JSON.stringify(Object.keys(settings).filter((k) => k.startsWith("aws")).sort().map((k) => [k, settings[k]]));
+  return { site, aws: awsSettings };
+}
+
+// Only a change of the site is a site change (Phase 23): work still running for the old one drops
+// its answer (it cannot put that site's key back), a waiting sign-in and a task link end, and the
+// new site is synced. Any other setting (the AWS ones) leaves the sign-in and an opening task alone.
+async function onSettingsChanged() {
+  const now = await settingsNow();
+  const before = knownSettings;
+  knownSettings = now;
+  if (aws && (!before || before.aws !== now.aws)) aws.stop(); // a new AWS profile or region starts a new AWS server
+  if (before && before.site === now.site) return;
+  openRequest = null; // a task link asked for under the old site opens nothing now
   lastReport = null; // a report's link belongs to the site it was sent to
   epoch += 1;
   if (pending) pending.cancelled = true;
   pending = null;
-  if (aws) aws.stop(); // a new AWS profile or region starts a new AWS server
   syncSite().catch(() => {});
 }
 
@@ -752,6 +772,7 @@ function startup() {
 }
 
 async function onLoad() {
+  knownSettings = await settingsNow();
   store = createStore({ dataDir: await pi.plugin.getDataPath() });
   projectStore = projects.createProjectStore({ dataDir: await pi.plugin.getDataPath() });
 

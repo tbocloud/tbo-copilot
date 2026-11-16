@@ -782,7 +782,7 @@ test("a task opened, or a folder kept, for one site never acts on another", asyn
   }
 });
 
-test("a settings change forgets a task link still waiting for Open", async () => {
+test("a site change forgets a task link still waiting for Open", async () => {
   await plugin.onLoad();
   settings.siteUrl = SITE;
   const openPanel = pi.ui.openPanel;
@@ -790,6 +790,9 @@ test("a settings change forgets a task link still waiting for Open", async () =>
   try {
     await plugin.onOpenUrl({ url: `tbo-copilot://task/TASK-2026-00123?site=${encodeURIComponent(SITE)}` });
     assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, true);
+    settings.siteUrl = "https://demo-tbo.tbocloud.in";
+    await settingsChanged();
+    settings.siteUrl = SITE;
     await settingsChanged();
     assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, false);
   } finally {
@@ -818,7 +821,10 @@ test("an older open that ends after a settings change keeps a newer task link's 
     invoke: async ({ operation }) => {
       if (operation === "session/create") return { session: { id: "s-1" } };
       if (operation === "agent/prompt") {
-        // the open's last step: the settings change now, and a new link for the same task number arrives
+        // the open's last step: the site changes away and back now, and a new link for the same task number arrives
+        settings = { siteUrl: "https://demo-tbo.tbocloud.in" };
+        await settingsChanged();
+        settings = { siteUrl: SITE };
         await settingsChanged();
         await plugin.onOpenUrl({ url: link });
       }
@@ -838,5 +844,42 @@ test("an older open that ends after a settings change keeps a newer task link's 
     hub.task = null;
     await plugin.onPanelInvoke("tbo-support.dismiss-request");
     fs.rmSync("/tmp/tbo-support-test/projects.json", { force: true });
+  }
+});
+
+// --- Phase 23, C10: only a change of the site acts like one ---
+
+test("changing another setting keeps a waiting sign-in and a task link; changing the site ends them", async () => {
+  await plugin.onLoad();
+  settings = { siteUrl: SITE };
+  await settingsChanged();
+  await plugin.onPanelInvoke("tbo-support.sign-out"); // signed out: the panel shows the waiting sign-in
+  const openPanel = pi.ui.openPanel;
+  pi.ui.openPanel = async () => {};
+  try {
+    await plugin.onOpenUrl({ url: `tbo-copilot://task/TASK-2026-00123?site=${encodeURIComponent(SITE)}` });
+    hub.finishAnswers = Array.from({ length: 20 }, () => "pending");
+    await plugin.onPanelInvoke("tbo-support.microsoft");
+    settings = { siteUrl: SITE, awsAllowChanges: true, awsRegion: "ap-south-1" };
+    await settingsChanged();
+    const kept = await plugin.onPanelInvoke("tbo-support.state");
+    assert.equal(kept.pending && kept.pending.code, "K7P-4QX", "the sign-in still waits");
+    assert.equal(kept.pending.error, "");
+    assert.equal(kept.askProjects, true, "the task link still waits");
+    // the same site written another way is the same site
+    settings = { siteUrl: `${SITE}/`, awsAllowChanges: true };
+    await settingsChanged();
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).pending.code, "K7P-4QX");
+    settings = { siteUrl: "https://demo-tbo.tbocloud.in" };
+    await settingsChanged();
+    const moved = await plugin.onPanelInvoke("tbo-support.state");
+    assert.equal(moved.pending, null);
+    assert.equal(moved.askProjects, false);
+  } finally {
+    pi.ui.openPanel = openPanel;
+    hub.finishAnswers = [];
+    await plugin.onPanelInvoke("tbo-support.cancel");
+    settings = { siteUrl: SITE };
+    await settingsChanged();
   }
 });
