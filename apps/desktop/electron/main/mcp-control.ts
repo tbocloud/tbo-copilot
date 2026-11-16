@@ -232,6 +232,11 @@ const CONTROL_OPERATION_SPECS: OperationSpec[] = [
   spec("projectList", "project/list", "List durable projects.", "read", []),
   spec("projectSet", "project/set", "Open and bind a project path.", "write", ["path"]),
   spec("projectClear", "project/clear", "Clear the active project.", "write", []),
+  // Project groups (TBO Phase 22): one project over several folders. The IPC
+  // handlers require every folder to be an existing directory.
+  spec("projectGroupList", "project/groups/list", "List project groups and their folders.", "read", []),
+  spec("projectGroupCreate", "project/groups/create", "Create a project group from existing folders.", "write", ["input"]),
+  spec("projectGroupUpdate", "project/groups/update", "Replace a project group's name and folders.", "write", ["input"]),
   spec("workspaceDiff", "workspace/diff", "Read the active workspace diff.", "read", []),
   spec("statsGetTokenUsageHistory", "stats/getTokenUsageHistory", "Read completed-turn token usage history.", "read", ["input"]),
   spec("browserGetState", "browser/getState", "Read embedded Browser state.", "read", []),

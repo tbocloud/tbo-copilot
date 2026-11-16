@@ -1023,6 +1023,11 @@ Delivered today:
   subscribing to an unknown event name does not error. No published host emits it
   yet — 0.14.8 does not include it — so a plugin that depends on it must require
   the release that actually ships it rather than assume 0.14.7 or 0.14.8.
+- `app:openUrl` (TBO Copilot) — payload `{ url: string }`, a `tbo-copilot://`
+  link of at most 2048 characters that opened the app. It is sent only to the
+  bundled `tbo.support` plugin, after the app has booted and that plugin has
+  loaded; no other plugin receives it. The host does not parse the link, so
+  the plugin validates it and asks the person before acting on it.
 
 A throwing handler is logged and does not affect other listeners or the plugin.
 
