@@ -40,6 +40,10 @@ In the task's chat, as with anything Copilot changes, the app asks you first:
 - **Start:** the task becomes Working and its timer runs.
 - **Pause / Hold / Resume:** pause the timer; put it On Hold with a reason (Laptop / system issue, Leave, Waiting on
   customer, Waiting on another task, Other); take it off hold.
+- **How a task ends:** with a pull request that closes the task (the Frappe dev plugin writes `Closes TASK-…`), its
+  merge completes the task: TBO Support stops the timer and logs its hours, or sends the task to Pending Review. Copilot
+  does not complete such a task by hand. **Complete** is for work without a pull request, or for a task still open
+  after its merge.
 - **Complete:** Copilot asks your hours and on which days (it never guesses) and what was done, then completes the
   task. TBO Support puts each day's hours on that day's timesheet, the same as its Complete dialog. Its rule:
   - a day takes at most what is left of your working day (hours already on your timesheet count), and only a working

@@ -444,3 +444,25 @@ test("a settings change between the app's steps stops the rest", async (t) => {
   );
   assert.deepEqual(d.ops(), ["session/create"]); // never opened, never given the task
 });
+
+// --- Phase 23, C7: one rule for how a task ends ---
+
+test("the brief, the skill and the tools give one ending: a closing pull request's merge completes the task", () => {
+  const fsMod = require("node:fs");
+  const pathMod = require("node:path");
+  const { CHANGE_TOOL, ACTIONS } = require("../../tbo.support/lib/actions");
+  const brief = taskBrief(TASK, ["/a"]);
+  const skill = fsMod.readFileSync(pathMod.join(__dirname, "../../tbo.support/skills/work-on-a-task.md"), "utf8");
+  const tool = CHANGE_TOOL.description.split("\n").find((l) => l.startsWith("- complete_task"));
+  for (const [where, text] of [
+    ["brief", brief],
+    ["skill", skill],
+    ["complete_task's text", tool],
+  ]) {
+    assert.match(text, /merge (of [^.]*)?completes (it|the task)/i, where);
+    assert.match(text, /without a pull request/i, where);
+  }
+  // nothing tells the chat to complete a task by hand unconditionally
+  assert.doesNotMatch(brief, /When the work is done, ask me how many hours I spent and complete the task/);
+  assert.ok(typeof ACTIONS.start_task === "function");
+});

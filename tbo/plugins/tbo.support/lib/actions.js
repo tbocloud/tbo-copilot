@@ -375,7 +375,7 @@ const ACTIONS = {
 
   async start_task(client, args) {
     const t = ((await client.post("helpdesk.api.mobile.start_task", { task: taskArg(args) })) || {}).data || {};
-    return { task: t.name, status: t.status, timer: t.timer || null, note: "The task is Working and its timer runs; the merge of a Closes PR completes it with the hours." };
+    return { task: t.name, status: t.status, timer: t.timer || null, note: "The task is Working and its timer runs. With a pull request that closes it, the merge completes the task with the timer's hours; complete_task is only for work without a pull request." };
   },
 
   // the person's own task, from the desktop app (Phase 22)
@@ -741,7 +741,7 @@ const CHANGE_DESCRIPTION = [
   "- pause_task: pause the timer of the person's own task (it stays Working); needs task.",
   "- hold_task: put the person's own task On Hold; needs task and reason (Laptop / system issue, Leave, Waiting on customer, Waiting on another task, Other), optional notes.",
   "- resume_task: take the person's own task off hold; needs task.",
-  "- complete_task: complete the person's own task; needs task, notes (what was done) and the hours the person gives (ask them, never guess): hours_worked when it was all today, or days ([{date, hours}]) for work over several days. TBO Support puts each day's hours on that day's timesheet: a day takes at most what is left of the person's working day and only a working day; hours are typed in for today and the last few working days (tbo_support completion_days gives the days the timer ran and the hours left on each). A project that wants a review sends it to Pending Review.",
+  "- complete_task: only for work without a pull request: when a pull request that closes the task (Closes TASK-…) is merged, the merge completes the task with its timer's hours, so never call complete_task for it (unless the task is still open after the merge). Completes the person's own task; needs task, notes (what was done) and the hours the person gives (ask them, never guess): hours_worked when it was all today, or days ([{date, hours}]) for work over several days. TBO Support puts each day's hours on that day's timesheet: a day takes at most what is left of the person's working day and only a working day; hours are typed in for today and the last few working days (tbo_support completion_days gives the days the timer ran and the hours left on each). A project that wants a review sends it to Pending Review.",
   "- ask_go_live: once the task's change is merged and its CI passed (tbo_support task_release), ask its release's approver for it to go live; needs task and when (tonight or now), optional notes. The approver decides; nobody approves their own change.",
   "- report_problem: when the person asks to report a problem with TBO Copilot, send their words as a task for the TBO Copilot team; needs text (never passwords, keys or a customer's personal data).",
   "Site and bench names are as Press shows them (tbo_support press_status gives a site's bench).",
