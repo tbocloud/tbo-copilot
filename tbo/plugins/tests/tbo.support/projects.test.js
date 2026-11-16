@@ -45,6 +45,9 @@ function desktop(overrides = {}) {
     const handler = overrides[input.operation];
     if (handler) return handler(input);
     if (input.operation === "session/create") return { session: { id: "s-1" } };
+    // as the app answers: a chat it has, with its id (a deleted one is { session: null })
+    if (input.operation === "session/get") return { session: { id: input.args[0].id } };
+    if (input.operation === "session/open") return { session: { id: input.args[0] } };
     if (input.operation === "project/groups/create") return { group: { id: "g-1" } };
     return {};
   };
@@ -115,18 +118,55 @@ test("opening a task makes its chat in the project's folder and gives it the tas
 });
 
 test("a chat deleted in the app is made again", async (t) => {
+  // the app answers a deleted chat with { session: null } and no error (session-ipc's session/get);
+  // a thrown "not found" is taken the same way
+  const answers = {
+    "no session": () => ({ session: null }),
+    "a not-found error": () => {
+      throw Object.assign(new Error("not found"), { code: "NOT_FOUND" });
+    },
+  };
+  for (const [how, answer] of Object.entries(answers)) {
+    const store = createProjectStore({ dataDir: tmp(t) });
+    const [a] = folders(t, 1);
+    store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+    store.rememberChat(SITE, "TASK-2026-00123", "PROJ-0002", "gone");
+    store.markBriefed(SITE, "TASK-2026-00123");
+    const d = desktop({ "session/get": answer });
+    const opened = await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: d.invoke });
+    assert.deepEqual(d.ops(), ["session/get", "session/create", "session/open", "agent/prompt"], how);
+    assert.equal(d.calls[2].args[0], "s-1", how); // the new chat is the one opened
+    assert.equal(opened.sessionId, "s-1", how);
+    assert.equal(store.chat(SITE, "TASK-2026-00123"), "s-1", how);
+  }
+});
+
+test("a chat deleted between the check and the open is made again, once", async (t) => {
   const store = createProjectStore({ dataDir: tmp(t) });
   const [a] = folders(t, 1);
   store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
   store.rememberChat(SITE, "TASK-2026-00123", "PROJ-0002", "gone");
+  store.markBriefed(SITE, "TASK-2026-00123");
+  const notFound = () => Object.assign(new Error("Session not found"), { errorCode: "NOT_FOUND" });
   const d = desktop({
-    "session/get": () => {
-      throw Object.assign(new Error("not found"), { code: "NOT_FOUND" });
+    "session/open": (input) => {
+      if (input.args[0] === "gone") throw notFound(); // as session-ipc's session/open says it
+      return { session: { id: input.args[0] } };
     },
   });
-  await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: d.invoke });
-  assert.deepEqual(d.ops(), ["session/get", "session/create", "session/open", "agent/prompt"]);
+  const opened = await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: d.invoke });
+  assert.deepEqual(d.ops(), ["session/get", "session/open", "session/create", "session/open", "agent/prompt"]);
+  assert.equal(opened.sessionId, "s-1");
   assert.equal(store.chat(SITE, "TASK-2026-00123"), "s-1");
+  // a new chat the app cannot open either is not made a third time
+  const never = desktop({
+    "session/open": () => {
+      throw notFound();
+    },
+  });
+  store.rememberChat(SITE, "TASK-2026-00123", "PROJ-0002", "gone");
+  await assert.rejects(openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: never.invoke }), /Session not found/);
+  assert.deepEqual(never.ops(), ["session/get", "session/open", "session/create", "session/open"]);
 });
 
 test("several folders become one project group, made once and kept up to date", async (t) => {

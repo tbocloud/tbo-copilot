@@ -254,28 +254,42 @@ async function openTaskOnce({ task, site, client, store, invoke: invokeRaw, stil
     await groupFolders({ site, project, name: detail.project_name || project, folders, store, invoke });
   }
 
-  const remembered = store.chatEntry(site, task);
-  // a task moved to another project gets a chat in its new project's folders
-  let sessionId = remembered && remembered.project === project ? remembered.sessionId : null;
-  if (sessionId) {
-    try {
-      await invoke({ operation: "session/get", args: [{ id: sessionId, messageLimit: 1 }] });
-    } catch (e) {
-      if (!isMissingSession(e)) throw e; // the app could not answer: keep the chat, try again later
-      sessionId = null; // deleted in the app: a new one replaces it below
-    }
-  }
-  if (!sessionId) {
+  const newChat = async () => {
     const subject = String(detail.subject || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
     const created = await invoke({
       operation: "session/create",
       args: [{ title: `${task} ${subject}`.slice(0, 120), projectPath: folders[0] }],
     });
-    sessionId = created && created.session && created.session.id;
-    if (!sessionId) throw fail("DESKTOP", "The app did not make the task's chat.");
-    store.rememberChat(site, task, project, sessionId); // replaces the old link only now it exists
+    const id = created && created.session && created.session.id;
+    if (!id) throw fail("DESKTOP", "The app did not make the task's chat.");
+    store.rememberChat(site, task, project, id); // replaces the old link only now it exists
+    return id;
+  };
+
+  const remembered = store.chatEntry(site, task);
+  // a task moved to another project gets a chat in its new project's folders
+  let sessionId = remembered && remembered.project === project ? remembered.sessionId : null;
+  if (sessionId) {
+    let got;
+    try {
+      got = await invoke({ operation: "session/get", args: [{ id: sessionId, messageLimit: 1 }] });
+    } catch (e) {
+      if (!isMissingSession(e)) throw e; // the app could not answer: keep the chat, try again later
+      got = null;
+    }
+    // the app answers a chat deleted there with { session: null }, not an error
+    if (!got || !got.session) sessionId = null; // a new one replaces it below
   }
-  await invoke({ operation: "session/open", args: [sessionId] });
+  const made = !sessionId;
+  if (made) sessionId = await newChat();
+  try {
+    await invoke({ operation: "session/open", args: [sessionId] });
+  } catch (e) {
+    // deleted between the check and the open: a new chat, once; a new chat that does not open is an error
+    if (made || !isMissingSession(e)) throw e;
+    sessionId = await newChat();
+    await invoke({ operation: "session/open", args: [sessionId] });
+  }
   // the first message until the chat has accepted it: a failed try is retried in the same chat
   const fresh = !(store.chatEntry(site, task) || {}).briefed;
   if (fresh) {

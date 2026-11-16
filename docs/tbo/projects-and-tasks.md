@@ -24,7 +24,8 @@ a folder (it deletes nothing).
 
 The task opens in its own chat, in its project's folders. With several folders, the app groups them as one project
 (named "TBO · <project>"), so the chat sees all of them. The first time, the chat is given the task: it reads it, says
-how it would do it and waits for your go-ahead. Opening the task again continues the same chat.
+how it would do it and waits for your go-ahead. Opening the task again continues the same chat. If you deleted that
+chat in the app, opening the task makes a new one and gives it the task again.
 
 If the project has no folders here yet, the panel asks you to add them first.
 
