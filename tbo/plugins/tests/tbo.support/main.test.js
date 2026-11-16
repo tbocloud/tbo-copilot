@@ -283,6 +283,14 @@ test("Report a problem: the command opens the panel's form once, and a report se
   await plugin.onPanelInvoke("tbo-support.open-report");
   assert.equal(opened.length, openedBefore);
   hub.reportUrl = `${SITE}/helpdesk/my-work?task=TASK-2026-00099`;
+  // the link is checked against the site at the moment it opens, not only when the report was sent
+  assert.equal((await plugin.onPanelInvoke("tbo-support.report", { text: "a third" })).link, true);
+  const siteBefore = settings.siteUrl;
+  settings.siteUrl = "https://demo-tbo.tbocloud.in";
+  const openedNow = opened.length;
+  await plugin.onPanelInvoke("tbo-support.open-report");
+  assert.equal(opened.length, openedNow, "a report from another site is not opened");
+  settings.siteUrl = siteBefore;
 });
 
 test("the agent's report_problem goes through the high-risk change tool", async () => {

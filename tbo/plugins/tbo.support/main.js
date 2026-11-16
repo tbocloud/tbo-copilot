@@ -491,7 +491,10 @@ async function onPanelInvoke(channel, payload) {
     if (channel === "tbo-support.sign-out") return { ok: true, ...(await signOut()) };
     if (channel === "tbo-support.report") return { ok: true, ...(await reportFromPanel(payload)) };
     if (channel === "tbo-support.open-report") {
-      if (lastReport && lastReport.url) await pi.shell.openExternal(lastReport.url);
+      // the site may have changed since the report was sent: open only a page on the current one
+      if (lastReport && lastReport.url && sameOrigin(lastReport.url, await currentSite())) {
+        await pi.shell.openExternal(lastReport.url);
+      }
       return { ok: true };
     }
   } catch (e) {
@@ -548,6 +551,7 @@ async function check() {
 // The site may have changed: work still running for the old one drops its
 // answer (it cannot put that site's key back), then the new site is synced.
 function onSettingsChanged() {
+  lastReport = null; // a report's link belongs to the site it was sent to
   epoch += 1;
   if (pending) pending.cancelled = true;
   pending = null;

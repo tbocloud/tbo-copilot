@@ -233,11 +233,14 @@
       $("report-form").addEventListener("submit", async (event) => {
         event.preventDefault();
         $("error").textContent = "";
+        const sent = $("report-text").value;
         $("report-send").disabled = true;
-        const res = await call("tbo-support.report", { text: $("report-text").value });
+        $("report-text").readOnly = true;
+        const res = await call("tbo-support.report", { text: sent });
         $("report-send").disabled = false;
+        $("report-text").readOnly = false;
         if (res.ok) {
-          $("report-text").value = "";
+          if ($("report-text").value === sent) $("report-text").value = "";
           $("report-done").textContent = `Thank you: ${res.task} is with the TBO Copilot team.`;
           $("report-done").hidden = false;
           $("report-open-row").hidden = !res.link;
@@ -253,6 +256,9 @@
         if (res.ok) show(res);
         else $("error").textContent = res.error || "Sign-out failed.";
       });
+
+      // "TBO Support: Report a problem" focuses a panel that is already open: read its request then
+      window.addEventListener("focus", () => refresh());
 
       refresh();
     </script>
