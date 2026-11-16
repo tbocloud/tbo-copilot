@@ -85,12 +85,15 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
     ghAuth: { code: 0, stdout: "", stderr: "✓ Logged in to github.com account dev-user (keyring)" },
     prReady: { code: 0, stdout: "", stderr: "" },
   };
-  const hooks = { beforeSemgrep: null, beforeAuth: null };
+  const hooks = { beforeSemgrep: null, beforeAuth: null, beforePreCommit: null };
   const runFn = async (cmd, args, opts) => {
     calls.push([cmd === uv ? "uv" : path.basename(cmd), ...args]);
     if (cmd === "git") return run(cmd, args, opts);
     if (cmd === uv) {
-      if (args.includes("pre-commit")) return answers.preCommit;
+      if (args.includes("pre-commit")) {
+        if (hooks.beforePreCommit) hooks.beforePreCommit();
+        return answers.preCommit;
+      }
       if (hooks.beforeSemgrep) hooks.beforeSemgrep();
       return answers.semgrep;
     }
@@ -139,7 +142,8 @@ async function finished(dev, job) {
 
 const neverForced = (calls) => {
   for (const c of calls) {
-    assert.ok(!c.some((a) => a === "--force" || a === "-f" || a === "--no-verify" || String(a).startsWith("--force-with-lease") || String(a).startsWith("+")), c.join(" "));
+    const push = c[0] === "git" && c[1] === "push";
+    assert.ok(!c.some((a) => a === "--force" || a === "-f" || a === "--no-verify" || String(a).startsWith("--force-with-lease") || (push && String(a).startsWith("+"))), c.join(" "));
   }
 };
 
@@ -284,6 +288,44 @@ test("a failing linter, a bad commit title or a formatter's fix fails the check"
   const byName = Object.fromEntries(done.result.steps.map((s) => [s.name, s]));
   assert.match(byName.semgrep.detail, /my_app\/selling\/discounts\.py:2 frappe-manual-commit: Manual commit/);
   assert.match(byName["commit titles"].detail, /"Cap the discount": not "type\(scope\): summary"/);
+});
+
+test("a formatter's fix fails the check with its report, not as a stale result", async (t) => {
+  const w = world(t);
+  await readyBranch(w);
+  w.answers.preCommit = { code: 1, stdout: "black....Failed\n- files were modified by this hook\n", stderr: "" };
+  w.hooks.beforePreCommit = () => w.write(w.repo, "my_app/selling/discounts.py", "def cap(x):\n    return x  # formatted\n");
+  const done = await finished(w.dev, (await w.dev.runDev({ action: "check" })).job);
+  assert.equal(done.state, "failed", done.error);
+  assert.equal(done.error, undefined);
+  assert.ok(done.result.steps.some((s) => /pre-commit fixed 1 file\(s\)/.test(s.detail || "")), JSON.stringify(done.result.steps));
+});
+
+test("a pass on a tree that changed while the check ran is thrown away", async (t) => {
+  const w = world(t);
+  await readyBranch(w);
+  w.hooks.beforeSemgrep = () => w.write(w.repo, "my_app/selling/discounts.py", "changed while checking\n");
+  const done = await finished(w.dev, (await w.dev.runDev({ action: "check" })).job);
+  assert.equal(done.state, "stale");
+  assert.match(done.error, /Files changed while this ran/);
+});
+
+test("start_work fetches the base into its tracking ref, also in a single-branch clone (bench get-app)", async (t) => {
+  const w = world(t);
+  // a second branch on GitHub, and the app cloned with one branch only, as bench get-app --branch does
+  const seed = path.join(w.top, "seed");
+  w.git(seed, "switch", "-q", "-c", "develop");
+  w.write(seed, "my_app/develop.txt", "develop\n");
+  w.git(seed, "add", ".");
+  w.git(seed, "commit", "-q", "-m", "chore: develop");
+  w.git(seed, "push", "-q", "origin", "develop");
+  fs.rmSync(w.repo, { recursive: true, force: true });
+  w.git(w.top, "clone", "-q", "--single-branch", "--branch", "main", GITHUB_URL, w.repo);
+  assert.throws(() => w.git(w.repo, "rev-parse", "--verify", "--quiet", "origin/develop"));
+  const r = await w.dev.runDev({ action: "start_work", task: TASK, subject: "Cap the discount", kind: "feature", base: "develop" });
+  assert.equal(r.state, "created");
+  assert.equal(w.git(w.repo, "rev-parse", "HEAD"), w.git(w.repo, "rev-parse", "origin/develop"));
+  neverForced(w.calls);
 });
 
 test("check and run_tests need the task's branch and a commit, not loose changes", async (t) => {
@@ -621,6 +663,13 @@ test("a configured bench must hold this checkout in its apps/ folder", async (t)
   const w2 = world(t, { settings: { benchPath: other } });
   await readyBranch(w2);
   await assert.rejects(w2.dev.runDev({ action: "run_tests" }), { code: "NO_BENCH", message: /is not one of them/ });
+  // the same checkout linked into the bench's apps/ is one of them; another checkout is not
+  fs.symlinkSync(w2.repo, path.join(other, "apps", "my_app"));
+  fs.writeFileSync(path.join(other, "sites", "currentsite.txt"), "dev.localhost\n");
+  assert.ok((await w2.dev.runDev({ action: "run_tests" })).job);
+  const third = world(t, { settings: { benchPath: other } });
+  await readyBranch(third);
+  await assert.rejects(third.dev.runDev({ action: "run_tests" }), { code: "NO_BENCH" });
 });
 
 test("a folder inside a larger repository is not taken for a repository", async (t) => {

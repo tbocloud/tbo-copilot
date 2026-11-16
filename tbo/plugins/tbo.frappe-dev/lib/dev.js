@@ -185,6 +185,13 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     };
   }
 
+  // A branch fetched into its remote-tracking ref by name: a clone made with one branch (bench
+  // get-app --branch --depth 1) has a fetch refspec for that branch only, so a plain "fetch <remote>
+  // <branch>" would leave <remote>/<branch> missing.
+  function fetchBranch(root, remote, branch, opts) {
+    return git.git(root, ["fetch", "--quiet", remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`], opts);
+  }
+
   async function startWork(args) {
     const task = taskId(args.task);
     const subject = String(args.subject || "").trim();
@@ -198,7 +205,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     const wanted = String(args.base || info.defaultBranch || "").trim();
     if (!wanted) throw fail("NO_BASE", `${info.remote} has no default branch here; name the branch to start from as "base".`);
     const base = checkBranchName(wanted, "base");
-    await git.git(root, ["fetch", "--quiet", info.remote, base], { timeoutMs: 90000 });
+    await fetchBranch(root, info.remote, base, { timeoutMs: 90000 });
     const existing = await git.taskBranch(root, task, info.remote);
     let branch;
     let state;
@@ -208,7 +215,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       state = "switched to the task's branch";
     } else if (existing) {
       branch = checkBranchName(existing.name, "branch");
-      await git.git(root, ["fetch", "--quiet", info.remote, branch], { timeoutMs: 90000 });
+      await fetchBranch(root, info.remote, branch, { timeoutMs: 90000 });
       await git.git(root, ["switch", "--quiet", "--track", "-c", branch, `${info.remote}/${branch}`]);
       state = `continued the task's branch from ${info.remote}`;
     } else {
@@ -241,12 +248,15 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     return out;
   }
 
-  // A result belongs to the commit it ran on: if the branch moved or the tree changed while it ran
-  // (a commit, a switch), it is thrown away, and the job says to run it again.
-  async function stillAt(root, head) {
+  // A result belongs to the commit it ran on. If the branch moved while it ran (a commit, a switch), it
+  // is thrown away. A changed tree throws away only a pass: a failure at the same commit is kept, since
+  // a formatter that rewrites files leaves them changed, and its report is the point.
+  async function whyStale(root, head, passed) {
     const now = (await git.git(root, ["rev-parse", "HEAD"], { allowFail: true })).stdout.trim();
+    if (now !== head) return `The branch moved while this ran, so the result does not belong to ${head.slice(0, 12)}; run it again.`;
+    if (!passed) return "";
     const dirty = (await git.out(root, ["status", "--porcelain=v1", "--untracked-files=normal"])).split("\n").filter(Boolean);
-    return now === head && !dirty.length;
+    return dirty.length ? `Files changed while this ran, so the pass does not belong to ${head.slice(0, 12)}; commit and run it again.` : "";
   }
 
   function startJob(kind, root, head, work, keep) {
@@ -258,9 +268,10 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     while (jobs.size > MAX_JOBS) jobs.delete(jobs.keys().next().value);
     work()
       .then(async (result) => {
-        if (!(await stillAt(root, head))) {
+        const stale = await whyStale(root, head, Boolean(result.passed));
+        if (stale) {
           job.state = "stale";
-          job.error = `The branch moved or files changed while this ran, so the result does not belong to ${head.slice(0, 12)}; run it again.`;
+          job.error = stale;
           return;
         }
         job.result = result;
@@ -285,7 +296,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     if (info.dirty.length) throw fail("DIRTY", `Commit the changes first; checks run on a commit:\n${info.dirty.slice(0, 10).join("\n")}`);
     const base = (await git.baseOf(root, info.branch)) || info.defaultBranch;
     if (!base) throw fail("NO_BASE", "The branch's base is not known; start the branch with tbo_dev start_work.");
-    await git.git(root, ["fetch", "--quiet", info.remote, base], { timeoutMs: 60000 });
+    await fetchBranch(root, info.remote, base, { timeoutMs: 60000 });
     return { info, base };
   }
 
@@ -401,7 +412,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     if (push.code !== 0 || push.timedOut) {
       throw fail("PUSH_FAILED", `The push was refused (nothing was forced): ${tail(push.stderr || push.stdout, 6)}\nIf GitHub has newer commits on the branch, pull them (git pull --rebase is fine on your own branch), check again, and retry.`);
     }
-    await git.git(root, ["fetch", "--quiet", info.remote, branch], { allowFail: true, timeoutMs: 30000 });
+    await fetchBranch(root, info.remote, branch, { allowFail: true, timeoutMs: 30000 });
     await git.git(root, ["branch", `--set-upstream-to=${info.remote}/${branch}`, branch], { allowFail: true });
 
     const existing = await runFn("gh", ["pr", "view", branch, "--repo", info.github, "--json", "url,state,isDraft"], { cwd: root, env, timeoutMs: 20000 });

@@ -21,8 +21,7 @@ function isBench(dir) {
 function findBench(root, configured) {
   if (configured) {
     if (!isBench(configured)) throw fail("NO_BENCH", `"Frappe bench folder" (${configured}) is not a bench: it needs sites/ and apps/frappe.`);
-    const apps = fs.realpathSync(path.join(configured, "apps"));
-    if (path.dirname(fs.realpathSync(root)) !== apps) {
+    if (!holds(configured, root)) {
       throw fail("NO_BENCH", `The bench ${configured} runs the apps in its apps/ folder, and this repository (${root}) is not one of them: work in ${configured}/apps/<app>, or set the bench that holds it.`);
     }
     return configured;
@@ -30,6 +29,20 @@ function findBench(root, configured) {
   const parent = path.dirname(root);
   if (path.basename(parent) === "apps" && isBench(path.dirname(parent))) return path.dirname(parent);
   return null;
+}
+
+// The bench's apps/ folder holds this checkout: as a folder, or as a link to it.
+function holds(bench, root) {
+  const apps = path.join(bench, "apps");
+  const real = fs.realpathSync(root);
+  if (path.dirname(real) === fs.realpathSync(apps)) return true;
+  return fs.readdirSync(apps).some((name) => {
+    try {
+      return fs.realpathSync(path.join(apps, name)) === real;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function findSite(bench, configured) {

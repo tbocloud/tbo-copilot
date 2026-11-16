@@ -44,7 +44,8 @@ code and tests      ──► conventional commits
    `bench --site <dev site> set-config allow_tests true`. Work in the app's folder in the bench (`<bench>/apps/<app>`),
    or open the bench and pass `repo`.
 4. **Plugin settings** (Settings → Plugins → TBO Frappe Dev): **Frappe bench folder** (empty when the repository is in
-   `<bench>/apps/`), **Test site** (empty: the bench's current site; never a live site), **Reviewers** (GitHub logins,
+   `<bench>/apps/`), **Test site** (empty: the bench's current site, which the plugin uses without checking what it is: make it a dev
+   site, never a live one), **Reviewers** (GitHub logins,
    optional), **bench command** and **uv location** if they are not on your PATH.
 5. **TBO Support sign-in** in the `tbo.support` plugin, on the site that holds your tasks.
 
@@ -122,7 +123,11 @@ description are rewritten for the new commit (with `Closes` or `Refs` as asked).
 
 Push to `main`, `master`, `develop`, `tbo`, `main-hotfix`, `production`, `staging`, the repository's default branch or
 the task's base; force-push; `--no-verify`; merge a PR; delete a branch; stash someone's changes; run the whole test
-suite locally; write to a site's data. Each of these is refused by the tools, not only written in a skill.
+suite locally. Each of these is refused by the tools, not only written in a skill.
+
+The plugin also never writes to a site's data itself. `run_tests`, though, runs the app's tests on the test site, and
+Frappe's tests write records there: that site is a dev site you choose. The plugin checks only that it exists in the
+bench, and with the setting empty it takes the bench's current site as it is.
 
 ## Check it works
 
