@@ -16,12 +16,16 @@ Design and use: [`docs/tbo/frappe-dev.md`](../../../docs/tbo/frappe-dev.md).
 ## Contents
 
 - `main.js`: registers the two tools.
-- `lib/dev.js`: the tools `tbo_dev` (status, start_work, check, run_tests, job_status) and `tbo_dev_pr` (open_pr).
+- `lib/dev.js`: the tools `tbo_dev` (status, start_work, check, run_tests, bench, job_status) and `tbo_dev_pr`
+  (open_pr).
 - `lib/git.js`: the repository, branch names, the branches never pushed to.
 - `lib/lint.js`: what CI runs, run here (pre-commit, Semgrep, flake8/ruff, commit titles).
 - `lib/tests.js`: the bench, the test site, the test modules of a change.
+- `lib/bench.js`: `bench` on your own bench: migrate, build, clear_cache, and nothing else.
 - `lib/pr.js`: the PR's title and body.
-- `skills/`: Start work on a task, Open the pull request, TBO Frappe conventions, New Frappe app.
+- `skills/`: Start work on a task, Open the pull request, TBO Frappe conventions, New Frappe app, DocTypes and fields,
+  Reports, Print formats, Client and Server Scripts into app code, Patches and fixtures, Debug an error from a customer
+  site, Performance, Frappe v16 checks.
 
 Tests: `node --test "tbo/plugins/tests/tbo.frappe-dev/*.test.js"` (real git repositories in a temporary folder; `gh`,
 `uv` and `bench` are stand-ins).

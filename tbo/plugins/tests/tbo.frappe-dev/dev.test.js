@@ -65,7 +65,8 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
 
   const bench = path.join(top, "bench");
   fs.mkdirSync(path.join(bench, "apps", "frappe"), { recursive: true });
-  fs.mkdirSync(path.join(bench, "sites", "dev.localhost"), { recursive: true });
+  makeSite(bench, "dev.localhost");
+  fs.mkdirSync(path.join(bench, "sites", "assets")); // in every bench, and not a site
   fs.writeFileSync(path.join(bench, "sites", "currentsite.txt"), "dev.localhost\n");
   const repo = path.join(bench, "apps", "my_app");
   git(top, "clone", "-q", GITHUB_URL, repo);
@@ -77,15 +78,18 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
 
   const calls = [];
   const bodies = [];
+  const benchRuns = []; // every bench call: its arguments, folder and time limit
   const answers = {
     preCommit: { code: 0, stdout: "black....Passed\n" },
     semgrep: { code: 0, stdout: JSON.stringify({ results: [], errors: [] }) },
     tests: { code: 0, stdout: "Ran 3 tests in 0.2s\n\nOK\n" },
+    bench: { code: 0, stdout: "Migrating dev.localhost\nExecuting `after_migrate` hooks...\n", stderr: "" },
     prView: { code: 1, stdout: "", stderr: "no pull requests found for branch" },
     ghAuth: { code: 0, stdout: "", stderr: "✓ Logged in to github.com account dev-user (keyring)" },
     prReady: { code: 0, stdout: "", stderr: "" },
   };
-  const hooks = { beforeSemgrep: null, beforeAuth: null, beforePreCommit: null };
+  // holdBench: a promise every bench call waits for, to keep a job running
+  const hooks = { beforeSemgrep: null, beforeAuth: null, beforePreCommit: null, holdBench: null };
   const runFn = async (cmd, args, opts) => {
     calls.push([cmd === uv ? "uv" : path.basename(cmd), ...args]);
     if (cmd === "git") return run(cmd, args, opts);
@@ -97,7 +101,11 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
       if (hooks.beforeSemgrep) hooks.beforeSemgrep();
       return answers.semgrep;
     }
-    if (cmd === "bench") return { ...answers.tests, cwd: opts.cwd };
+    if (cmd === "bench") {
+      benchRuns.push({ args, cwd: opts.cwd, timeoutMs: opts.timeoutMs });
+      if (hooks.holdBench) await hooks.holdBench;
+      return args.includes("run-tests") ? { ...answers.tests, cwd: opts.cwd } : answers.bench;
+    }
     if (cmd === "gh") {
       const [a, b] = args;
       if (a === "auth") {
@@ -128,7 +136,13 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
     git(repo, "commit", "-q", "-m", message);
     return git(repo, "rev-parse", "HEAD");
   };
-  return { dev, repo, origin, bench, top, git, write, commit, calls, bodies, answers, hooks, env, dataDir };
+  return { dev, repo, origin, bench, top, git, write, commit, calls, bodies, benchRuns, answers, hooks, env, dataDir };
+}
+
+// A site of the bench: its folder with its site_config.json.
+function makeSite(bench, name) {
+  fs.mkdirSync(path.join(bench, "sites", name), { recursive: true });
+  fs.writeFileSync(path.join(bench, "sites", name, "site_config.json"), "{}\n");
 }
 
 async function finished(dev, job) {
@@ -161,8 +175,16 @@ test("the manifest declares exactly the code's two tools, its skills and its set
   assert.equal(PR_TOOL.risk, "high", "the push always asks");
   assert.equal(PR_TOOL.planSafeActions, undefined);
   assert.deepEqual(DEV_TOOL.planSafeActions, ["status", "job_status"]);
+  // bench changes the dev bench: the app asks first (risk medium), and Plan mode never runs it
+  assert.ok(DEV_TOOL.schema.properties.action.enum.includes("bench"));
+  assert.equal(DEV_TOOL.risk, "medium");
+  assert.ok(!DEV_TOOL.planSafeActions.includes("bench"));
   assert.deepEqual([...manifest.permissions].sort(), ["agent.prompt.inject", "agent.tool.register"]);
   assert.equal(manifest.net, undefined, "the plugin itself reaches no network");
+  // every skill in the folder is declared, once
+  const skillFiles = fs.readdirSync(path.join(__dirname, "../../tbo.frappe-dev/skills")).filter((f) => f.endsWith(".md"));
+  assert.deepEqual([...manifest.contributes.skills].sort(), skillFiles.map((f) => `skills/${f}`).sort());
+  assert.equal(manifest.contributes.skills.length, 12);
   for (const file of manifest.contributes.skills) {
     const text = fs.readFileSync(path.join(__dirname, "../../tbo.frappe-dev", file), "utf8");
     const front = /^---\nname: (.+)\ndescription: (.+)\n---\n/.exec(text);
@@ -374,6 +396,134 @@ test("a site with testing off says how to turn it on", async (t) => {
   const done = await finished(w.dev, (await w.dev.runDev({ action: "run_tests" })).job);
   assert.equal(done.state, "failed");
   assert.match(done.result.results[0].detail, /bench --site dev\.localhost set-config allow_tests true/);
+});
+
+// --- bench -------------------------------------------------------------------------------
+
+const benchArgs = (w) => w.benchRuns.map((r) => r.args);
+
+test("bench migrate runs bench --site <test site> migrate in the bench folder, in the background, on any branch", async (t) => {
+  const w = world(t);
+  // not a task branch, and a DocType's JSON not committed yet: migrate runs on the tree as it is
+  w.write(w.repo, "my_app/selling/doctype/tier/tier.json", "{}\n");
+  const started = await w.dev.runDev({ action: "bench", command: "migrate" });
+  assert.equal(started.state, "running");
+  assert.equal(started.kind, "bench");
+  assert.equal(started.command, "bench --site dev.localhost migrate");
+  assert.equal(started.commit, undefined, "a bench job belongs to no commit");
+  const done = await finished(w.dev, started.job);
+  assert.equal(done.state, "passed", done.error);
+  assert.equal(done.result.site, "dev.localhost");
+  assert.deepEqual(benchArgs(w), [["--site", "dev.localhost", "migrate"]]);
+  assert.equal(w.benchRuns[0].cwd, w.bench);
+  assert.equal(w.benchRuns[0].timeoutMs, 20 * 60000);
+  assert.equal((await w.dev.runDev({ action: "job_status", job_kind: "bench" })).job, started.job);
+  assert.equal((await w.dev.runDev({ action: "status" })).last_bench.job, started.job);
+  // another site of the bench, named in the call
+  makeSite(w.bench, "second.localhost");
+  await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "migrate", site: "second.localhost" })).job);
+  assert.deepEqual(benchArgs(w)[1], ["--site", "second.localhost", "migrate"]);
+  // the test site from the settings
+  const w2 = world(t, { settings: { testSite: "second.localhost" } });
+  makeSite(w2.bench, "second.localhost");
+  await finished(w2.dev, (await w2.dev.runDev({ action: "bench", command: "migrate" })).job);
+  assert.deepEqual(benchArgs(w2), [["--site", "second.localhost", "migrate"]]);
+});
+
+test("bench refuses a site that is not in the bench, and every command but migrate, build and clear_cache", async (t) => {
+  const w = world(t);
+  for (const site of ["live.example.com", "all", "assets", "../dev.localhost", "dev.localhost/../x"]) {
+    await assert.rejects(w.dev.runDev({ action: "bench", command: "migrate", site }), { code: "NO_SITE" }, site);
+  }
+  const commands = ["console", "drop-site", "reinstall", "restore", "backup", "execute", "run-tests", "migrate --force", "--force", "clear-cache"];
+  for (const command of [...commands, "", undefined, "constructor", "__proto__", "toString"]) {
+    await assert.rejects(w.dev.runDev({ action: "bench", command }), { code: "INVALID_ARGUMENT", message: /only migrate, build, clear_cache/ }, String(command));
+  }
+  assert.deepEqual(w.benchRuns, [], "nothing ran");
+});
+
+test("bench build builds every app or one app of the bench; clear_cache clears a site's cache", async (t) => {
+  const w = world(t);
+  assert.equal((await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "build" })).job)).state, "passed");
+  const one = await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "build", app: "my_app" })).job);
+  assert.equal(one.result.app, "my_app");
+  await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "clear_cache" })).job);
+  assert.deepEqual(benchArgs(w), [["build"], ["build", "--app", "my_app"], ["--site", "dev.localhost", "clear-cache"]]);
+  assert.equal(w.benchRuns[2].timeoutMs, 5 * 60000);
+  await assert.rejects(w.dev.runDev({ action: "bench", command: "build", app: "erpnext" }), { code: "INVALID_ARGUMENT", message: /not an app/ });
+  await assert.rejects(w.dev.runDev({ action: "bench", command: "build", site: "dev.localhost" }), { code: "INVALID_ARGUMENT", message: /takes no site/ });
+  await assert.rejects(w.dev.runDev({ action: "bench", command: "migrate", app: "my_app" }), { code: "INVALID_ARGUMENT", message: /takes no app/ });
+  assert.equal(w.benchRuns.length, 3);
+});
+
+test("nothing destructive reaches bench through the bench action's arguments", async (t) => {
+  const w = world(t);
+  const attempts = [
+    { command: "migrate", site: "--force" },
+    { command: "migrate", site: "dev.localhost --force" },
+    { command: "migrate", site: "dev.localhost; bench drop-site dev.localhost" },
+    { command: "migrate", site: "-h" },
+    { command: "clear_cache", site: "--site" },
+    { command: "build", app: "--force" },
+    { command: "build", app: "my_app --force" },
+    { command: "build", app: "-f" },
+    { command: "build", app: "../frappe" },
+    { command: "migrate --skip-failing" },
+    { command: ["migrate", "--force"] },
+  ];
+  for (const args of attempts) {
+    await assert.rejects(w.dev.runDev({ action: "bench", ...args }), (e) => ["INVALID_ARGUMENT", "NO_SITE"].includes(e.code), JSON.stringify(args));
+  }
+  assert.deepEqual(w.benchRuns, []);
+  // what is not a parameter of the action never reaches bench
+  const done = await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "migrate", args: ["--force"], options: "--skip-failing", flags: ["drop-site"], modules: ["--force"] })).job);
+  assert.equal(done.state, "passed");
+  assert.deepEqual(benchArgs(w), [["--site", "dev.localhost", "migrate"]]);
+  for (const a of benchArgs(w).flat()) assert.doesNotMatch(a, /^-f$|--force|--skip-failing|console|drop-site|reinstall|restore/);
+});
+
+test("a failed migrate fails the job with its output; a traceback or a time-out fails it too", async (t) => {
+  const w = world(t);
+  w.answers.bench = { code: 1, stdout: "Migrating dev.localhost\nTraceback (most recent call last):\nfrappe.exceptions.ValidationError: Tier is mandatory\n", stderr: "" };
+  let job = await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "migrate" })).job);
+  assert.equal(job.state, "failed");
+  assert.equal(job.result.detail, "exit code 1");
+  assert.match(job.result.output, /ValidationError: Tier is mandatory/);
+  w.answers.bench = { code: 0, stdout: "Traceback (most recent call last):\nKeyError: 'tier'\n", stderr: "" };
+  job = await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "migrate" })).job);
+  assert.equal(job.state, "failed");
+  assert.match(job.result.detail, /traceback/);
+  w.answers.bench = { code: null, stdout: "", stderr: "", timedOut: true };
+  job = await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "build" })).job);
+  assert.equal(job.state, "failed");
+  assert.match(job.result.detail, /longer than 20 minutes/);
+});
+
+test("one job at a time on a bench: no migrate under running tests, no tests under a migrate; a commit meanwhile keeps a bench result", async (t) => {
+  const w = world(t);
+  await readyBranch(w);
+  let release;
+  w.hooks.holdBench = new Promise((r) => {
+    release = r;
+  });
+  const migrate = await w.dev.runDev({ action: "bench", command: "migrate" });
+  assert.equal(migrate.state, "running");
+  await assert.rejects(w.dev.runDev({ action: "bench", command: "build" }), { code: "BUSY", message: /bench --site dev\.localhost migrate/ });
+  await assert.rejects(w.dev.runDev({ action: "run_tests" }), { code: "BUSY" });
+  w.commit("my_app/selling/discounts.py", "def cap(x):\n    return min(x, 20)\n", "fix(selling): raise the cap");
+  w.hooks.holdBench = null;
+  release();
+  assert.equal((await finished(w.dev, migrate.job)).state, "passed", "a bench job belongs to no commit, so it is never stale");
+  w.hooks.holdBench = new Promise((r) => {
+    release = r;
+  });
+  const tests = await w.dev.runDev({ action: "run_tests" });
+  assert.equal(tests.state, "running");
+  await assert.rejects(w.dev.runDev({ action: "bench", command: "migrate" }), { code: "BUSY", message: /run_tests/ });
+  w.hooks.holdBench = null;
+  release();
+  await finished(w.dev, tests.job);
+  assert.equal((await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "migrate" })).job)).state, "passed");
 });
 
 // --- open_pr -----------------------------------------------------------------------------
