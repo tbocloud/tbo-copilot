@@ -656,3 +656,26 @@ test("a go-live note is at most what TBO Support keeps", async () => {
   await assert.rejects(runAction(client, { action: "ask_go_live", task: "TASK-2026-00021", when: "tonight", notes: "x".repeat(501) }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT" });
   assert.match(CHANGE_TOOL.schema.properties.notes.description, /ask_go_live: .*500/);
 });
+
+// --- Phase 23, C8: Press restore and new site need details the plugin cannot send: not offered ---
+
+test("restore and new_site are not offered until the plugin can send what they need", async () => {
+  const { PRESS_ACTIONS } = require("../../tbo.support/lib/actions");
+  const posts = [];
+  const client = {
+    async post(path, params) {
+      posts.push([path, params]);
+      return { name: "TBO-ACT-2026-00010" };
+    },
+  };
+  for (const action of ["restore", "new_site"]) {
+    assert.ok(!PRESS_ACTIONS.includes(action), action);
+    assert.ok(!CHANGE_TOOL.schema.properties.press_action.enum.includes(action), action);
+    assert.doesNotMatch(CHANGE_TOOL.description, new RegExp(`\\b${action}\\b`), action);
+    await assert.rejects(runAction(client, { action: "press_action", press_action: action, target: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL), {
+      code: "INVALID_ARGUMENT",
+    });
+  }
+  assert.deepEqual(posts, []);
+  assert.deepEqual(PRESS_ACTIONS, ["restart_bench", "update_site", "migrate_site", "change_plan", "deploy"]);
+});

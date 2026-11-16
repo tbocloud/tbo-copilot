@@ -64,7 +64,8 @@ The approver gets a card in Teams.
 - *"Status of acme.tbo365.cloud"*, or *"failed jobs of the last 24 hours"*.
 - *"Take a backup of demo.tbo365.cloud"* runs once you allow it. It says **started** with Press's job; ask *"Is the
   backup of demo.tbo365.cloud done?"* for its status. Asking again while one runs starts no second backup.
-- A restart, update, migrate, plan change, deploy or restore goes to an approver first.
+- A restart, update, migrate, plan change or deploy goes to an approver first. A restore or a new site is not
+  offered from the app yet: ask in TBO Support.
 
 **AWS** (DevOps):
 - *"Which EC2 instances are running in me-central-1?"* uses your own AWS login (`aws sso login`).

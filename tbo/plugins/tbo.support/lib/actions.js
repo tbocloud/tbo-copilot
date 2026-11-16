@@ -649,8 +649,10 @@ function backupAnswer(status, site, job) {
   };
 }
 
-// Press's approval actions; a backup needs none, and deletes are never offered.
-const PRESS_ACTIONS = ["restart_bench", "update_site", "migrate_site", "change_plan", "deploy", "restore", "new_site"];
+// Press's approval actions; a backup needs none, and deletes are never offered. Restore (which backup files)
+// and a new site (its plan, apps, cluster) need details this plugin cannot send yet, so TBO Support would
+// refuse every request: they are left out until it can (Phase 23).
+const PRESS_ACTIONS = ["restart_bench", "update_site", "migrate_site", "change_plan", "deploy"];
 
 // A site, bench, bench group or job as Press names it.
 function pressName(args, name) {
@@ -736,7 +738,7 @@ const TOOL = {
 const CHANGE_DESCRIPTION = [
   "Change something through TBO Support or Press, as the signed-in person. The app asks the person before each call: say first what it will do. Choose an action:",
   "- press_backup: take a backup of a site now; needs site. It runs once the person allows it, and is logged. It answers once the backup has started (a backup already running is never started again); tbo_support press_jobs gives its status. Never ask for a second backup to check on the first.",
-  "- press_action: ask Press to restart_bench, update_site, migrate_site, change_plan (needs plan), deploy (target: a bench group), restore or new_site; needs press_action and target. It only asks an approver in Teams; TBO Support runs it after Approve. Deletes are never possible.",
+  "- press_action: ask Press to restart_bench, update_site, migrate_site, change_plan (needs plan) or deploy (target: a bench group); needs press_action and target. It only asks an approver in Teams; TBO Support runs it after Approve. Deletes are never possible.",
   "- start_task: start the person's timer on their own task (Open becomes Working); needs task.",
   "- pause_task: pause the timer of the person's own task (it stays Working); needs task.",
   "- hold_task: put the person's own task On Hold; needs task and reason (Laptop / system issue, Leave, Waiting on customer, Waiting on another task, Other), optional notes.",
