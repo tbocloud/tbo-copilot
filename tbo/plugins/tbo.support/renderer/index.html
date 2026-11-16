@@ -317,7 +317,8 @@
           await loadProjects();
           return note(`Add the folders of ${res.projectName} on this computer first, then open ${task} again.`);
         }
-        note(`${task} is open in its chat${res.fresh ? ", with the task given to Copilot" : ""}.`);
+        // res.note: the app would not group the project's folders; the chat works in the first one
+        note(`${task} is open in its chat${res.fresh ? ", with the task given to Copilot" : ""}.${res.note ? ` ${res.note}` : ""}`);
         await loadProjects();
       }
 

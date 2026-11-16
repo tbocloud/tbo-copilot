@@ -150,12 +150,19 @@ function createProjectStore({ dataDir }) {
       return (entry && entry.groupId) || null;
     },
 
-    setGroupId(site, project, groupId) {
+    // `first`: the folder first when the app made the group, which the app never drops from it
+    setGroupId(site, project, groupId, first) {
       const data = read();
       const current = siteOf(data, site).projects[checkProject(project)];
       if (!current) return;
       current.groupId = groupId || null;
+      if (first !== undefined) current.groupFirst = (groupId && first) || null;
       write(data);
+    },
+
+    groupFirst(site, project) {
+      const entry = siteOf(read(), site).projects[checkProject(project)];
+      return (entry && entry.groupFirst) || null;
     },
 
     chat(site, task) {
@@ -249,9 +256,11 @@ async function openTaskOnce({ task, site, client, store, invoke: invokeRaw, stil
   if (!folders.length) {
     return { needFolders: true, task, project, projectName: detail.project_name || project };
   }
-  // several folders are one group; a group kept from before follows the folders, down to one
+  // several folders are one group; a group kept from before follows the folders, down to one. A group the
+  // app refuses (a folder in another project's group, a removed first folder) leaves a note, not a failure.
+  let note;
   if (folders.length > 1 || store.groupId(site, project)) {
-    await groupFolders({ site, project, name: detail.project_name || project, folders, store, invoke });
+    ({ note } = await groupFolders({ site, project, name: detail.project_name || project, folders, store, invoke }));
   }
 
   const newChat = async () => {
@@ -296,26 +305,64 @@ async function openTaskOnce({ task, site, client, store, invoke: invokeRaw, stil
     await invoke({ operation: "agent/prompt", args: [{ sessionId, content: taskBrief(detail, folders) }] });
     store.markBriefed(site, task);
   }
-  return { opened: true, task, project, sessionId, folders, fresh };
+  return { opened: true, task, project, sessionId, folders, fresh, ...(note ? { note } : {}) };
 }
 
-// One desktop project group per TBO Support project, named after it, holding its folders.
+// The app's limit for a group's name (MAX_PROJECT_GROUP_NAME_CHARS in host-core), in characters.
+const GROUP_NAME_MAX = 80;
+const GROUP_PREFIX = "TBO · ";
+
+// "TBO · <project>", cut to what the app accepts (it counts characters, not UTF-16 units).
+function groupName(name) {
+  const full = Array.from(`${GROUP_PREFIX}${String(name == null ? "" : name).replace(/\s+/g, " ").trim()}`);
+  if (full.length <= GROUP_NAME_MAX) return full.join("").trim();
+  return `${full.slice(0, GROUP_NAME_MAX - 1).join("").trimEnd()}…`;
+}
+
+// What the person reads when the app would not group the folders: the task opens anyway, in the first one.
+function groupNote(error, first, removedFirst) {
+  const message = String((error && error.message) || error || "");
+  const only = `This chat sees only ${first}`;
+  const shared = /already belongs to a project group:\s*(.+)$/i.exec(message);
+  if (shared) {
+    return `${only}: ${shared[1].trim()} is also a folder of another project here, and the app keeps a folder in one group only. Keep each folder in one project to see them all together.`;
+  }
+  if (/primary folder cannot be removed/i.test(message)) {
+    const which = removedFirst ? removedFirst : "the folder that was first when the group was made";
+    return `${only}: the app's group for this project cannot drop ${which}, which you removed here. Add it back to see the folders together again.`;
+  }
+  return `${only}: the app could not group this project's folders (${message || "no reason given"}).`;
+}
+
+// One desktop project group per TBO Support project, named after it, holding its folders. Never stops the
+// task from opening: when the app refuses, the answer carries a note and the chat works in the first folder.
+// A settings change meanwhile (STALE) still stops everything.
 async function groupFolders({ site, project, name, folders, store, invoke }) {
-  const groupName = `TBO · ${String(name).slice(0, 100)}`;
+  const label = groupName(name);
   const known = store.groupId(site, project);
+  let refused = null;
   if (known) {
     try {
-      await invoke({ operation: "project/groups/update", args: [{ groupId: known, name: groupName, folders }] });
-      return known;
-    } catch {
-      store.setGroupId(site, project, null); // removed in the app: made again below
+      await invoke({ operation: "project/groups/update", args: [{ groupId: known, name: label, folders }] });
+      return { groupId: known };
+    } catch (e) {
+      if (e && e.code === "STALE") throw e;
+      refused = e; // deleted in the app, or it would drop the group's first folder: a new group, below
     }
   }
-  const created = await invoke({ operation: "project/groups/create", args: [{ name: groupName, folders }] });
-  const groupId =
-    (created && (created.id || created.groupId || (created.group && created.group.id))) || null;
-  store.setGroupId(site, project, groupId);
-  return groupId;
+  try {
+    const created = await invoke({ operation: "project/groups/create", args: [{ name: label, folders }] });
+    const groupId =
+      (created && (created.id || created.groupId || (created.group && created.group.id))) || null;
+    // the old group's id is dropped only now that a new one exists
+    if (groupId) store.setGroupId(site, project, groupId, folders[0]);
+    return { groupId: groupId || known };
+  } catch (e) {
+    if (e && e.code === "STALE") throw e;
+    // the kept group's own refusal is the reason, unless that group is gone from the app
+    const reason = refused && !/project group not found/i.test(String(refused.message || "")) ? refused : e;
+    return { groupId: known, note: groupNote(reason, folders[0], store.groupFirst(site, project)) };
+  }
 }
 
-module.exports = { parseTaskLink, createProjectStore, openTask, taskBrief, groupFolders, isFolder, isMissingSession, MAX_FOLDERS };
+module.exports = { parseTaskLink, createProjectStore, openTask, taskBrief, groupFolders, groupName, isFolder, isMissingSession, MAX_FOLDERS };

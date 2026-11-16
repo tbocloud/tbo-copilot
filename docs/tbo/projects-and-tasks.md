@@ -29,6 +29,11 @@ chat in the app, opening the task makes a new one and gives it the task again.
 
 If the project has no folders here yet, the panel asks you to add them first.
 
+When the app cannot group the folders, the task still opens, in its first folder, and the panel says why. The app keeps
+a folder in one group only, so a folder you added to two projects stays in the group made first; and a group never
+drops the folder that was first when it was made, so after you remove that folder here, add it back to see the folders
+together again. A long project name is cut to the 80 characters a group's name may have.
+
 ## 3. Working and completing
 
 In the task's chat, as with anything Copilot changes, the app asks you first:

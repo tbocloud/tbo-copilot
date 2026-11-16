@@ -283,6 +283,127 @@ test("a group kept from before follows its folders down to one", async (t) => {
   assert.deepEqual(d.calls[0], { operation: "project/groups/update", args: [{ groupId: "g-1", name: "TBO · Alpha ERP", folders: [a] }] });
 });
 
+// --- Phase 23, C2: a folder group the app refuses never stops the task from opening ---
+
+// The app's own rules for groups (crates/host-core/src/db/project_groups.rs): a name of at most 80
+// characters, a folder in one group only, and the folder first when the group was made stays in it.
+function groupingApp(groups = new Map()) {
+  let made = 0;
+  const owner = (folder) => [...groups.entries()].find(([, g]) => g.folders.includes(folder));
+  const checkName = (name) => {
+    if (Array.from(name).length > 80) throw new Error("project group name exceeds 80 characters");
+  };
+  return desktop({
+    "project/groups/create": ({ args: [{ name, folders: wanted }] }) => {
+      checkName(name);
+      for (const f of wanted) if (owner(f)) throw new Error(`folder already belongs to a project group: ${f}`);
+      made += 1;
+      const id = `g-new-${made}`;
+      groups.set(id, { name, folders: wanted.slice() });
+      return { group: { id } };
+    },
+    "project/groups/update": ({ args: [{ groupId, name, folders: wanted }] }) => {
+      if (Array.from(name).length > 80) throw new Error("project group name is invalid");
+      const group = groups.get(groupId);
+      if (!group) throw new Error("project group not found");
+      for (const f of wanted) {
+        const other = owner(f);
+        if (other && other[0] !== groupId) throw new Error(`folder already belongs to a project group: ${f}`);
+      }
+      if (!wanted.includes(group.folders[0])) throw new Error("the primary folder cannot be removed");
+      group.folders = [group.folders[0], ...wanted.filter((f) => f !== group.folders[0])];
+      group.name = name;
+      return { group: { id: groupId } };
+    },
+  });
+}
+
+test("a folder that is already in another project's group: the task opens in the first folder, with a note", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [shared, a, b] = folders(t, 3);
+  store.addFolder(SITE, "PROJ-0001", "Other ERP", shared);
+  store.addFolder(SITE, "PROJ-0001", "Other ERP", b);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", shared);
+  const app = groupingApp(new Map([["g-other", { name: "TBO · Other ERP", folders: [shared, b] }]]));
+  for (const attempt of [1, 2]) {
+    const opened = await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: app.invoke });
+    assert.equal(opened.opened, true, `attempt ${attempt}`);
+    assert.match(opened.note, new RegExp(`only ${a.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    assert.match(opened.note, /another project/);
+  }
+  assert.equal(app.calls.find((c) => c.operation === "session/create").args[0].projectPath, a);
+  assert.equal(store.groupId(SITE, "PROJ-0002"), null);
+});
+
+test("a group whose first folder was removed here: the task still opens, and the note names that folder", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [a, b, c] = folders(t, 3);
+  for (const f of [a, b, c]) store.addFolder(SITE, "PROJ-0002", "Alpha ERP", f);
+  const app = groupingApp();
+  await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: app.invoke });
+  assert.equal(store.groupId(SITE, "PROJ-0002"), "g-new-1");
+  store.removeFolder(SITE, "PROJ-0002", a);
+  for (const attempt of [1, 2]) {
+    const opened = await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: app.invoke });
+    assert.equal(opened.opened, true, `attempt ${attempt}`);
+    assert.ok(opened.note.includes(a), opened.note);
+    // the app still has the old group: its id is kept, so adding the folder back mends it
+    assert.equal(store.groupId(SITE, "PROJ-0002"), "g-new-1");
+  }
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+  const mended = await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: app.invoke });
+  assert.equal(mended.note, undefined);
+});
+
+test("a long project name is cut to the app's 80 characters for the group", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [a, b] = folders(t, 2);
+  const long = `Alpha 😀 ${"Enterprise Resource Planning ".repeat(5)}`.trim();
+  store.addFolder(SITE, "PROJ-0002", long, a);
+  store.addFolder(SITE, "PROJ-0002", long, b);
+  const app = groupingApp();
+  const opened = await openTask({ task: "TASK-2026-00123", site: SITE, client: client({ ...TASK, project_name: long }), store, invoke: app.invoke });
+  assert.equal(opened.note, undefined);
+  const name = app.calls[0].args[0].name;
+  assert.equal(Array.from(name).length, 80);
+  assert.ok(name.startsWith("TBO · Alpha 😀 Enterprise"), name);
+  assert.ok(name.endsWith("…"), name);
+  assert.equal(store.groupId(SITE, "PROJ-0002"), "g-new-1");
+});
+
+test("a group deleted in the app is made again, and its new id kept only once it exists", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [a, b] = folders(t, 2);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", b);
+  store.setGroupId(SITE, "PROJ-0002", "g-deleted");
+  const app = groupingApp();
+  const opened = await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: app.invoke });
+  assert.deepEqual(app.ops().slice(0, 2), ["project/groups/update", "project/groups/create"]);
+  assert.equal(opened.note, undefined);
+  assert.equal(store.groupId(SITE, "PROJ-0002"), "g-new-1");
+});
+
+test("a settings change while the folders are grouped still stops the open", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [a, b] = folders(t, 2);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", b);
+  let current = true;
+  const d = desktop({
+    "project/groups/create": () => {
+      current = false;
+      throw new Error("folder already belongs to a project group: /x");
+    },
+  });
+  await assert.rejects(
+    openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: d.invoke, stillCurrent: () => current }),
+    { code: "STALE" },
+  );
+  assert.deepEqual(d.ops(), ["project/groups/create"]);
+});
+
 // --- CodeRabbit round 2 on PR #27 ---
 
 test("a settings change while the task is read stops the open before anything in the app", async (t) => {
