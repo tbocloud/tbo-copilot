@@ -71,6 +71,17 @@
       details { border-top: 1px solid var(--border); padding-top: 12px; }
       summary { cursor: pointer; color: var(--muted); }
       details[open] summary { margin-bottom: 12px; }
+      /* Projects and tasks (Phase 22) */
+      .request { border: 1px solid var(--accent); border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; }
+      .project { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 10px 12px; display: grid; gap: 8px; }
+      .project h2 { margin: 0; font-size: 14px; font-weight: 600; }
+      .meta { color: var(--muted); margin: 0; font-size: 12px; }
+      .list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+      .item { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+      .item > span { min-width: 0; overflow-wrap: anywhere; }
+      .item button { padding: 4px 10px; min-height: 30px; flex: none; }
+      .late { color: var(--bad); }
+      .missing { color: var(--bad); }
     </style>
   </head>
   <body>
@@ -99,6 +110,20 @@
     <section id="signed-in" hidden>
       <p class="help" id="ai"></p>
       <div class="row"><button id="signout" type="button">Sign out</button></div>
+      <!-- projects and tasks: each project's folders on this computer, a task's chat (Phase 22) -->
+      <div class="request" id="task-request" hidden>
+        <span id="task-request-text"></span>
+        <div class="row">
+          <button class="primary" id="task-request-open" type="button">Open the task</button>
+          <button id="task-request-dismiss" type="button">Not now</button>
+        </div>
+      </div>
+      <details id="projects-box">
+        <summary>Projects and tasks</summary>
+        <p class="help">Each TBO Support project keeps its folders on this computer. Open a task to work on it in a chat with those folders; complete it there with your hours.</p>
+        <p class="help" id="projects-note" role="status"></p>
+        <div id="projects" class="list"></div>
+      </details>
       <!-- a report for the TBO Copilot team (TBO Copilot Phase 21) -->
       <details id="report-box">
         <summary>Report a problem with TBO Copilot</summary>
@@ -169,6 +194,14 @@
         $("key-box").hidden = !!state.signedIn || waiting || !state.local;
         if (waiting) $("code").textContent = state.pending.code;
         if (state.signedIn) $("ai").textContent = aiText(state);
+        if (state.askProjects) {
+          if (state.signedIn) {
+            $("projects-box").open = true;
+            loadProjects();
+          } else {
+            startError = startError || "Sign in first, then open the task.";
+          }
+        }
         if (state.askReport) {
           if (state.signedIn) {
             $("report-box").open = true;
@@ -250,6 +283,104 @@
       });
 
       $("report-open").addEventListener("click", () => call("tbo-support.open-report"));
+
+      // --- projects and tasks (Phase 22): built with textContent only, never HTML ---
+      const el = (tag, cls, text) => {
+        const node = document.createElement(tag);
+        if (cls) node.className = cls;
+        if (text != null) node.textContent = text;
+        return node;
+      };
+      const button = (label, onClick, primary) => {
+        const b = el("button", primary ? "primary" : "", label);
+        b.type = "button";
+        b.addEventListener("click", async () => {
+          b.disabled = true;
+          try {
+            await onClick();
+          } finally {
+            b.disabled = false;
+          }
+        });
+        return b;
+      };
+      const note = (text) => ($("projects-note").textContent = text || "");
+
+      async function openTask(task) {
+        note(`Opening ${task}…`);
+        const res = await call("tbo-support.open-task", { task });
+        if (!res.ok) return note(res.error || "The task could not be opened.");
+        if (res.needFolders) {
+          await loadProjects();
+          return note(`Add the folders of ${res.projectName} on this computer first, then open ${task} again.`);
+        }
+        note(`${task} is open in its chat${res.fresh ? ", with the task given to Copilot" : ""}.`);
+        await loadProjects();
+      }
+
+      function projectCard(p) {
+        const card = el("div", "project");
+        card.append(el("h2", "", p.name));
+        const who = [p.customer, p.role].filter(Boolean).join(" · ");
+        if (who) card.append(el("p", "meta", who));
+        const folders = el("ul", "list");
+        p.folders.forEach((f, i) => {
+          const row = el("li", "item");
+          row.append(el("span", f.here ? "" : "missing", `${i === 0 ? "★ " : ""}${f.path}${f.here ? "" : " (not found here)"}`));
+          const actions = el("span", "row");
+          if (i > 0) actions.append(button("First", async () => { await call("tbo-support.first-folder", { project: p.project, folder: f.path }); loadProjects(); }));
+          actions.append(button("Remove", async () => { await call("tbo-support.remove-folder", { project: p.project, folder: f.path }); loadProjects(); }));
+          row.append(actions);
+          folders.append(row);
+        });
+        card.append(el("p", "meta", p.folders.length ? "Folders (★ is the chat's own):" : "No folders on this computer yet."));
+        card.append(folders);
+        const add = el("div", "row");
+        add.append(
+          button("Add folder…", async () => {
+            const res = await call("tbo-support.add-folder", { project: p.project, name: p.name });
+            if (!res.ok) note(res.error || "The folder could not be added.");
+            await loadProjects();
+          }),
+        );
+        card.append(add);
+        const tasks = el("ul", "list");
+        for (const t of p.tasks) {
+          const row = el("li", "item");
+          const when = t.deadline ? ` · due ${t.deadline}` : "";
+          row.append(el("span", t.overdue ? "late" : "", `${t.task} ${t.subject} · ${t.status}${when}`));
+          row.append(button(t.chat ? "Continue" : "Open", () => openTask(t.task), !t.chat));
+          tasks.append(row);
+        }
+        if (p.tasks.length) card.append(el("p", "meta", "Your open tasks:"), tasks);
+        return card;
+      }
+
+      async function loadProjects() {
+        const res = await call("tbo-support.projects");
+        const list = $("projects");
+        list.replaceChildren();
+        if (!res.ok) return note(res.error || "Your projects could not be read.");
+        const request = res.request;
+        $("task-request").hidden = !request;
+        if (request) $("task-request-text").textContent = `Open task ${request.task} from ${request.site} in TBO Copilot?`;
+        if (!res.projects.length) return note("You have no open projects in TBO Support.");
+        for (const p of res.projects) list.append(projectCard(p));
+      }
+
+      $("projects-box").addEventListener("toggle", () => {
+        if ($("projects-box").open) loadProjects();
+      });
+      $("task-request-open").addEventListener("click", async () => {
+        const text = $("task-request-text").textContent;
+        const task = (text.match(/TASK-\d{4}-\d{5}/) || [])[0];
+        $("task-request").hidden = true;
+        if (task) await openTask(task);
+      });
+      $("task-request-dismiss").addEventListener("click", async () => {
+        await call("tbo-support.dismiss-request");
+        $("task-request").hidden = true;
+      });
 
       $("signout").addEventListener("click", async () => {
         const res = await call("tbo-support.sign-out");

@@ -22,6 +22,11 @@ Design: [`docs/tbo/tbo-support-plugin.md`](../../../docs/tbo/tbo-support-plugin.
    - "What's the status of acme.tbo365.cloud?" or "Take a backup of demo.tbo365.cloud."
    - "How are our AWS servers?" (after the AWS set-up in `docs/tbo/aws.md`)
 
+4. **Work on your tasks** (Phase 22). **TBO Support: Projects and tasks** lists your projects with their open tasks.
+   Add each project's folders on this computer once, then **Open** a task, or press **Open in TBO Copilot** on the
+   task in TBO Support. The task opens in its own chat in those folders; complete it there with your hours, and ask
+   to take it live. Guide: [`docs/tbo/projects-and-tasks.md`](../../../docs/tbo/projects-and-tasks.md).
+
 Other commands: **TBO Support: Check connection**, **TBO Support: Sign out**.
 
 You see only what your TBO Support account may see. Every call runs as you. The sign-in lasts 30 days; TBO Support

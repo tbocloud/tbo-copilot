@@ -688,3 +688,44 @@ test("unknown panel channels are refused", async () => {
   await plugin.onUnload();
   assert.equal(eventHandlers.has("plugin:settingsChanged"), false);
 });
+
+// --- Phase 22: a tbo-copilot:// task link only ever asks first ---
+
+test("a task link for the signed-in site opens the panel's Projects view and waits for the person", async () => {
+  await plugin.onLoad();
+  settings.siteUrl = SITE;
+  const panels = [];
+  const openPanel = pi.ui.openPanel;
+  pi.ui.openPanel = async (p) => panels.push(p);
+  try {
+    assert.ok(eventHandlers.has("app:openUrl"), "the plugin listens for task links");
+    await eventHandlers.get("app:openUrl")({ url: `tbo-copilot://task/TASK-2026-00123?site=${encodeURIComponent(SITE)}` });
+    assert.equal(panels.length, 1);
+    const state = await plugin.onPanelInvoke("tbo-support.state");
+    assert.equal(state.askProjects, true);
+    // nothing opened by itself: the person presses Open (or dismisses it)
+    assert.deepEqual(await plugin.onPanelInvoke("tbo-support.dismiss-request"), { ok: true });
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, false);
+  } finally {
+    pi.ui.openPanel = openPanel;
+  }
+});
+
+test("a task link for another site, or anything else, opens nothing", async () => {
+  await plugin.onLoad();
+  settings.siteUrl = SITE;
+  const panels = [];
+  const openPanel = pi.ui.openPanel;
+  pi.ui.openPanel = async (p) => panels.push(p);
+  try {
+    toasts.length = 0;
+    await plugin.onOpenUrl({ url: "tbo-copilot://task/TASK-2026-00123?site=https%3A%2F%2Fevil.example.com" });
+    assert.match(toasts.at(-1), /That task link is for https:\/\/evil\.example\.com/);
+    await plugin.onOpenUrl({ url: "tbo-copilot://ticket/0042" });
+    await plugin.onOpenUrl({ url: "javascript:alert(1)" });
+    assert.deepEqual(panels, []);
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, false);
+  } finally {
+    pi.ui.openPanel = openPanel;
+  }
+});

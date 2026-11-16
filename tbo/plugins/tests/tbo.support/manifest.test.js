@@ -15,7 +15,7 @@ test("the manifest's three tools match the code's tools exactly", () => {
 });
 
 test("every skill exists with a name and a short description", () => {
-  assert.equal(manifest.contributes.skills.length, 4);
+  assert.equal(manifest.contributes.skills.length, 5); // four AWS skills and the task skill (Phase 22)
   for (const file of manifest.contributes.skills) {
     const text = fs.readFileSync(path.join(__dirname, "../../tbo.support", file), "utf8");
     const front = /^---\nname: (.+)\ndescription: (.+)\n---\n/.exec(text);
@@ -37,8 +37,10 @@ test("AWS changes are off by default and no setting holds a key", () => {
 
 test("the plugin asks only for the permissions it uses", () => {
   assert.deepEqual([...manifest.permissions].sort(), [
-    "agent.prompt.inject", // the four AWS skills
+    "agent.prompt.inject", // the AWS skills and the task skill
     "agent.tool.register",
+    "desktop.control", // a task's chat and its project's folder group (Phase 22)
+    "fs.read", // the folder picker for a project's folders (Phase 22)
     "net.fetch",
     "provider.register",
     "shell.openExternal",
