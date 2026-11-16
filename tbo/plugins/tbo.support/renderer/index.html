@@ -49,11 +49,12 @@
       section { display: grid; gap: 12px; margin-bottom: 16px; }
       form { display: grid; gap: 12px; }
       label { display: grid; gap: 4px; font-weight: 500; }
-      input {
+      input, textarea {
         font: inherit; color: var(--fg); background: var(--surface);
         border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
       }
-      input:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      textarea { resize: vertical; min-height: 96px; }
+      input:focus-visible, textarea:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
       .help { color: var(--muted); margin: 0; }
       .row { display: flex; gap: 8px; flex-wrap: wrap; }
       button {
@@ -98,6 +99,17 @@
     <section id="signed-in" hidden>
       <p class="help" id="ai"></p>
       <div class="row"><button id="signout" type="button">Sign out</button></div>
+      <!-- a report for the TBO Copilot team (TBO Copilot Phase 21) -->
+      <details id="report-box">
+        <summary>Report a problem with TBO Copilot</summary>
+        <form id="report-form" autocomplete="off">
+          <p class="help">What you asked, what you expected and what happened, with the ticket or task number if there was one. It becomes a task for the TBO Copilot team, with your last Copilot actions by number only. Never paste passwords, keys or a customer's personal data.</p>
+          <label for="report-text">What went wrong <textarea id="report-text" maxlength="4000" required></textarea></label>
+          <div class="row"><button class="primary" id="report-send" type="submit">Send report</button></div>
+          <p class="help" id="report-done" role="status" hidden></p>
+          <div class="row" id="report-open-row" hidden><button id="report-open" type="button">Open the task</button></div>
+        </form>
+      </details>
     </section>
 
     <p class="error" id="error" aria-live="polite"></p>
@@ -157,6 +169,14 @@
         $("key-box").hidden = !!state.signedIn || waiting || !state.local;
         if (waiting) $("code").textContent = state.pending.code;
         if (state.signedIn) $("ai").textContent = aiText(state);
+        if (state.askReport) {
+          if (state.signedIn) {
+            $("report-box").open = true;
+            $("report-text").focus();
+          } else {
+            startError = startError || "Sign in first, then report the problem.";
+          }
+        }
         $("error").textContent = startError || (state.pending && state.pending.error) || state.error || "";
         const polling = waiting || configuring;
         if (polling && !poller) poller = setInterval(refresh, 2000);
@@ -210,11 +230,35 @@
         }
       });
 
+      $("report-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        $("error").textContent = "";
+        const sent = $("report-text").value;
+        $("report-send").disabled = true;
+        $("report-text").readOnly = true;
+        const res = await call("tbo-support.report", { text: sent });
+        $("report-send").disabled = false;
+        $("report-text").readOnly = false;
+        if (res.ok) {
+          if ($("report-text").value === sent) $("report-text").value = "";
+          $("report-done").textContent = `Thank you: ${res.task} is with the TBO Copilot team.`;
+          $("report-done").hidden = false;
+          $("report-open-row").hidden = !res.link;
+        } else {
+          $("error").textContent = res.error || "The report could not be sent.";
+        }
+      });
+
+      $("report-open").addEventListener("click", () => call("tbo-support.open-report"));
+
       $("signout").addEventListener("click", async () => {
         const res = await call("tbo-support.sign-out");
         if (res.ok) show(res);
         else $("error").textContent = res.error || "Sign-out failed.";
       });
+
+      // "TBO Support: Report a problem" focuses a panel that is already open: read its request then
+      window.addEventListener("focus", () => refresh());
 
       refresh();
     </script>

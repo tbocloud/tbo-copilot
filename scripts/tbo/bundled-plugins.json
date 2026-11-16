@@ -1,4 +1,8 @@
 {
   "source": "tbo/plugins",
-  "plugins": ["tbo.theme", "tbo.support"]
+  "plugins": [
+    "tbo.theme",
+    "tbo.support",
+    "tbo.frappe-dev"
+  ]
 }

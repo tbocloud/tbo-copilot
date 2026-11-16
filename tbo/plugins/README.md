@@ -10,6 +10,7 @@ repository.
 |---|---|
 | [`tbo.theme`](tbo.theme/) | TBO colours: the brand orange as the accent, everything else neutral |
 | [`tbo.support`](tbo.support/) | Signs the app in with Microsoft through TBO Support and gives it TBO AI; lets the agent read TBO Support: tickets, conversation, triage, fix brief, session replay, duplicates, knowledge base. Read-only. [Design](../../docs/tbo/tbo-support-plugin.md) |
+| [`tbo.frappe-dev`](tbo.frappe-dev/) | Frappe and ERPNext work from a TBO Support task: the task's branch, TBO's conventions, module tests, the linters CI runs, and a PR that moves the task to Pending Review. [Design](../../docs/tbo/frappe-dev.md) |
 
 ## Working on a plugin
 

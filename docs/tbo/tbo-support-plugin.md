@@ -82,13 +82,13 @@ Later (§13):
 | `lib/desktop.js` | The Microsoft sign-in through TBO Support: start (a code and the Allow page), wait for Allow, renew, sign out |
 | `lib/shape.js` | HTML to plain text, size caps, and the untrusted-content wrapper |
 | `lib/credentials.js` | Saves, loads and removes the sign-in session (or an API key) in the operating system's credential store |
-| `renderer/index.html` | The sign-in panel: **Sign in with Microsoft**, the code while it waits, who is signed in and whether TBO AI is ready; an API key form for a local test site |
+| `renderer/index.html` | The sign-in panel: **Sign in with Microsoft**, the code while it waits, who is signed in and whether TBO AI is ready; **Report a problem with TBO Copilot** while signed in; an API key form for a local test site |
 
 The plugin has **no npm dependencies**: plain CommonJS and Node built-ins only. So there is nothing to bundle, and the `pi-plugin pack` output is the source as written.
 
 ## 5. The tool and its actions (v1)
 
-The plugin registers **`tbo_support`, one tool with an `action` field, for every read**. The host shows it to the model under a plugin-namespaced name. Since Phase 21 the two Press actions that do something are in a second tool, **`tbo_support_change`** (§5a), and the AWS tool is a third (`tbo_aws`, [aws.md](aws.md)).
+The plugin registers **`tbo_support`, one tool with an `action` field, for every read**. The host shows it to the model under a plugin-namespaced name. Since Phase 21 the actions that change something (a Press backup or request, starting a task's timer) are in a second tool, **`tbo_support_change`** (§5a), and the AWS tool is a third (`tbo_aws`, [aws.md](aws.md)).
 
 **Why one tool with actions:**
 1. **Plan mode.** Plugin tools are hidden in Plan and Goal mode unless the tool lists `planSafeActions`, which needs an `action` enum (ADR 0211). Investigations run in Plan mode, so every read-only action is listed as plan-safe.
@@ -113,7 +113,7 @@ The plugin registers **`tbo_support`, one tool with an `action` field, for every
 
 TBO Support holds the Press key and the rules (its `press_tools.ACTIONS` table); the plugin only asks.
 
-The reads are actions of `tbo_support`. The backup and the requests are the actions of **`tbo_support_change`**, which is declared `risk: "high"`, so the app asks the person before every call. It has no plan-safe actions, so Plan and Goal modes never offer it. Each tool refuses the other's actions and names the right tool (Phase 21; finding F3 of the security review, `docs/tbo/security.md`).
+The reads are actions of `tbo_support`. The backup, the requests and `start_task` (§5b) are the actions of **`tbo_support_change`**, which is declared `risk: "high"`, so the app asks the person before every call. It has no plan-safe actions, so Plan and Goal modes never offer it. Each tool refuses the other's actions and names the right tool (Phase 21; finding F3 of the security review, `docs/tbo/security.md`).
 
 | Action | Returns or does | Helpdesk API | Inputs | Plan-safe |
 |---|---|---|---|---|
@@ -124,6 +124,33 @@ The reads are actions of `tbo_support`. The backup and the requests are the acti
 | `press_action` (`tbo_support_change`) | Asks for `restart_bench`, `update_site`, `migrate_site`, `change_plan` (with `plan`), `deploy`, `restore` or `new_site`: an approver gets a card in Teams; TBO Support runs it after Approve and tells the person | `POST helpdesk.api.copilot_press.request_action` | `press_action`, `target`, `plan` | no |
 
 Deletes (archive a site, drop a bench, archive a server, and the like) are not offered and TBO Support refuses them.
+
+### 5b. Task actions (0.4.0)
+
+For work on a TBO Support task in the desktop app with the `tbo.frappe-dev` plugin (Phase 20,
+[frappe-dev.md](frappe-dev.md)). They use the hub's task API for agents, the one the mobile app uses.
+
+| Action | Returns or does | Helpdesk API | Inputs | Plan-safe |
+|---|---|---|---|---|
+| `my_tasks` | The signed-in person's open tasks, overdue first: number, subject (untrusted), status, group, project, customer, deadline, priority, timer | `helpdesk.api.mobile.get_tasks` | `group`, `limit` | yes |
+| `get_task` | One task with its description and last ten activity items (untrusted), its pull requests, and `branch_subject`: the subject with only letters, digits, spaces and `._-`, for `tbo_dev` `start_work` | `helpdesk.api.mobile.get_task` | `task` | yes |
+| `start_task` (`tbo_support_change`) | Starts the person's own timer on the task (Open becomes Working), once they allow the call: a write on their own work is theirs to allow | `POST helpdesk.api.mobile.start_task` | `task` | no |
+
+### 5c. Report a problem (0.4.0)
+
+For the pilot (Phase 21): a report for the TBO Copilot team becomes a task in their project, with the person's last
+Copilot actions by number only (TBO Support adds them). The user guide is `docs/tbo/report-a-problem.md`.
+
+- **The command** **TBO Support: Report a problem** opens the panel on its report form. The person writes what went
+  wrong and presses **Send report**: that is their yes, so it goes straight to TBO Support. The panel then shows the
+  task's number and **Open the task**, which opens the task's page only when it is on the signed-in site (the plugin
+  keeps the link; the panel never sends one).
+- **The action** `report_problem` (`tbo_support_change`, so the app asks the person first) does the same when the
+  person asks Copilot to report a problem in a chat.
+
+| Action | Does | Helpdesk API | Inputs | Plan-safe |
+|---|---|---|---|---|
+| `report_problem` (`tbo_support_change`) | Files the person's words as a task for the TBO Copilot team; answers with its number and link | `POST helpdesk.api.copilot_feedback.report_problem` (`where`: Desktop) | `text`, up to 4,000 characters | no |
 
 **Input rules:**
 - `ticket` accepts `1`, `#1`, `0001` or `HD-0001`. HD Ticket names are zero-padded to four digits (autoname `.####`: `0001`, `0042`, `12345`), so the number is padded the same way. If that name is not found, the plain number is tried once, for a site that names tickets without padding.
@@ -337,6 +364,9 @@ docs/tbo/tbo-support-plugin.md     # this document
 | `helpdesk.api.customization.get_estimate` | Read permission |
 | `helpdesk.api.article.search` | Signed in |
 | `helpdesk.api.knowledge_base.get_article` | Non-agents see published articles only |
+| `helpdesk.api.mobile.get_tasks`, `get_task` | `@agent_only`; `get_task` checks the task's read permission |
+| `helpdesk.api.mobile.start_task` | `@agent_only` + the task's write permission |
+| `helpdesk.api.copilot_feedback.report_problem` (POST) | `@agent_only`; the task is created by TBO AI in the feedback project, at most 10 reports an hour per person |
 
 
 ## 15. Build plan

@@ -1,0 +1,208 @@
+{
+  "schemaVersion": 1,
+  "id": "tbo.frappe-dev",
+  "name": "TBO Frappe Dev",
+  "version": "0.1.0",
+  "description": "Builds Frappe and ERPNext features from a TBO Support task the way TBO does: a branch named after the task, TBO's Frappe conventions, module tests on your bench, the linters your CI runs, and a pull request that moves the task to Pending Review. Uses your own git, GitHub CLI login and bench; never pushes to shared branches or force-pushes.",
+  "author": "Team Back Office",
+  "main": "main.js",
+  "contributes": {
+    "agentTools": [
+      {
+        "name": "tbo_dev",
+        "description": "Build a Frappe/ERPNext change from a TBO Support task, in the repository open in the workspace (or `repo`, a folder inside it). Choose an action:\n- status: the repository, its branch and task, what is installed (git, gh and its login, uv, the bench and test site).\n- start_work: create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from the remote's default branch or `base` (the remote: origin, else upstream as bench get-app names it). Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.\n- check: run the linters the repository's CI runs (pre-commit on changed files, Semgrep with Frappe's rules, commit titles) on the committed branch. Runs in the background: answers with a job.\n- run_tests: run the test modules the branch touched (or `modules`) on the local bench's test site, one by one; never the whole suite. Runs in the background.\n- job_status: the outcome of a check or run_tests job (`job`, or the latest of `kind`).\nCommit with conventional titles (feat: …, fix(scope): …). Then open the PR with tbo_dev_pr.",
+        "risk": "medium",
+        "planSafeActions": [
+          "status",
+          "job_status"
+        ],
+        "schema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "status",
+                "start_work",
+                "check",
+                "run_tests",
+                "job_status"
+              ],
+              "description": "What to do."
+            },
+            "repo": {
+              "type": "string",
+              "description": "The repository folder, relative to the workspace, when the workspace is not the repository itself (e.g. apps/my_app)."
+            },
+            "task": {
+              "type": "string",
+              "description": "start_work: the TBO Support task, e.g. TASK-2026-00021."
+            },
+            "subject": {
+              "type": "string",
+              "description": "start_work: the task's subject; it becomes the branch's short name."
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "feature",
+                "fix"
+              ],
+              "description": "start_work: fix for a bug fix, else feature."
+            },
+            "base": {
+              "type": "string",
+              "description": "start_work: the branch to start from, when the repository's AGENTS.md names one; default the remote's default branch."
+            },
+            "modules": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "run_tests: test modules such as my_app.tests.test_invoices; default the ones the branch touched."
+            },
+            "job": {
+              "type": "string",
+              "description": "job_status: the job id check or run_tests answered."
+            },
+            "job_kind": {
+              "type": "string",
+              "enum": [
+                "check",
+                "run_tests"
+              ],
+              "description": "job_status: the latest job of this kind, when no job id is given."
+            },
+            "skip_hooks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "check: pre-commit hooks to leave out, only when the check said their tools cannot be installed and the change has no file they check. Recorded in the PR."
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "tbo_dev_pr",
+        "description": "Open the pull request for the task's branch: pushes the branch with the developer's own GitHub login, opens the PR with the repository's template (TBO's when it has none), the title TASK-…: summary and 'Closes TASK-…', then marks it ready for review so TBO Support moves the task to Pending Review. Needs a passing tbo_dev check on the current commit and a clean working tree, and the tbo_dev run_tests result for the commit or no_tests_reason. Never pushes to main, master, develop, tbo or the default branch, and never force-pushes.",
+        "risk": "high",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "open_pr"
+              ],
+              "description": "What to do."
+            },
+            "repo": {
+              "type": "string",
+              "description": "The repository folder, relative to the workspace, when the workspace is not the repository itself."
+            },
+            "summary": {
+              "type": "string",
+              "description": "One line: what the PR does (it follows 'TASK-…: ' in the title)."
+            },
+            "what_and_why": {
+              "type": "string",
+              "description": "What changes and the problem it solves (markdown)."
+            },
+            "how_to_test": {
+              "type": "string",
+              "description": "Steps a reviewer can follow (markdown)."
+            },
+            "link": {
+              "type": "string",
+              "enum": [
+                "Closes",
+                "Refs"
+              ],
+              "description": "Closes (merging completes the task; default) or Refs (the PR is part of the task)."
+            },
+            "no_tests_reason": {
+              "type": "string",
+              "description": "Why no tests were run on this commit, when none were."
+            },
+            "reviewers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "GitHub logins to ask for a review; default the plugin setting."
+            },
+            "draft": {
+              "type": "boolean",
+              "description": "true: leave it a draft (the task stays Working until it is marked ready)."
+            }
+          },
+          "required": [
+            "action",
+            "summary",
+            "what_and_why",
+            "how_to_test"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "skills": [
+      "skills/start-task.md",
+      "skills/open-pr.md",
+      "skills/frappe-conventions.md",
+      "skills/frappe-new-app.md"
+    ],
+    "settings": [
+      {
+        "key": "benchPath",
+        "title": "Frappe bench folder",
+        "description": "The bench whose test site runs the tests, e.g. /Users/you/frappe-bench. Empty: the bench that holds the repository as apps/<app>.",
+        "type": "string",
+        "default": ""
+      },
+      {
+        "key": "testSite",
+        "title": "Test site",
+        "description": "A local site with the app installed and allow_tests on, e.g. dev.localhost. Empty: the bench's current site. Never a live site.",
+        "type": "string",
+        "default": ""
+      },
+      {
+        "key": "reviewers",
+        "title": "Reviewers",
+        "description": "GitHub logins asked to review every pull request you open, separated by commas. Empty: nobody is asked (the PR is still marked ready for review).",
+        "type": "string",
+        "default": ""
+      },
+      {
+        "key": "benchCommand",
+        "title": "bench command",
+        "description": "The bench CLI, if it is not on your PATH as bench.",
+        "type": "string",
+        "default": "bench"
+      },
+      {
+        "key": "uvPath",
+        "title": "uv location",
+        "description": "Where uv is, if the app does not find it (the linters run through uv).",
+        "type": "string",
+        "default": ""
+      }
+    ]
+  },
+  "permissions": [
+    "agent.prompt.inject",
+    "agent.tool.register"
+  ],
+  "engines": {
+    "piDesktop": ">=0.16.0"
+  },
+  "activationEvents": [
+    "onStartup"
+  ]
+}
