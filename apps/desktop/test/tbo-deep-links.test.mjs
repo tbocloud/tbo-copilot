@@ -290,3 +290,22 @@ test("entry listens for links before ready, only in the instance that holds the 
   assert.match(main, /registerProtocolClient: shouldRegisterProtocolClient\(\{ isDevelopmentBuild, singleInstanceRequired \}\)/);
   assert.match(main, /flushPendingApplicationMenuCommands\(\);\s*deepLinks\.flush\(\);/);
 });
+
+test("a link held since before the runtime keeps the time it arrived", () => {
+  const state = { clock: 10 * DEEP_LINK_PENDING_TTL_MS, delivered: [] };
+  const router = createDeepLinkRouter({
+    deliver: (url) => {
+      state.delivered.push(url);
+      return true;
+    },
+    restoreMainWindow() {},
+    isApplicationBooted: () => true,
+    isQuitting: () => false,
+    now: () => state.clock,
+  });
+  // arrived longer ago than a held link may wait (a slow start): dropped, never replayed
+  router.receive("tbo-copilot://task/TASK-2026-00400", state.clock - DEEP_LINK_PENDING_TTL_MS - 1);
+  // arrived a moment ago: delivered
+  router.receive("tbo-copilot://task/TASK-2026-00401", state.clock - 1000);
+  assert.deepEqual(state.delivered, ["tbo-copilot://task/TASK-2026-00401"]);
+});

@@ -484,3 +484,31 @@ test("my tasks can be one project's, and my projects say how many open tasks eac
   assert.equal(projects.projects[0].open_tasks, 4);
   assert.match(projects.projects[0].name, /untrusted/);
 });
+
+test("one project's tasks are read across every page of My Work, then limited", async () => {
+  const pages = [
+    { data: [{ name: "TASK-2026-00001", project: "P1" }, { name: "TASK-2026-00002", project: "P2" }], has_more: true, next_cursor: 2 },
+    { data: [{ name: "TASK-2026-00003", project: "P2" }, { name: "TASK-2026-00004", project: "P2" }], has_more: false, next_cursor: null },
+  ];
+  const cursors = [];
+  const client = {
+    async method(path, params) {
+      cursors.push(params.cursor);
+      return pages[params.cursor ? 1 : 0];
+    },
+  };
+  const two = await runAction(client, { action: "my_tasks", project: "P2", limit: 2 }, ENV);
+  assert.deepEqual(two.tasks.map((t) => t.task), ["TASK-2026-00002", "TASK-2026-00003"]);
+  assert.equal(two.more, true);
+  assert.deepEqual(cursors, [undefined, 2]);
+  const all = await runAction(client, { action: "my_tasks", project: "P2" }, ENV);
+  assert.equal(all.count, 3);
+  assert.equal(all.more, false);
+});
+
+test("a go-live note is at most what TBO Support keeps", async () => {
+  const client = { async post(path, params) { return { task: params.task, asked: true, note: params.note }; } };
+  await runAction(client, { action: "ask_go_live", task: "TASK-2026-00021", when: "tonight", notes: "x".repeat(500) }, ENV, CHANGE_TOOL);
+  await assert.rejects(runAction(client, { action: "ask_go_live", task: "TASK-2026-00021", when: "tonight", notes: "x".repeat(501) }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT" });
+  assert.match(CHANGE_TOOL.schema.properties.notes.description, /ask_go_live: .*500/);
+});

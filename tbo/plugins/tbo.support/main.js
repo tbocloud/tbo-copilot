@@ -19,7 +19,7 @@
 
 const os = require("node:os");
 const { createClient, normalizeSite, isLoopback } = require("./lib/helpdesk");
-const { TOOL, CHANGE_TOOL, runAction } = require("./lib/actions");
+const { TOOL, CHANGE_TOOL, runAction, allTasks } = require("./lib/actions");
 const { createStore } = require("./lib/credentials");
 const desktop = require("./lib/desktop");
 const { AWS_TOOL, createAws } = require("./lib/aws");
@@ -503,11 +503,10 @@ const plainText = (value, max) =>
 // folders kept for each here. The panel shows text only (never HTML).
 async function projectsView() {
   return withClient(async (client, site) => {
-    const [projectPage, taskPage] = await Promise.all([
+    const [projectPage, tasks] = await Promise.all([
       client.method("helpdesk.api.mobile.get_projects", { status: "Open", limit: 50 }),
-      client.method("helpdesk.api.mobile.get_tasks", { limit: 50 }),
+      allTasks(client), // every page of My Work
     ]);
-    const tasks = Array.isArray(taskPage && taskPage.data) ? taskPage.data : [];
     const kept = projectStore.projects(site);
     const rows = (Array.isArray(projectPage && projectPage.data) ? projectPage.data : []).map((p) => ({
       project: p.name,
@@ -556,19 +555,33 @@ async function projectsView() {
   });
 }
 
+// the panel's own site must still be the current one: a settings change meanwhile acts on nothing
+async function checkPanelSite(payload) {
+  const site = await currentSite();
+  if (payload && payload.site && !sameOrigin(payload.site, site)) {
+    throw fail("STALE", `The TBO Support site changed to ${site}. Look at the list again, then try once more.`);
+  }
+  return site;
+}
+
 async function addFolder(payload) {
   const project = payload && payload.project;
+  const site = await checkPanelSite(payload); // the site of the project, before the picker opens
   const picked = await pi.fs.requestDirectory();
   if (!picked || !picked.path) return { cancelled: true };
-  const site = await currentSite();
+  if (!sameOrigin(await currentSite(), site)) {
+    throw fail("STALE", "The TBO Support site changed while you chose the folder; nothing was kept. Choose it again.");
+  }
   return { folders: projectStore.addFolder(site, project, payload && payload.name, picked.path) };
 }
 
 async function openTaskFromPanel(payload) {
   const task = payload && payload.task;
-  const result = await withClient((client, site) =>
-    projects.openTask({ task, site, client, store: projectStore, invoke: (input) => pi.desktop.invoke(input) }),
-  );
+  const site = await checkPanelSite(payload); // the site the person saw when they pressed Open
+  const result = await withClient((client, current) => {
+    if (!sameOrigin(current, site)) throw fail("STALE", "The TBO Support site changed; nothing was opened.");
+    return projects.openTask({ task, site, client, store: projectStore, invoke: (input) => pi.desktop.invoke(input) });
+  });
   if (result.opened && openRequest && openRequest.task === result.task) openRequest = null;
   return result;
 }
@@ -621,11 +634,11 @@ async function onPanelInvoke(channel, payload) {
     if (channel === "tbo-support.projects") return { ok: true, ...(await projectsView()) };
     if (channel === "tbo-support.add-folder") return { ok: true, ...(await addFolder(payload)) };
     if (channel === "tbo-support.remove-folder") {
-      const site = await currentSite();
+      const site = await checkPanelSite(payload);
       return { ok: true, folders: projectStore.removeFolder(site, payload && payload.project, payload && payload.folder) };
     }
     if (channel === "tbo-support.first-folder") {
-      const site = await currentSite();
+      const site = await checkPanelSite(payload);
       return { ok: true, folders: projectStore.makeFirst(site, payload && payload.project, payload && payload.folder) };
     }
     if (channel === "tbo-support.open-task") return { ok: true, ...(await openTaskFromPanel(payload)) };
@@ -697,6 +710,7 @@ async function check() {
 // The site may have changed: work still running for the old one drops its
 // answer (it cannot put that site's key back), then the new site is synced.
 function onSettingsChanged() {
+  openRequest = null; // a task link asked for under the old settings opens nothing now
   lastReport = null; // a report's link belongs to the site it was sent to
   epoch += 1;
   if (pending) pending.cancelled = true;

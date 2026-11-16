@@ -729,3 +729,42 @@ test("a task link for another site, or anything else, opens nothing", async () =
     pi.ui.openPanel = openPanel;
   }
 });
+
+test("a task opened, or a folder kept, for one site never acts on another", async () => {
+  await plugin.onLoad();
+  settings.siteUrl = SITE;
+  const opened = await plugin.onPanelInvoke("tbo-support.open-task", { task: "TASK-2026-00123", site: "https://demo-tbo.tbocloud.in" });
+  assert.equal(opened.ok, false);
+  assert.equal(opened.code, "STALE");
+  // the site changes while the folder picker is open: nothing is kept
+  const fsBefore = pi.fs;
+  pi.fs = {
+    requestDirectory: async () => {
+      settings.siteUrl = "https://demo-tbo.tbocloud.in";
+      return { path: "/tmp", name: "tmp" };
+    },
+  };
+  try {
+    const added = await plugin.onPanelInvoke("tbo-support.add-folder", { project: "PROJ-0002", name: "Alpha", site: SITE });
+    assert.equal(added.ok, false);
+    assert.equal(added.code, "STALE");
+  } finally {
+    pi.fs = fsBefore;
+    settings.siteUrl = SITE;
+  }
+});
+
+test("a settings change forgets a task link still waiting for Open", async () => {
+  await plugin.onLoad();
+  settings.siteUrl = SITE;
+  const openPanel = pi.ui.openPanel;
+  pi.ui.openPanel = async () => {};
+  try {
+    await plugin.onOpenUrl({ url: `tbo-copilot://task/TASK-2026-00123?site=${encodeURIComponent(SITE)}` });
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, true);
+    await settingsChanged();
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, false);
+  } finally {
+    pi.ui.openPanel = openPanel;
+  }
+});

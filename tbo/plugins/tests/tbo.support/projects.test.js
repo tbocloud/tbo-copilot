@@ -165,3 +165,80 @@ test("the task's brief names every folder and keeps the person in charge", () =>
   assert.match(brief, /wait for my go-ahead/);
   assert.doesNotMatch(brief, /<untrusted/);
 });
+
+// --- CodeRabbit round 1 on PR #27 ---
+
+test("two opens of one task at once make one chat", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [a] = folders(t, 1);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+  const d = desktop();
+  const both = await Promise.all([
+    openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: d.invoke }),
+    openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: d.invoke }),
+  ]);
+  assert.equal(both[0], both[1]);
+  assert.equal(d.ops().filter((o) => o === "session/create").length, 1);
+  assert.equal(d.ops().filter((o) => o === "agent/prompt").length, 1);
+});
+
+test("a task moved to another project gets a chat in that project's folders", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [a, b] = folders(t, 2);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+  store.addFolder(SITE, "PROJ-0009", "Beta ERP", b);
+  store.rememberChat(SITE, "TASK-2026-00123", "PROJ-0002", "old-chat");
+  store.markBriefed(SITE, "TASK-2026-00123");
+  const d = desktop();
+  await openTask({ task: "TASK-2026-00123", site: SITE, client: client({ ...TASK, project: "PROJ-0009", project_name: "Beta ERP" }), store, invoke: d.invoke });
+  assert.deepEqual(d.ops(), ["session/create", "session/open", "agent/prompt"]);
+  assert.equal(d.calls[0].args[0].projectPath, b);
+  assert.equal(store.chatEntry(SITE, "TASK-2026-00123").project, "PROJ-0009");
+});
+
+test("only a chat the app says is gone is replaced; any other failure keeps the link", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [a] = folders(t, 1);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+  store.rememberChat(SITE, "TASK-2026-00123", "PROJ-0002", "kept");
+  const d = desktop({
+    "session/get": () => {
+      throw Object.assign(new Error("host unavailable"), { code: "UNSUPPORTED" });
+    },
+  });
+  await assert.rejects(openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: d.invoke }), /host unavailable/);
+  assert.equal(store.chat(SITE, "TASK-2026-00123"), "kept");
+  assert.deepEqual(d.ops(), ["session/get"]);
+});
+
+test("a first message the chat did not take is sent again, in the same chat, once", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [a] = folders(t, 1);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+  const failing = desktop({
+    "agent/prompt": () => {
+      throw new Error("the agent is busy");
+    },
+  });
+  await assert.rejects(openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: failing.invoke }));
+  const retry = desktop();
+  const opened = await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: retry.invoke });
+  assert.equal(opened.fresh, true);
+  assert.deepEqual(retry.ops(), ["session/get", "session/open", "agent/prompt"]);
+  assert.equal(retry.calls[1].args[0], "s-1"); // the chat made the first time
+  const again = desktop();
+  assert.equal((await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: again.invoke })).fresh, false);
+  assert.deepEqual(again.ops(), ["session/get", "session/open"]);
+});
+
+test("a group kept from before follows its folders down to one", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [a, b] = folders(t, 2);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", b);
+  await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: desktop().invoke });
+  store.removeFolder(SITE, "PROJ-0002", b);
+  const d = desktop();
+  await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: d.invoke });
+  assert.deepEqual(d.calls[0], { operation: "project/groups/update", args: [{ groupId: "g-1", name: "TBO · Alpha ERP", folders: [a] }] });
+});

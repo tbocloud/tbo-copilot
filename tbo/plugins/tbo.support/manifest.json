@@ -273,7 +273,7 @@
             },
             "notes": {
               "type": "string",
-              "description": "complete_task: what was done; hold_task: more about why; ask_go_live: why it is needed (up to 2,000 characters)."
+              "description": "complete_task: what was done; hold_task: more about why (both up to 2,000 characters); ask_go_live: why it is needed (up to 500 characters)."
             },
             "reason": {
               "type": "string",

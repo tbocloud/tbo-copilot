@@ -305,10 +305,13 @@
         return b;
       };
       const note = (text) => ($("projects-note").textContent = text || "");
+      // the site the list was read from: every step sends it, so a site changed meanwhile acts on nothing
+      let shownSite = null;
+      let requested = null; // the task link waiting for Open: { task, site }
 
-      async function openTask(task) {
+      async function openTask(task, site) {
         note(`Opening ${task}…`);
-        const res = await call("tbo-support.open-task", { task });
+        const res = await call("tbo-support.open-task", { task, site: site || shownSite });
         if (!res.ok) return note(res.error || "The task could not be opened.");
         if (res.needFolders) {
           await loadProjects();
@@ -328,8 +331,8 @@
           const row = el("li", "item");
           row.append(el("span", f.here ? "" : "missing", `${i === 0 ? "★ " : ""}${f.path}${f.here ? "" : " (not found here)"}`));
           const actions = el("span", "row");
-          if (i > 0) actions.append(button("First", async () => { await call("tbo-support.first-folder", { project: p.project, folder: f.path }); loadProjects(); }));
-          actions.append(button("Remove", async () => { await call("tbo-support.remove-folder", { project: p.project, folder: f.path }); loadProjects(); }));
+          if (i > 0) actions.append(button("First", async () => { await call("tbo-support.first-folder", { project: p.project, folder: f.path, site: shownSite }); loadProjects(); }));
+          actions.append(button("Remove", async () => { await call("tbo-support.remove-folder", { project: p.project, folder: f.path, site: shownSite }); loadProjects(); }));
           row.append(actions);
           folders.append(row);
         });
@@ -338,7 +341,7 @@
         const add = el("div", "row");
         add.append(
           button("Add folder…", async () => {
-            const res = await call("tbo-support.add-folder", { project: p.project, name: p.name });
+            const res = await call("tbo-support.add-folder", { project: p.project, name: p.name, site: shownSite });
             if (!res.ok) note(res.error || "The folder could not be added.");
             await loadProjects();
           }),
@@ -361,7 +364,9 @@
         const list = $("projects");
         list.replaceChildren();
         if (!res.ok) return note(res.error || "Your projects could not be read.");
+        shownSite = res.site || null;
         const request = res.request;
+        requested = request || null;
         $("task-request").hidden = !request;
         if (request) $("task-request-text").textContent = `Open task ${request.task} from ${request.site} in TBO Copilot?`;
         if (!res.projects.length) return note("You have no open projects in TBO Support.");
@@ -372,10 +377,9 @@
         if ($("projects-box").open) loadProjects();
       });
       $("task-request-open").addEventListener("click", async () => {
-        const text = $("task-request-text").textContent;
-        const task = (text.match(/TASK-\d{4}-\d{5}/) || [])[0];
+        const request = requested;
         $("task-request").hidden = true;
-        if (task) await openTask(task);
+        if (request) await openTask(request.task, request.site); // the site the person saw
       });
       $("task-request-dismiss").addEventListener("click", async () => {
         await call("tbo-support.dismiss-request");

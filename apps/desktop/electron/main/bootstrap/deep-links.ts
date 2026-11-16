@@ -16,7 +16,7 @@ export const DEEP_LINK_PLUGIN_ID = "tbo.support";
 export const DEEP_LINK_EVENT = "app:openUrl";
 /** Links held while the app boots or the plugin starts; the oldest go first. */
 export const MAX_PENDING_DEEP_LINKS = 5;
-/** A held link nobody took in this time is dropped, so a later plugin start never replays it. */
+/** A held link nobody took in this time (from when it arrived) is dropped, so a later plugin start never replays it. */
 export const DEEP_LINK_PENDING_TTL_MS = 2 * 60_000;
 
 /** The link itself when it is a bounded `tbo-copilot://` string, otherwise null. */
@@ -34,15 +34,16 @@ export function deepLinksFromArgv(argv: readonly unknown[]): string[] {
   });
 }
 
-let receiver: ((url: string) => void) | null = null;
-const early: string[] = [];
+let receiver: ((url: string, at?: number) => void) | null = null;
+/** Links seen before the runtime attached, with when they arrived (they keep that lifetime). */
+const early: { url: string; at: number }[] = [];
 
 function receive(url: string): void {
   if (receiver) {
     receiver(url);
     return;
   }
-  early.push(url);
+  early.push({ url, at: Date.now() });
   if (early.length > MAX_PENDING_DEEP_LINKS) early.shift();
 }
 
@@ -78,7 +79,8 @@ export type DeepLinkRouterOptions = {
 };
 
 export type DeepLinkRouter = {
-  receive: (url: string) => void;
+  /** `at`: when the link first arrived (a link held from before boot); default now. */
+  receive: (url: string, at?: number) => void;
   /** Retry held links; called when boot finishes and when the plugin has loaded. */
   flush: () => void;
 };
@@ -104,10 +106,10 @@ export function createDeepLinkRouter(options: DeepLinkRouterOptions): DeepLinkRo
   };
 
   return {
-    receive: (url) => {
+    receive: (url, at) => {
       const accepted = acceptDeepLink(url);
       if (!accepted || options.isQuitting()) return;
-      pending.push({ url: accepted, at: now() });
+      pending.push({ url: accepted, at: at ?? now() });
       if (pending.length > MAX_PENDING_DEEP_LINKS) pending.shift();
       // Before boot the startup sequence opens the window itself.
       if (options.isApplicationBooted()) options.restoreMainWindow();
@@ -157,6 +159,7 @@ export function registerDeepLinks(deps: DeepLinkDependencies): DeepLinkRouter {
     },
   });
   receiver = router.receive;
-  for (const url of early.splice(0)) router.receive(url);
+  // a link held while the app started keeps the time it arrived: an old one is dropped, not replayed
+  for (const entry of early.splice(0)) router.receive(entry.url, entry.at);
   return router;
 }

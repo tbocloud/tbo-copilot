@@ -317,12 +317,15 @@ const ACTIONS = {
     const group = textArg(args, "group", 20);
     if (group && !TASK_GROUPS.includes(group)) throw fail("INVALID_ARGUMENT", `"group" must be one of: ${TASK_GROUPS.join(", ")}.`);
     const project = textArg(args, "project", 140);
-    // one project's tasks: the whole list (My Work holds every open task), then only that project
-    const limit = project ? 50 : limitArg(args, 20, 50);
-    const page = await client.method("helpdesk.api.mobile.get_tasks", { group: group || undefined, limit });
-    let rows = Array.isArray(page && page.data) ? page.data : [];
-    if (project) rows = rows.filter((t) => t.project === project);
-    return { note: UNTRUSTED_NOTE, count: rows.length, more: Boolean(page && page.has_more), tasks: rows.map(taskRow) };
+    const limit = limitArg(args, 20, 50);
+    if (!project) {
+      const page = await client.method("helpdesk.api.mobile.get_tasks", { group: group || undefined, limit });
+      const rows = Array.isArray(page && page.data) ? page.data : [];
+      return { note: UNTRUSTED_NOTE, count: rows.length, more: Boolean(page && page.has_more), tasks: rows.map(taskRow) };
+    }
+    // one project's tasks: every page of My Work (it holds every open task), then that project, then the limit
+    const all = (await allTasks(client, group)).filter((t) => t.project === project);
+    return { note: UNTRUSTED_NOTE, count: Math.min(all.length, limit), more: all.length > limit, tasks: all.slice(0, limit).map(taskRow) };
   },
 
   // the person's open projects (Phase 22): each task has one, and the desktop app keeps each
@@ -422,7 +425,7 @@ const ACTIONS = {
   async ask_go_live(client, args) {
     const when = String(args.when == null ? "tonight" : args.when).trim().toLowerCase();
     if (!GO_LIVE_WHEN.includes(when)) throw fail("INVALID_ARGUMENT", '"when" must be tonight or now.');
-    const notes = textArg(args, "notes", 500);
+    const notes = textArg(args, "notes", GO_LIVE_NOTE_MAX);
     const r = (await client.post("helpdesk.api.copilot_go_live.ask_go_live", { task: taskArg(args), when, note: notes })) || {};
     return { task: r.task, asked: Boolean(r.asked), status: r.status || null, approver: r.approver || null, next: r.next };
   },
@@ -472,6 +475,22 @@ const ACTIONS = {
 const TASK_GROUPS = ["overdue", "today", "upcoming", "on_hold", "in_review"];
 // when a release may go live
 const GO_LIVE_WHEN = ["tonight", "now"];
+// TBO Support keeps 500 characters of a go-live request's note
+const GO_LIVE_NOTE_MAX = 500;
+// My Work, every page (at most MAX_TASK_PAGES of 50): a project's tasks may be anywhere in it
+const MAX_TASK_PAGES = 10;
+
+async function allTasks(client, group) {
+  const rows = [];
+  let cursor;
+  for (let page = 0; page < MAX_TASK_PAGES; page += 1) {
+    const got = await client.method("helpdesk.api.mobile.get_tasks", { group: group || undefined, limit: 50, cursor });
+    rows.push(...(Array.isArray(got && got.data) ? got.data : []));
+    if (!got || !got.has_more || got.next_cursor == null) break;
+    cursor = got.next_cursor;
+  }
+  return rows;
+}
 
 function compactReleases(rows) {
   return (Array.isArray(rows) ? rows : []).slice(0, 5).map((r) => ({
@@ -624,7 +643,7 @@ const CHANGE_SCHEMA = {
     task: { type: "string", description: "start_task, pause_task, hold_task, resume_task, complete_task, ask_go_live: the task number, for example TASK-2026-00021." },
     when: { type: "string", enum: GO_LIVE_WHEN, description: "ask_go_live: tonight (the deploy window) or now." },
     hours_worked: { type: "number", exclusiveMinimum: 0, maximum: 200, description: "complete_task: the hours the person says they spent." },
-    notes: { type: "string", description: "complete_task: what was done; hold_task: more about why; ask_go_live: why it is needed (up to 2,000 characters)." },
+    notes: { type: "string", description: "complete_task: what was done; hold_task: more about why (both up to 2,000 characters); ask_go_live: why it is needed (up to 500 characters)." },
     reason: { type: "string", enum: HOLD_REASONS, description: "hold_task: why the task waits." },
     text: { type: "string", description: "report_problem: what was asked, what was expected and what happened (up to 4,000 characters)." },
   },
@@ -654,6 +673,7 @@ async function runAction(client, args, env, tool = TOOL) {
 }
 
 module.exports = {
+  allTasks,
   ACTIONS,
   ACTION_NAMES,
   READ_ACTION_NAMES,

@@ -163,9 +163,23 @@ function createProjectStore({ dataDir }) {
       return (entry && entry.sessionId) || null;
     },
 
+    // {sessionId, project, briefed}: briefed once the chat accepted the task's first message
+    chatEntry(site, task) {
+      const entry = siteOf(read(), site).tasks[checkTask(task)];
+      return entry && entry.sessionId ? { ...entry } : null;
+    },
+
     rememberChat(site, task, project, sessionId) {
       const data = read();
-      siteOf(data, site).tasks[checkTask(task)] = { sessionId, project, at: new Date().toISOString() };
+      siteOf(data, site).tasks[checkTask(task)] = { sessionId, project, briefed: false, at: new Date().toISOString() };
+      write(data);
+    },
+
+    markBriefed(site, task) {
+      const data = read();
+      const entry = siteOf(data, site).tasks[checkTask(task)];
+      if (!entry) return;
+      entry.briefed = true;
       write(data);
     },
 
@@ -195,9 +209,30 @@ function taskBrief(task, folders) {
   return lines.join("\n");
 }
 
+// The desktop says a remembered chat is gone (deleted in the app); any other failure keeps it.
+function isMissingSession(error) {
+  const code = String((error && (error.code || error.errorCode)) || "");
+  return code === "SESSION_NOT_FOUND" || code === "NOT_FOUND" || /session not found/i.test(String((error && error.message) || ""));
+}
+
+// One open at a time per site and task: a second click waits for the first instead of
+// making a second chat.
+const opening = new Map();
+
+function openTask(args) {
+  let key;
+  try {
+    key = `${args.site}\n${checkTask(args.task)}`;
+  } catch (e) {
+    return Promise.reject(e);
+  }
+  if (!opening.has(key)) opening.set(key, openTaskOnce(args).finally(() => opening.delete(key)));
+  return opening.get(key);
+}
+
 // Opens a task in its project: `client` reads TBO Support as the person; `invoke` is
 // pi.desktop.invoke({operation, args}).
-async function openTask({ task, site, client, store, invoke }) {
+async function openTaskOnce({ task, site, client, store, invoke }) {
   task = checkTask(task);
   const detail = ((await client.method("helpdesk.api.mobile.get_task", { task })) || {}).data || {};
   if (!detail.name) throw fail("NOT_FOUND", `Task ${task} was not found, or you may not open it.`);
@@ -207,18 +242,22 @@ async function openTask({ task, site, client, store, invoke }) {
   if (!folders.length) {
     return { needFolders: true, task, project, projectName: detail.project_name || project };
   }
-  if (folders.length > 1) await groupFolders({ site, project, name: detail.project_name || project, folders, store, invoke });
+  // several folders are one group; a group kept from before follows the folders, down to one
+  if (folders.length > 1 || store.groupId(site, project)) {
+    await groupFolders({ site, project, name: detail.project_name || project, folders, store, invoke });
+  }
 
-  let sessionId = store.chat(site, task);
+  const remembered = store.chatEntry(site, task);
+  // a task moved to another project gets a chat in its new project's folders
+  let sessionId = remembered && remembered.project === project ? remembered.sessionId : null;
   if (sessionId) {
     try {
       await invoke({ operation: "session/get", args: [{ id: sessionId, messageLimit: 1 }] });
-    } catch {
-      store.forgetChat(site, task); // the chat was deleted in the app: a new one
-      sessionId = null;
+    } catch (e) {
+      if (!isMissingSession(e)) throw e; // the app could not answer: keep the chat, try again later
+      sessionId = null; // deleted in the app: a new one replaces it below
     }
   }
-  let fresh = false;
   if (!sessionId) {
     const subject = String(detail.subject || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
     const created = await invoke({
@@ -227,12 +266,14 @@ async function openTask({ task, site, client, store, invoke }) {
     });
     sessionId = created && created.session && created.session.id;
     if (!sessionId) throw fail("DESKTOP", "The app did not make the task's chat.");
-    store.rememberChat(site, task, project, sessionId);
-    fresh = true;
+    store.rememberChat(site, task, project, sessionId); // replaces the old link only now it exists
   }
   await invoke({ operation: "session/open", args: [sessionId] });
+  // the first message until the chat has accepted it: a failed try is retried in the same chat
+  const fresh = !(store.chatEntry(site, task) || {}).briefed;
   if (fresh) {
     await invoke({ operation: "agent/prompt", args: [{ sessionId, content: taskBrief(detail, folders) }] });
+    store.markBriefed(site, task);
   }
   return { opened: true, task, project, sessionId, folders, fresh };
 }
@@ -256,4 +297,4 @@ async function groupFolders({ site, project, name, folders, store, invoke }) {
   return groupId;
 }
 
-module.exports = { parseTaskLink, createProjectStore, openTask, taskBrief, groupFolders, isFolder, MAX_FOLDERS };
+module.exports = { parseTaskLink, createProjectStore, openTask, taskBrief, groupFolders, isFolder, isMissingSession, MAX_FOLDERS };
