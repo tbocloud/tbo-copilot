@@ -173,6 +173,7 @@ test("the write list never lets the app approve its own request", () => {
     "helpdesk.api.mobile.pause_task",
     "helpdesk.api.mobile.resume_task",
     "helpdesk.api.mobile.start_task",
+    "helpdesk.tasky.api.complete_task", // the person's own task, hours per day (Phase 23)
   ]);
   for (const p of WRITE_METHODS) assert.ok(!READ_METHODS.has(p), p);
 });

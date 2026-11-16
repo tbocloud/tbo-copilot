@@ -21,9 +21,13 @@ others are additional roots). Work with the person: they decide, the app asks th
 5. **When it must wait:** `tbo_support_change` `hold_task` with the reason (Laptop / system issue, Leave, Waiting on
    customer, Waiting on another task, Other) and a note. `resume_task` picks it up again; `pause_task` only pauses
    the timer.
-6. **When it is done:** ask the person how many hours they spent (never guess), then `tbo_support_change`
-   `complete_task` with `hours_worked` and `notes` (what was done, in a line or two). TBO Support logs the hours to their
-   timesheet; a project that wants a review sends the task to Pending Review.
+6. **When it is done:** ask the person how many hours they spent, and on which days (never guess). `tbo_support`
+   `completion_days` gives the days the task's timer ran and the hours still free on each day. Then
+   `tbo_support_change` `complete_task` with `notes` (what was done, in a line or two) and either `hours_worked` (all
+   today) or `days` (`[{date, hours}]`). TBO Support puts each day's hours on that day's timesheet, as its Complete
+   dialog does: a day takes at most what is left of the person's working day, and only a working day; hours are typed
+   in for today and the last few working days (older days only up to what the timer recorded). A project that wants a
+   review sends the task to Pending Review.
 7. **Going live** (code that a customer site runs): after the pull request is merged and its CI passed,
    `tbo_support` `task_release` says where it stands. When it waits for approval, ask the person "Go live tonight or
    now?" and use `tbo_support_change` `ask_go_live` with their answer. The release's approver decides; nobody approves

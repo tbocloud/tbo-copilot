@@ -40,6 +40,9 @@ const READ_METHODS = new Set([
   "helpdesk.api.mobile.get_projects",
   // where a task's change stands on its way to the customer's sites (Phase 22)
   "helpdesk.api.copilot_go_live.task_release",
+  // what TBO Support's Complete dialog offers before a task is completed: the days its timer ran,
+  // the hours still free on each (Phase 23)
+  "helpdesk.tasky.api.get_completion_days",
 ]);
 
 // a search's words, a customer's name: sent in the body (TBO Copilot Phase 21, docs/tbo/security.md F5).
@@ -63,6 +66,8 @@ const WRITE_METHODS = new Set([
   "helpdesk.api.mobile.hold_task",
   "helpdesk.api.mobile.resume_task",
   "helpdesk.api.mobile.complete_task",
+  // completing with the hours of several days, each on its own date: TBO Support's Complete dialog's call (Phase 23)
+  "helpdesk.tasky.api.complete_task",
   // asks the release's approver for the task's change to go live tonight or now; they decide
   "helpdesk.api.copilot_go_live.ask_go_live",
   // the person's report for the TBO Copilot team: a task in their project, never a ticket (Phase 21)

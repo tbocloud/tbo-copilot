@@ -40,9 +40,16 @@ In the task's chat, as with anything Copilot changes, the app asks you first:
 - **Start:** the task becomes Working and its timer runs.
 - **Pause / Hold / Resume:** pause the timer; put it On Hold with a reason (Laptop / system issue, Leave, Waiting on
   customer, Waiting on another task, Other); take it off hold.
-- **Complete:** Copilot asks your hours (it never guesses) and what was done, then completes the task. TBO Support logs
-  the hours to your timesheet, the same as its Complete dialog; a project that wants a review sends it to Pending
-  Review.
+- **Complete:** Copilot asks your hours and on which days (it never guesses) and what was done, then completes the
+  task. TBO Support puts each day's hours on that day's timesheet, the same as its Complete dialog. Its rule:
+  - a day takes at most what is left of your working day (hours already on your timesheet count), and only a working
+    day;
+  - you type hours in for today and the last few working days (7 by default); an older day takes only what the task's
+    timer recorded on it;
+  - never a day in the future, or before the task was made.
+
+  Copilot reads the days the timer ran and the hours still free on each first (`completion_days`), so it can suggest the
+  split. A project that wants a review sends the task to Pending Review.
 
 For Frappe app code, the chat uses the Frappe dev plugin: a task branch, TBO's conventions, tests, a pull request
 ([frappe-dev.md](./frappe-dev.md)).

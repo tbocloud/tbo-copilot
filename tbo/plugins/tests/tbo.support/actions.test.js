@@ -492,6 +492,69 @@ test("report_problem sends the person's words to TBO Support's feedback, from th
   assert.equal(posted.length, 1);
 });
 
+// --- Phase 23, C6: hours per day, as TBO Support's own Complete dialog ---
+
+test("completing with hours on several days sends each day's hours, as the Complete dialog does", async () => {
+  const posts = [];
+  const client = {
+    async post(path, params) {
+      posts.push([path, params]);
+      return { name: params.task, status: "Completed", hours_logged: 14, timesheet_status: "Submitted" };
+    },
+  };
+  const days = [
+    { date: "2026-11-16", hours: 8 },
+    { date: "2026-11-17", hours: 6 },
+  ];
+  const done = await runAction(client, { action: "complete_task", task: "TASK-2026-00021", days, notes: "Fixed the report" }, ENV, CHANGE_TOOL);
+  assert.deepEqual(posts[0], ["helpdesk.tasky.api.complete_task", { task: "TASK-2026-00021", days, notes: "Fixed the report" }]);
+  assert.equal(done.status, "Completed");
+  assert.equal(done.hours_logged, 14);
+  const { WRITE_METHODS, READ_METHODS } = require("../../tbo.support/lib/helpdesk");
+  assert.ok(WRITE_METHODS.has("helpdesk.tasky.api.complete_task"));
+  assert.ok(READ_METHODS.has("helpdesk.tasky.api.get_completion_days"));
+  for (const bad of [
+    [],
+    [{ date: "16 Nov", hours: 2 }],
+    [{ date: "2026-11-16", hours: 0 }],
+    [{ date: "2026-11-16", hours: 25 }],
+    [{ date: "2026-11-16", hours: 2 }, { date: "2026-11-16", hours: 3 }],
+    "8 hours",
+  ]) {
+    await assert.rejects(runAction(client, { action: "complete_task", task: "TASK-2026-00021", days: bad, notes: "x" }, ENV, CHANGE_TOOL), {
+      code: "INVALID_ARGUMENT",
+    }, JSON.stringify(bad));
+  }
+  // one or the other, never both
+  await assert.rejects(runAction(client, { action: "complete_task", task: "TASK-2026-00021", days, hours_worked: 14, notes: "x" }, ENV, CHANGE_TOOL), {
+    code: "INVALID_ARGUMENT",
+    message: /either/,
+  });
+  assert.equal(posts.length, 1);
+  // the rule is stated where the model reads it
+  assert.match(CHANGE_TOOL.description, /days/);
+  assert.match(CHANGE_TOOL.description, /working day/);
+  assert.equal(CHANGE_TOOL.schema.properties.hours_worked.maximum, 24);
+});
+
+test("completion_days reads the days the task's timer ran and the hours left on each", async () => {
+  const client = fakeClient({
+    "helpdesk.tasky.api.get_completion_days": {
+      today: "2026-11-17",
+      yesterday: "2026-11-16",
+      oldest: "2026-11-07",
+      days: [{ date: "2026-11-16", hours: 5.5, from_time: "2026-11-16 09:30:00" }],
+      left: { "2026-11-16": 2.5, "2026-11-17": 8 },
+    },
+  });
+  const got = await runAction(client, { action: "completion_days", task: "TASK-2026-00021" }, ENV);
+  assert.deepEqual(client.calls[0], { path: "helpdesk.tasky.api.get_completion_days", params: { task: "TASK-2026-00021" } });
+  assert.deepEqual(got.timer_days, [{ date: "2026-11-16", hours: 5.5 }]);
+  assert.deepEqual(got.hours_left, { "2026-11-16": 2.5, "2026-11-17": 8 });
+  assert.equal(got.earliest_by_hand, "2026-11-07");
+  assert.match(got.rule, /working day/);
+});
+
 // --- Phase 22: completing a task from the desktop app, and going live ---
 
 test("completing a task needs the hours the person gives and what was done", async () => {
