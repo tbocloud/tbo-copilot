@@ -196,7 +196,7 @@ function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS })
     return parseBody(res);
   }
 
-  async function post(path, params) {
+  async function post(path, params, wait = timeoutMs) {
     let res;
     try {
       res = await request({
@@ -204,7 +204,7 @@ function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS })
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify(params || {}),
-        timeoutMs,
+        timeoutMs: wait,
       });
     } catch (e) {
       throw fail("NETWORK", `Could not reach TBO Support (${e && e.message ? e.message : e}).`);
@@ -227,9 +227,11 @@ function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS })
       const body = READ_BY_POST.has(path) ? await post(`/api/method/${path}`, params) : await get(`/api/method/${path}`, params);
       return body.message;
     },
-    async post(path, params) {
+    // `opts.timeoutMs`: a shorter wait for a write whose answer may come late (a Press backup)
+    async post(path, params, opts) {
       if (!WRITE_METHODS.has(path)) throw fail("NOT_ALLOWED", `The plugin may not call ${path}.`);
-      const body = await post(`/api/method/${path}`, params);
+      const wait = opts && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? Math.min(opts.timeoutMs, timeoutMs) : timeoutMs;
+      const body = await post(`/api/method/${path}`, params, wait);
       return body.message;
     },
     // the filters may hold a customer's name: a POST to frappe.client.get_list, the same

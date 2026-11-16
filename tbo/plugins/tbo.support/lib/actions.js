@@ -443,8 +443,32 @@ const ACTIONS = {
     };
   },
 
+  // TBO Support asks Press for the backup and then watches Press's job for up to three minutes
+  // before it answers. The plugin waits BACKUP_WAIT_MS at most: a backup already running is
+  // never started again, and one TBO Support is still watching answers "started" with its job,
+  // whose status press_jobs gives (Phase 23).
   async press_backup(client, args) {
-    return client.post("helpdesk.api.copilot_press.backup", { site: pressName(args, "site") });
+    const site = pressName(args, "site");
+    const running = await runningBackup(client, site);
+    if (running) return backupAnswer("already running", site, running);
+    let done;
+    try {
+      done = await client.post("helpdesk.api.copilot_press.backup", { site }, { timeoutMs: BACKUP_WAIT_MS });
+    } catch (e) {
+      if (e.code !== "NETWORK") throw e; // refused: nothing started
+      const job = await runningBackup(client, site);
+      if (job) return backupAnswer("started", site, job);
+      return {
+        status: "not confirmed",
+        site,
+        next:
+          `TBO Support did not answer in time, and Press shows no backup of ${site} running yet; it may still be starting. ` +
+          `Check with tbo_support press_jobs (site ${site}) in a minute, and do not ask for another backup before that.`,
+      };
+    }
+    const job = (done && done.job) || null;
+    const status = job && job.status === "Success" ? "done" : job && job.status === "Failure" ? "failed" : "started";
+    return { ...backupAnswer(status, site, job), text: done && done.text ? clip(String(done.text), 500) : undefined };
   },
 
   async press_action(client, args) {
@@ -535,6 +559,40 @@ function taskRow(t) {
   };
 }
 
+// How long the plugin waits for TBO Support's answer to a backup before it looks at Press's jobs.
+const BACKUP_WAIT_MS = 20000;
+// Press's job states of a job that has not ended
+const JOB_RUNNING = new Set(["Undelivered", "Pending", "Running"]);
+
+// The site's backup job that has not ended, or null (also when Press cannot be read: the person asked).
+async function runningBackup(client, site) {
+  let jobs;
+  try {
+    jobs = await client.method("helpdesk.api.copilot_press.jobs", { site, limit: 10 });
+  } catch {
+    return null;
+  }
+  return (Array.isArray(jobs) ? jobs : []).find((j) => j && j.job_type === "Backup Site" && JOB_RUNNING.has(j.status)) || null;
+}
+
+function backupAnswer(status, site, job) {
+  const name = job && job.name ? String(job.name) : null;
+  const ask = name ? `Ask for its status with tbo_support press_jobs (job ${name}).` : `Ask for its status with tbo_support press_jobs (site ${site}).`;
+  return {
+    status,
+    site,
+    job: name,
+    job_status: (job && job.status) || null,
+    started: (job && (job.start || job.creation)) || null,
+    next:
+      status === "already running"
+        ? `A backup of ${site} is already running, so no second one was started. ${ask}`
+        : status === "started"
+          ? `The backup of ${site} has started; it runs on in Press. ${ask} Do not ask for another one.`
+          : ask,
+  };
+}
+
 // Press's approval actions; a backup needs none, and deletes are never offered.
 const PRESS_ACTIONS = ["restart_bench", "update_site", "migrate_site", "change_plan", "deploy", "restore", "new_site"];
 
@@ -620,7 +678,7 @@ const TOOL = {
 
 const CHANGE_DESCRIPTION = [
   "Change something through TBO Support or Press, as the signed-in person. The app asks the person before each call: say first what it will do. Choose an action:",
-  "- press_backup: take a backup of a site now; needs site. It runs once the person allows it, and is logged.",
+  "- press_backup: take a backup of a site now; needs site. It runs once the person allows it, and is logged. It answers once the backup has started (a backup already running is never started again); tbo_support press_jobs gives its status. Never ask for a second backup to check on the first.",
   "- press_action: ask Press to restart_bench, update_site, migrate_site, change_plan (needs plan), deploy (target: a bench group), restore or new_site; needs press_action and target. It only asks an approver in Teams; TBO Support runs it after Approve. Deletes are never possible.",
   "- start_task: start the person's timer on their own task (Open becomes Working); needs task.",
   "- pause_task: pause the timer of the person's own task (it stays Working); needs task.",

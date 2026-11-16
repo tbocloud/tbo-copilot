@@ -329,6 +329,87 @@ test("a Press action only asks for an approval, and never one Copilot does not o
   assert.equal(posts.length, 1);
 });
 
+// --- Phase 23, C5: a backup answers "started" at once, and a retry never starts a second one ---
+
+// TBO Support's Press: its jobs for a site, and a backup call that may answer late (it watches Press's job)
+function pressHub({ jobs = [], backup } = {}) {
+  const posts = [];
+  const reads = [];
+  return {
+    posts,
+    reads,
+    jobs,
+    async method(path, params) {
+      reads.push([path, params]);
+      if (path === "helpdesk.api.copilot_press.jobs") return this.jobs;
+      throw new Error(`unexpected ${path}`);
+    },
+    async post(path, params, opts) {
+      posts.push([path, params, opts]);
+      return backup.call(this, params);
+    },
+  };
+}
+
+const RUNNING = { name: "JOB-0042", job_type: "Backup Site", status: "Running", creation: "2026-11-17 10:00:00", site: "acme.tbo365.cloud" };
+
+test("a backup already running is not started again", async () => {
+  const hub = pressHub({ jobs: [{ ...RUNNING, job_type: "Update Site", name: "JOB-0041" }, RUNNING], backup: () => ({}) });
+  const got = await runAction(hub, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL);
+  assert.equal(got.status, "already running");
+  assert.equal(got.job, "JOB-0042");
+  assert.match(got.next, /press_jobs/);
+  assert.deepEqual(hub.posts, []);
+  assert.deepEqual(hub.reads[0], ["helpdesk.api.copilot_press.jobs", { site: "acme.tbo365.cloud", limit: 10 }]);
+});
+
+test("a backup TBO Support is still watching answers started, and a retry starts no second one", async () => {
+  const hub = pressHub({
+    backup() {
+      // TBO Support asked Press and is still watching the job when the app stops waiting
+      this.jobs = [RUNNING];
+      throw Object.assign(new Error("Could not reach TBO Support (The operation was aborted)."), { code: "NETWORK" });
+    },
+  });
+  const got = await runAction(hub, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL);
+  assert.equal(got.status, "started");
+  assert.equal(got.job, "JOB-0042");
+  assert.match(got.next, /press_jobs/);
+  // the plugin stops waiting well before the 30 s of other calls
+  assert.ok(hub.posts[0][2] && hub.posts[0][2].timeoutMs <= 20000, JSON.stringify(hub.posts[0]));
+  const retry = await runAction(hub, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL);
+  assert.equal(retry.status, "already running");
+  assert.equal(hub.posts.length, 1);
+});
+
+test("a backup that cannot be confirmed says so and how to check, never to ask again", async () => {
+  const hub = pressHub({
+    backup() {
+      throw Object.assign(new Error("Could not reach TBO Support (ENOTFOUND)."), { code: "NETWORK" });
+    },
+  });
+  const got = await runAction(hub, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL);
+  assert.equal(got.status, "not confirmed");
+  assert.match(got.next, /press_jobs/);
+  assert.match(got.next, /not ask for another backup/);
+  // a refusal is still an error
+  const refused = pressHub({
+    backup() {
+      throw Object.assign(new Error("Your TBO Support account may not read this."), { code: "FORBIDDEN" });
+    },
+  });
+  await assert.rejects(runAction(refused, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL), { code: "FORBIDDEN" });
+});
+
+test("a backup TBO Support answers in time gives its job and how to ask for its status", async () => {
+  const hub = pressHub({ backup: () => ({ text: "backup on acme.tbo365.cloud: job JOB-0050 success (0:02:10)", job: { name: "JOB-0050", status: "Success" } }) });
+  const got = await runAction(hub, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL);
+  assert.equal(got.status, "done");
+  assert.equal(got.job, "JOB-0050");
+  assert.match(got.text, /success/);
+  assert.deepEqual(hub.posts[0].slice(0, 2), ["helpdesk.api.copilot_press.backup", { site: "acme.tbo365.cloud" }]);
+});
+
 // --- tasks (Phase 20) -----------------------------------------------------------------------
 
 const TASK_ROW = {
