@@ -231,10 +231,17 @@ function openTask(args) {
 }
 
 // Opens a task in its project: `client` reads TBO Support as the person; `invoke` is
-// pi.desktop.invoke({operation, args}).
-async function openTaskOnce({ task, site, client, store, invoke }) {
+// pi.desktop.invoke({operation, args}); `stillCurrent()` is false once the settings changed
+// (another site): from then on nothing more is done in the app.
+async function openTaskOnce({ task, site, client, store, invoke: invokeRaw, stillCurrent = () => true }) {
   task = checkTask(task);
+  const stale = () => fail("STALE", "The TBO Support site changed while the task was opening; nothing more was done.");
+  const invoke = async (input) => {
+    if (!stillCurrent()) throw stale();
+    return invokeRaw(input);
+  };
   const detail = ((await client.method("helpdesk.api.mobile.get_task", { task })) || {}).data || {};
+  if (!stillCurrent()) throw stale();
   if (!detail.name) throw fail("NOT_FOUND", `Task ${task} was not found, or you may not open it.`);
   const project = detail.project;
   if (!project) throw fail("NO_PROJECT", `Task ${task} has no project in TBO Support.`);

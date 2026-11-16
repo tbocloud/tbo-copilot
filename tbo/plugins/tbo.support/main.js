@@ -577,10 +577,18 @@ async function addFolder(payload) {
 
 async function openTaskFromPanel(payload) {
   const task = payload && payload.task;
+  const generation = epoch; // a settings change from here on stops the open (onSettingsChanged)
   const site = await checkPanelSite(payload); // the site the person saw when they pressed Open
   const result = await withClient((client, current) => {
     if (!sameOrigin(current, site)) throw fail("STALE", "The TBO Support site changed; nothing was opened.");
-    return projects.openTask({ task, site, client, store: projectStore, invoke: (input) => pi.desktop.invoke(input) });
+    return projects.openTask({
+      task,
+      site,
+      client,
+      store: projectStore,
+      invoke: (input) => pi.desktop.invoke(input),
+      stillCurrent: () => generation === epoch,
+    });
   });
   if (result.opened && openRequest && openRequest.task === result.task) openRequest = null;
   return result;

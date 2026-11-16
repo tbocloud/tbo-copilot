@@ -242,3 +242,44 @@ test("a group kept from before follows its folders down to one", async (t) => {
   await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: d.invoke });
   assert.deepEqual(d.calls[0], { operation: "project/groups/update", args: [{ groupId: "g-1", name: "TBO · Alpha ERP", folders: [a] }] });
 });
+
+// --- CodeRabbit round 2 on PR #27 ---
+
+test("a settings change while the task is read stops the open before anything in the app", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [a, b] = folders(t, 2);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", b);
+  let current = true;
+  const slowClient = {
+    method: async (p, args) => {
+      current = false; // the person changes the site while TBO Support answers
+      return client().method(p, args);
+    },
+  };
+  const d = desktop();
+  await assert.rejects(
+    openTask({ task: "TASK-2026-00123", site: SITE, client: slowClient, store, invoke: d.invoke, stillCurrent: () => current }),
+    { code: "STALE" },
+  );
+  assert.deepEqual(d.calls, []); // no group, no chat, no message
+  assert.equal(store.chat(SITE, "TASK-2026-00123"), null);
+});
+
+test("a settings change between the app's steps stops the rest", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [a] = folders(t, 1);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+  let current = true;
+  const d = desktop({
+    "session/create": () => {
+      current = false;
+      return { session: { id: "s-9" } };
+    },
+  });
+  await assert.rejects(
+    openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: d.invoke, stillCurrent: () => current }),
+    { code: "STALE" },
+  );
+  assert.deepEqual(d.ops(), ["session/create"]); // never opened, never given the task
+});
