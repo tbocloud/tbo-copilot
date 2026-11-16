@@ -192,6 +192,17 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     return git.git(root, ["fetch", "--quiet", remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`], opts);
   }
 
+  // Git sets up tracking only for a branch the remote's fetch refspecs cover; a single-branch clone
+  // covers one branch, so the task's branch is added to it first (git remote set-branches --add).
+  async function mapBranch(root, remote, branch) {
+    const specs = (await git.git(root, ["config", "--get-all", `remote.${remote}.fetch`], { allowFail: true })).stdout
+      .split("\n")
+      .map((s) => s.trim().replace(/^\+/, "").split(":")[0])
+      .filter(Boolean);
+    if (specs.some((src) => src === "refs/heads/*" || src === `refs/heads/${branch}`)) return;
+    await git.git(root, ["remote", "set-branches", "--add", remote, branch]);
+  }
+
   async function startWork(args) {
     const task = taskId(args.task);
     const subject = String(args.subject || "").trim();
@@ -215,6 +226,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       state = "switched to the task's branch";
     } else if (existing) {
       branch = checkBranchName(existing.name, "branch");
+      await mapBranch(root, info.remote, branch);
       await fetchBranch(root, info.remote, branch, { timeoutMs: 90000 });
       await git.git(root, ["switch", "--quiet", "--track", "-c", branch, `${info.remote}/${branch}`]);
       state = `continued the task's branch from ${info.remote}`;
@@ -413,6 +425,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       throw fail("PUSH_FAILED", `The push was refused (nothing was forced): ${tail(push.stderr || push.stdout, 6)}\nIf GitHub has newer commits on the branch, pull them (git pull --rebase is fine on your own branch), check again, and retry.`);
     }
     await fetchBranch(root, info.remote, branch, { allowFail: true, timeoutMs: 30000 });
+    await mapBranch(root, info.remote, branch);
     await git.git(root, ["branch", `--set-upstream-to=${info.remote}/${branch}`, branch], { allowFail: true });
 
     const existing = await runFn("gh", ["pr", "view", branch, "--repo", info.github, "--json", "url,state,isDraft"], { cwd: root, env, timeoutMs: 20000 });

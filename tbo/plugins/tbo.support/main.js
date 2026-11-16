@@ -491,9 +491,12 @@ async function onPanelInvoke(channel, payload) {
     if (channel === "tbo-support.sign-out") return { ok: true, ...(await signOut()) };
     if (channel === "tbo-support.report") return { ok: true, ...(await reportFromPanel(payload)) };
     if (channel === "tbo-support.open-report") {
-      // the site may have changed since the report was sent: open only a page on the current one
-      if (lastReport && lastReport.url && sameOrigin(lastReport.url, await currentSite())) {
-        await pi.shell.openExternal(lastReport.url);
+      // the site may have changed since the report was sent: open only a page on the current one, and
+      // only the report still kept after reading it (a settings change meanwhile forgets it)
+      const report = lastReport;
+      if (report && report.url) {
+        const site = await currentSite();
+        if (report === lastReport && sameOrigin(report.url, site)) await pi.shell.openExternal(report.url);
       }
       return { ok: true };
     }

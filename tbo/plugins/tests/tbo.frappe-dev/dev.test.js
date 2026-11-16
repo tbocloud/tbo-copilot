@@ -328,6 +328,24 @@ test("start_work fetches the base into its tracking ref, also in a single-branch
   neverForced(w.calls);
 });
 
+test("start_work resumes the task's branch from GitHub in a single-branch clone, with tracking", async (t) => {
+  const w = world(t);
+  const seed = path.join(w.top, "seed");
+  const branch = "feature/TASK-2026-00021-cap-the-discount";
+  w.git(seed, "switch", "-q", "-c", branch);
+  w.write(seed, "my_app/selling/discounts.py", "def cap(x):\n    return min(x, 10)\n");
+  w.git(seed, "add", ".");
+  w.git(seed, "commit", "-q", "-m", "feat(selling): cap the discount");
+  w.git(seed, "push", "-q", "origin", branch);
+  fs.rmSync(w.repo, { recursive: true, force: true });
+  w.git(w.top, "clone", "-q", "--single-branch", "--branch", "main", GITHUB_URL, w.repo);
+  const r = await w.dev.runDev({ action: "start_work", task: TASK, subject: "Cap the discount" });
+  assert.equal(r.state, "continued the task's branch from origin");
+  assert.equal(w.git(w.repo, "branch", "--show-current"), branch);
+  assert.equal(w.git(w.repo, "rev-parse", "--abbrev-ref", "@{upstream}"), `origin/${branch}`);
+  neverForced(w.calls);
+});
+
 test("check and run_tests need the task's branch and a commit, not loose changes", async (t) => {
   const w = world(t);
   await assert.rejects(w.dev.runDev({ action: "check" }), { code: "NOT_A_TASK_BRANCH" });
