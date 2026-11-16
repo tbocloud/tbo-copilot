@@ -95,6 +95,14 @@
     "extraMetadata": {
       "piDistribution": "installed"
     },
+    "protocols": [
+      {
+        "name": "TBO Copilot",
+        "schemes": [
+          "tbo-copilot"
+        ]
+      }
+    ],
     "files": [
       "out/**/*",
       "package.json",

@@ -19,10 +19,11 @@
 
 const os = require("node:os");
 const { createClient, normalizeSite, isLoopback } = require("./lib/helpdesk");
-const { TOOL, CHANGE_TOOL, runAction } = require("./lib/actions");
+const { TOOL, CHANGE_TOOL, runAction, allTasks } = require("./lib/actions");
 const { createStore } = require("./lib/credentials");
 const desktop = require("./lib/desktop");
 const { AWS_TOOL, createAws } = require("./lib/aws");
+const projects = require("./lib/projects");
 
 const DEFAULT_SITE = "https://teams.teambackoffice.com";
 const AI_PROVIDER = "tbo-ai";
@@ -34,17 +35,24 @@ const STARTUP_DELAY_MS = 2000;
 // the saved token stays usable until it runs out.
 const TRANSIENT = new Set(["NETWORK", "RATE_LIMITED", "HELPDESK_ERROR"]);
 const SETTINGS_EVENT = "plugin:settingsChanged";
+// a tbo-copilot:// link the app was opened with (Phase 22): only ever asks the person first
+const OPEN_URL_EVENT = "app:openUrl";
 const COMMANDS = {
   signIn: "tbo-support.sign-in",
   signOut: "tbo-support.sign-out",
   check: "tbo-support.check",
   report: "tbo-support.report-problem",
+  projects: "tbo-support.projects",
 };
 
 let store = null;
+let projectStore = null; // each TBO Support project's folders and each task's chat, on this computer
+let openRequest = null; // a task link waiting for the person's Open in the panel: { task, site }
 let aws = null;
 // "TBO Support: Report a problem" opens the panel on its report form (read once by the panel)
 let reportAsked = false;
+// "TBO Support: Projects and tasks" opens the panel on its Projects view (read once by the panel)
+let projectsAsked = false;
 // the last report sent from the panel: its link opens only from here, never from the panel's input
 let lastReport = null;
 let timer = null;
@@ -470,12 +478,156 @@ function sameOrigin(url, site) {
   }
 }
 
+// --- projects and tasks (Phase 22) ----------------------------------------------
+
+// A TBO Support call as the signed-in person; a token refused early is renewed once.
+async function withClient(fn) {
+  const { site, session, client } = await signedInClient();
+  try {
+    return await fn(client, site);
+  } catch (e) {
+    if (e.code !== "AUTH" || !session) throw e;
+    const fresh = await renew(site, session, { force: true });
+    return fn(await clientFor(site, { token: fresh.accessToken }), site);
+  }
+}
+
+const plainText = (value, max) =>
+  String(value == null ? "" : value)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+
+// The panel's Projects view: the person's open projects, their open tasks in each, and the
+// folders kept for each here. The panel shows text only (never HTML).
+async function projectsView() {
+  return withClient(async (client, site) => {
+    const [projectPage, tasks] = await Promise.all([
+      client.method("helpdesk.api.mobile.get_projects", { status: "Open", limit: 50 }),
+      allTasks(client), // every page of My Work
+    ]);
+    const kept = projectStore.projects(site);
+    const rows = (Array.isArray(projectPage && projectPage.data) ? projectPage.data : []).map((p) => ({
+      project: p.name,
+      name: plainText(p.project_name || p.name, 140),
+      customer: plainText(p.customer, 140) || null,
+      role: plainText(p.my_role, 60) || null,
+      folders: ((kept[p.name] && kept[p.name].folders) || []).map((f) => ({ path: f, here: projects.isFolder(f) })),
+      tasks: tasks
+        .filter((t) => t.project === p.name)
+        .map((t) => ({
+          task: t.name,
+          subject: plainText(t.subject, 200),
+          status: t.status,
+          deadline: t.exp_end_date || null,
+          overdue: Boolean(t.is_overdue),
+          chat: Boolean(projectStore.chat(site, t.name)),
+        })),
+    }));
+    // projects of tasks that the open-projects list does not hold (e.g. as a helper)
+    for (const t of tasks) {
+      if (t.project && !rows.some((r) => r.project === t.project)) {
+        rows.push({
+          project: t.project,
+          name: plainText(t.project_name || t.project, 140),
+          customer: plainText(t.customer, 140) || null,
+          role: null,
+          folders: ((kept[t.project] && kept[t.project].folders) || []).map((f) => ({ path: f, here: projects.isFolder(f) })),
+          tasks: [],
+        });
+      }
+      const row = rows.find((r) => r.project === t.project);
+      if (row && !row.tasks.some((x) => x.task === t.name)) {
+        row.tasks.push({
+          task: t.name,
+          subject: plainText(t.subject, 200),
+          status: t.status,
+          deadline: t.exp_end_date || null,
+          overdue: Boolean(t.is_overdue),
+          chat: Boolean(projectStore.chat(site, t.name)),
+        });
+      }
+    }
+    // the projects with the person's own open tasks first
+    rows.sort((a, b) => b.tasks.length - a.tasks.length || a.name.localeCompare(b.name));
+    return { site, projects: rows, request: openRequest && openRequest.site === site ? openRequest : null };
+  });
+}
+
+// the panel's own site must still be the current one: a settings change meanwhile acts on nothing
+async function checkPanelSite(payload) {
+  const site = await currentSite();
+  if (payload && payload.site && !sameOrigin(payload.site, site)) {
+    throw fail("STALE", `The TBO Support site changed to ${site}. Look at the list again, then try once more.`);
+  }
+  return site;
+}
+
+async function addFolder(payload) {
+  const project = payload && payload.project;
+  const site = await checkPanelSite(payload); // the site of the project, before the picker opens
+  const picked = await pi.fs.requestDirectory();
+  if (!picked || !picked.path) return { cancelled: true };
+  if (!sameOrigin(await currentSite(), site)) {
+    throw fail("STALE", "The TBO Support site changed while you chose the folder; nothing was kept. Choose it again.");
+  }
+  return { folders: projectStore.addFolder(site, project, payload && payload.name, picked.path) };
+}
+
+async function openTaskFromPanel(payload) {
+  const task = payload && payload.task;
+  const generation = epoch; // a settings change from here on stops the open (onSettingsChanged)
+  const site = await checkPanelSite(payload); // the site the person saw when they pressed Open
+  const result = await withClient((client, current) => {
+    if (!sameOrigin(current, site)) throw fail("STALE", "The TBO Support site changed; nothing was opened.");
+    return projects.openTask({
+      task,
+      site,
+      client,
+      store: projectStore,
+      invoke: (input) => pi.desktop.invoke(input),
+      stillCurrent: () => generation === epoch,
+    });
+  });
+  // the link's request is done only when this open is still the current one: an open started before a
+  // settings change must not clear a newer request for the same task number on the new site
+  if (result.opened && generation === epoch && openRequest && openRequest.task === result.task && sameOrigin(openRequest.site, site)) {
+    openRequest = null;
+  }
+  return result;
+}
+
+// tbo-copilot://task/TASK-…?site=…: the panel asks "Open task …?"; a link for another site, or
+// any other link, opens nothing
+async function onOpenUrl(payload) {
+  const link = projects.parseTaskLink(payload && payload.url);
+  if (!link) return;
+  let site;
+  try {
+    site = await currentSite();
+  } catch {
+    return;
+  }
+  if (link.site && !sameOrigin(link.site, site)) {
+    await pi.ui
+      .showToast(`That task link is for ${plainText(link.site, 200)}, but TBO Copilot uses ${site}. Change the site in the TBO Support settings to open it.`, "error")
+      .catch(() => {});
+    return;
+  }
+  openRequest = { task: link.task, site };
+  await pi.ui.openPanel({ title: "TBO Support" }).catch(() => {});
+}
+
 async function onPanelInvoke(channel, payload) {
   try {
     if (channel === "tbo-support.state") {
       const askReport = reportAsked;
       reportAsked = false;
-      return { ok: true, ...(await panelState()), askReport };
+      // a task link waiting for the person's Open shows the Projects view too
+      const askProjects = projectsAsked || Boolean(openRequest);
+      projectsAsked = false;
+      return { ok: true, ...(await panelState()), askReport, askProjects };
     }
     if (channel === "tbo-support.microsoft") return { ok: true, pending: await startMicrosoft() };
     if (channel === "tbo-support.open-again") {
@@ -490,6 +642,22 @@ async function onPanelInvoke(channel, payload) {
     if (channel === "tbo-support.sign-in") return { ok: true, ...(await signInWithKey(payload)) };
     if (channel === "tbo-support.sign-out") return { ok: true, ...(await signOut()) };
     if (channel === "tbo-support.report") return { ok: true, ...(await reportFromPanel(payload)) };
+    // Phase 22: projects, their folders on this computer, and opening a task in its project
+    if (channel === "tbo-support.projects") return { ok: true, ...(await projectsView()) };
+    if (channel === "tbo-support.add-folder") return { ok: true, ...(await addFolder(payload)) };
+    if (channel === "tbo-support.remove-folder") {
+      const site = await checkPanelSite(payload);
+      return { ok: true, folders: projectStore.removeFolder(site, payload && payload.project, payload && payload.folder) };
+    }
+    if (channel === "tbo-support.first-folder") {
+      const site = await checkPanelSite(payload);
+      return { ok: true, folders: projectStore.makeFirst(site, payload && payload.project, payload && payload.folder) };
+    }
+    if (channel === "tbo-support.open-task") return { ok: true, ...(await openTaskFromPanel(payload)) };
+    if (channel === "tbo-support.dismiss-request") {
+      openRequest = null;
+      return { ok: true };
+    }
     if (channel === "tbo-support.open-report") {
       // the site may have changed since the report was sent: open only a page on the current one, and
       // only the report still kept after reading it (a settings change meanwhile forgets it)
@@ -554,6 +722,7 @@ async function check() {
 // The site may have changed: work still running for the old one drops its
 // answer (it cannot put that site's key back), then the new site is synced.
 function onSettingsChanged() {
+  openRequest = null; // a task link asked for under the old settings opens nothing now
   lastReport = null; // a report's link belongs to the site it was sent to
   epoch += 1;
   if (pending) pending.cancelled = true;
@@ -568,6 +737,7 @@ function startup() {
 
 async function onLoad() {
   store = createStore({ dataDir: await pi.plugin.getDataPath() });
+  projectStore = projects.createProjectStore({ dataDir: await pi.plugin.getDataPath() });
 
   await pi.agent.registerTool({
     ...TOOL,
@@ -635,6 +805,16 @@ async function onLoad() {
   });
 
   await pi.commands.register({
+    id: COMMANDS.projects,
+    title: "TBO Support: Projects and tasks",
+    keywords: ["tbo", "project", "task", "folder", "work", "complete"],
+    run: () => {
+      projectsAsked = true;
+      return pi.ui.openPanel({ title: "TBO Support" });
+    },
+  });
+
+  await pi.commands.register({
     id: COMMANDS.check,
     title: "TBO Support: Check connection",
     keywords: ["tbo", "helpdesk", "status"],
@@ -654,6 +834,7 @@ async function onLoad() {
   });
 
   if (pi.events && pi.events.on) pi.events.on(SETTINGS_EVENT, onSettingsChanged);
+  if (pi.events && pi.events.on) pi.events.on(OPEN_URL_EVENT, onOpenUrl);
 
   startupTimer = setTimeout(() => {
     startup().catch(() => {});
@@ -673,6 +854,7 @@ async function onUnload() {
   if (pending) pending.cancelled = true;
   pending = null;
   if (pi.events && pi.events.off) pi.events.off(SETTINGS_EVENT, onSettingsChanged);
+  if (pi.events && pi.events.off) pi.events.off(OPEN_URL_EVENT, onOpenUrl);
   await pi.agent.unregisterTool(TOOL.name).catch(() => {});
   await pi.agent.unregisterTool(CHANGE_TOOL.name).catch(() => {});
   await pi.agent.unregisterTool(AWS_TOOL.name).catch(() => {});
@@ -682,7 +864,9 @@ async function onUnload() {
     await pi.commands.unregister(id).catch(() => {});
   }
   store = null;
+  projectStore = null;
+  openRequest = null;
 }
 
 // `startup` and `check` are what the plugin's two timers run; exported for the tests.
-module.exports = { onLoad, onUnload, onPanelInvoke, AI_PROVIDER, keyOf, startup, check };
+module.exports = { onLoad, onUnload, onPanelInvoke, onOpenUrl, AI_PROVIDER, keyOf, startup, check };

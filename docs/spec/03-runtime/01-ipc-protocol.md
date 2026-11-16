@@ -2271,7 +2271,10 @@ The first-version catalog is the project/session/Agent/workspace flow plus
 reviewed reads. Secret get/set/delete channels, provider/OAuth/MCP secret-write
 paths, settings writes, plugin/marketplace install, window/OS control, and
 renderer-only native picker/dialog channels (including `plugin/loadDev`) are
-not exposed. Secret-shaped argument fields are stripped before IPC dispatch.
+not exposed. The project-group channels `project-group/list`, `create` and
+`update` are exposed as `project/groups/list`, `project/groups/create` and
+`project/groups/update`, each taking the IPC handler's single input object.
+Secret-shaped argument fields are stripped before IPC dispatch.
 Each catalog entry is tagged `read`, `write`, or `dangerous`; dangerous
 generic operations and the named session-delete, session-configure, and
 plan-resolution tools require `confirm: true`. That flag is an agent

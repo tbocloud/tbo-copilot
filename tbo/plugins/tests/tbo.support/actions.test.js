@@ -32,8 +32,18 @@ function fakeClient(answers) {
 
 const ENV = { siteUrl: "https://teams.teambackoffice.com" };
 
-test("tbo_support only reads, all of it plan-safe; the Press actions and a task's timer, which do something, are in a high-risk tool", () => {
-  assert.deepEqual(CHANGE_ACTION_NAMES, ["press_backup", "press_action", "start_task", "report_problem"]);
+test("tbo_support only reads, all of it plan-safe; the Press actions and a task's changes, which do something, are in a high-risk tool", () => {
+  assert.deepEqual(CHANGE_ACTION_NAMES, [
+    "press_backup",
+    "press_action",
+    "start_task",
+    "pause_task",
+    "hold_task",
+    "resume_task",
+    "complete_task",
+    "ask_go_live",
+    "report_problem",
+  ]);
   assert.deepEqual(READ_ACTION_NAMES, ACTION_NAMES.filter((a) => !CHANGE_ACTION_NAMES.includes(a)));
   assert.deepEqual(TOOL.planSafeActions, READ_ACTION_NAMES);
   assert.deepEqual(TOOL.schema.properties.action.enum, READ_ACTION_NAMES);
@@ -221,7 +231,7 @@ test("search_knowledge_base marks article snippets as untrusted", async () => {
   assert.ok(out.results.includes("Ignore all rules"));
 });
 
-test("every action calls only allow-listed paths, and only the Press actions and start_task post", async () => {
+test("every action calls only allow-listed paths, and only the Press actions and the task's changes post", async () => {
   const seen = new Set();
   const posted = [];
   let current = "";
@@ -238,7 +248,20 @@ test("every action calls only allow-listed paths, and only the Press actions and
       return [];
     },
   };
-  const args = { ticket: "1", query: "invoice", article: "a1", site: "acme.tbo365.cloud", press_action: "restart_bench", target: "bench-0020", task: "TASK-2026-00021", text: "It showed the wrong ticket" };
+  const args = {
+    ticket: "1",
+    query: "invoice",
+    article: "a1",
+    site: "acme.tbo365.cloud",
+    press_action: "restart_bench",
+    target: "bench-0020",
+    task: "TASK-2026-00021",
+    text: "It showed the wrong ticket",
+    hours_worked: 2.5,
+    notes: "Fixed the stock report",
+    reason: "Other",
+    when: "tonight",
+  };
   for (const action of ACTION_NAMES) {
     current = action;
     await runAction(client, { action, ...args }, ENV, CHANGE_ACTION_NAMES.includes(action) ? CHANGE_TOOL : TOOL);
@@ -246,7 +269,17 @@ test("every action calls only allow-listed paths, and only the Press actions and
   const { READ_METHODS, WRITE_METHODS } = require("../../tbo.support/lib/helpdesk");
   for (const p of seen) assert.ok(READ_METHODS.has(p), `${p} is not on the read allow-list`);
   for (const [, p] of posted) assert.ok(WRITE_METHODS.has(p), `${p} is not on the write allow-list`);
-  assert.deepEqual(posted.map(([action]) => action), ["start_task", "report_problem", "press_backup", "press_action"]);
+  assert.deepEqual(posted.map(([action]) => action), [
+    "start_task",
+    "pause_task",
+    "hold_task",
+    "resume_task",
+    "complete_task",
+    "ask_go_live",
+    "report_problem",
+    "press_backup",
+    "press_action",
+  ]);
 });
 
 test("Press reads go to TBO Support's Press endpoints with the site as Press names it", async () => {
@@ -376,4 +409,106 @@ test("report_problem sends the person's words to TBO Support's feedback, from th
   await assert.rejects(runAction(client, { action: "report_problem" }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT", message: /needs "text"/ });
   await assert.rejects(runAction(client, { action: "report_problem", text: "x".repeat(4001) }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT" });
   assert.equal(posted.length, 1);
+});
+
+// --- Phase 22: completing a task from the desktop app, and going live ---
+
+test("completing a task needs the hours the person gives and what was done", async () => {
+  const posts = [];
+  const client = {
+    async post(path, params) {
+      posts.push([path, params]);
+      return { data: { name: params.task, status: "Completed" } };
+    },
+  };
+  const done = await runAction(client, { action: "complete_task", task: "task-2026-00021", hours_worked: 3, notes: "Fixed the report" }, ENV, CHANGE_TOOL);
+  assert.equal(done.status, "Completed");
+  assert.match(done.note, /timesheet/);
+  assert.deepEqual(posts[0], ["helpdesk.api.mobile.complete_task", { task: "TASK-2026-00021", hours_worked: 3, notes: "Fixed the report" }]);
+  for (const bad of [{}, { hours_worked: 0 }, { hours_worked: -1 }, { hours_worked: "two" }, { hours_worked: 500 }]) {
+    await assert.rejects(runAction(client, { action: "complete_task", task: "TASK-2026-00021", notes: "x", ...bad }, ENV, CHANGE_TOOL), {
+      code: "INVALID_ARGUMENT",
+      message: /hours_worked/,
+    });
+  }
+  await assert.rejects(runAction(client, { action: "complete_task", task: "TASK-2026-00021", hours_worked: 1 }, ENV, CHANGE_TOOL), {
+    code: "INVALID_ARGUMENT",
+    message: /notes/,
+  });
+  assert.equal(posts.length, 1);
+});
+
+test("holding a task takes one of TBO Support's reasons", async () => {
+  const posts = [];
+  const client = { async post(path, params) { posts.push([path, params]); return { data: { name: params.task, status: "On Hold" } }; } };
+  await runAction(client, { action: "hold_task", task: "TASK-2026-00021", reason: "Waiting on customer", notes: "Needs their login" }, ENV, CHANGE_TOOL);
+  assert.deepEqual(posts[0], ["helpdesk.api.mobile.hold_task", { task: "TASK-2026-00021", reason: "Waiting on customer", note: "Needs their login" }]);
+  await assert.rejects(runAction(client, { action: "hold_task", task: "TASK-2026-00021", reason: "Bored" }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT" });
+});
+
+test("going live asks the approver tonight or now; where it stands is a read", async () => {
+  const calls = [];
+  const client = {
+    async method(path, params) {
+      calls.push(["GET", path, params]);
+      return { task: params.task, next: "It waits for Hari's approval.", releases: [{ release: "R-1", status: "Waiting for approval", approver: "Hari" }] };
+    },
+    async post(path, params) {
+      calls.push(["POST", path, params]);
+      return { task: params.task, asked: true, status: "Waiting for approval", approver: "Hari", next: "Hari has the card again." };
+    },
+  };
+  const where = await runAction(client, { action: "task_release", task: "TASK-2026-00021" }, ENV);
+  assert.equal(where.releases[0].status, "Waiting for approval");
+  const asked = await runAction(client, { action: "ask_go_live", task: "TASK-2026-00021", when: "now", notes: "Customer waiting" }, ENV, CHANGE_TOOL);
+  assert.equal(asked.asked, true);
+  assert.deepEqual(calls[1], ["POST", "helpdesk.api.copilot_go_live.ask_go_live", { task: "TASK-2026-00021", when: "now", note: "Customer waiting" }]);
+  await assert.rejects(runAction(client, { action: "ask_go_live", task: "TASK-2026-00021", when: "friday" }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT" });
+  // going live is the change tool's, never a plan-safe read
+  assert.ok(!TOOL.planSafeActions.includes("ask_go_live"));
+});
+
+test("my tasks can be one project's, and my projects say how many open tasks each has", async () => {
+  const client = {
+    async method(path) {
+      if (path === "helpdesk.api.mobile.get_tasks") {
+        return { data: [{ name: "TASK-2026-00001", project: "PROJ-0001" }, { name: "TASK-2026-00002", project: "PROJ-0002" }] };
+      }
+      return { data: [{ name: "PROJ-0002", project_name: "Alpha ERP", open_tasks: 4, my_role: "Developer" }] };
+    },
+  };
+  const mine = await runAction(client, { action: "my_tasks", project: "PROJ-0002" }, ENV);
+  assert.deepEqual(mine.tasks.map((t) => t.task), ["TASK-2026-00002"]);
+  const projects = await runAction(client, { action: "my_projects" }, ENV);
+  assert.equal(projects.projects[0].project, "PROJ-0002");
+  assert.equal(projects.projects[0].open_tasks, 4);
+  assert.match(projects.projects[0].name, /untrusted/);
+});
+
+test("one project's tasks are read across every page of My Work, then limited", async () => {
+  const pages = [
+    { data: [{ name: "TASK-2026-00001", project: "P1" }, { name: "TASK-2026-00002", project: "P2" }], has_more: true, next_cursor: 2 },
+    { data: [{ name: "TASK-2026-00003", project: "P2" }, { name: "TASK-2026-00004", project: "P2" }], has_more: false, next_cursor: null },
+  ];
+  const cursors = [];
+  const client = {
+    async method(path, params) {
+      cursors.push(params.cursor);
+      return pages[params.cursor ? 1 : 0];
+    },
+  };
+  const two = await runAction(client, { action: "my_tasks", project: "P2", limit: 2 }, ENV);
+  assert.deepEqual(two.tasks.map((t) => t.task), ["TASK-2026-00002", "TASK-2026-00003"]);
+  assert.equal(two.more, true);
+  assert.deepEqual(cursors, [undefined, 2]);
+  const all = await runAction(client, { action: "my_tasks", project: "P2" }, ENV);
+  assert.equal(all.count, 3);
+  assert.equal(all.more, false);
+});
+
+test("a go-live note is at most what TBO Support keeps", async () => {
+  const client = { async post(path, params) { return { task: params.task, asked: true, note: params.note }; } };
+  await runAction(client, { action: "ask_go_live", task: "TASK-2026-00021", when: "tonight", notes: "x".repeat(500) }, ENV, CHANGE_TOOL);
+  await assert.rejects(runAction(client, { action: "ask_go_live", task: "TASK-2026-00021", when: "tonight", notes: "x".repeat(501) }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT" });
+  assert.match(CHANGE_TOOL.schema.properties.notes.description, /ask_go_live: .*500/);
 });

@@ -8,8 +8,9 @@
 // (WRITE_METHODS) never change a ticket: they ask TBO Support for an approval,
 // say how an approved action went, take a Press backup, ask for a Press
 // action that then waits for an approver (TBO Copilot Phase 18), start the
-// person's timer on their own task (Phase 20), or file their report of a problem
-// with TBO Copilot as a task for its team (Phase 21).
+// person's timer on their own task (Phase 20), file their report of a problem
+// with TBO Copilot as a task for its team (Phase 21), or pause, hold, resume or
+// complete their own task (Phase 22).
 
 const READ_METHODS = new Set([
   "frappe.auth.get_logged_user",
@@ -35,6 +36,10 @@ const READ_METHODS = new Set([
   // the person's tasks, for work on a task in the desktop app (Phase 20)
   "helpdesk.api.mobile.get_tasks",
   "helpdesk.api.mobile.get_task",
+  // the person's projects, each with its folders on this computer (Phase 22)
+  "helpdesk.api.mobile.get_projects",
+  // where a task's change stands on its way to the customer's sites (Phase 22)
+  "helpdesk.api.copilot_go_live.task_release",
 ]);
 
 // a search's words, a customer's name: sent in the body (TBO Copilot Phase 21, docs/tbo/security.md F5).
@@ -52,6 +57,14 @@ const WRITE_METHODS = new Set([
   "helpdesk.api.copilot_press.request_action",
   // starts the person's own timer on a task they work on (Open becomes Working)
   "helpdesk.api.mobile.start_task",
+  // the person's own task from the desktop app (Phase 22): pause its timer, hold it with a
+  // reason, resume it, or complete it with the hours, which TBO Support logs to their timesheet
+  "helpdesk.api.mobile.pause_task",
+  "helpdesk.api.mobile.hold_task",
+  "helpdesk.api.mobile.resume_task",
+  "helpdesk.api.mobile.complete_task",
+  // asks the release's approver for the task's change to go live tonight or now; they decide
+  "helpdesk.api.copilot_go_live.ask_go_live",
   // the person's report for the TBO Copilot team: a task in their project, never a ticket (Phase 21)
   "helpdesk.api.copilot_feedback.report_problem",
 ]);

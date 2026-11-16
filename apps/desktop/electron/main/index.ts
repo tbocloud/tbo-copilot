@@ -45,7 +45,7 @@ import {
 } from "./work-panel-window";
 import { InflightCheckpointer } from "@pi-desktop/host-runtime";
 import { withGitBranch } from "./workspace-git";
-import { hasSingleInstanceLock, isDevelopmentBuild } from "./installation";
+import { hasSingleInstanceLock, isDevelopmentBuild, singleInstanceRequired } from "./installation";
 import { getStorageBootstrap } from "./storage/bootstrap";
 import { createPlanUiProbe } from "./plan-ui-probe";
 import { registerIpcHandlers } from "./ipc/register";
@@ -57,6 +57,7 @@ import { getActiveRemoteHostsBoot } from "./bootstrap/remote-hosts";
 import { installLiveMicrophonePermissionHandlers } from "./live-voice/microphone-permissions";
 import { MainProcessState } from "./bootstrap/main-state";
 import { registerApplicationActivation } from "./bootstrap/app-activation";
+import { registerDeepLinks, shouldRegisterProtocolClient } from "./bootstrap/deep-links";
 import { createHostRuntime } from "./runtime/host";
 import { createSidecarRuntime } from "./runtime/sidecar";
 import { createEventPersistence } from "./runtime/event-persistence";
@@ -984,6 +985,15 @@ void app.whenReady().then(() => {
 // The widget is chrome for a call this window owns; it must never outlive the app.
 app.once("will-quit", () => liveVoiceWidget.close());
 
+// Startup flushes held links once boot finishes, so this precedes it.
+const deepLinks = registerDeepLinks({
+  plugins,
+  restoreMainWindow,
+  isApplicationBooted: () => applicationLifecycleState.applicationBooted,
+  isQuitting: () => mainState.quitting,
+  registerProtocolClient: shouldRegisterProtocolClient({ isDevelopmentBuild, singleInstanceRequired }),
+});
+
 registerApplicationStartup({
   hasSingleInstanceLock,
   state: startupState,
@@ -1012,7 +1022,10 @@ registerApplicationStartup({
   applyToggleWindowShortcut,
   ensureWindow,
   bootHostStatus,
-  flushPendingApplicationMenuCommands,
+  flushPendingApplicationMenuCommands: () => {
+    flushPendingApplicationMenuCommands();
+    deepLinks.flush();
+  },
   invokeSessionCollaboration: sessionCollaboration.invoke,
   onSessionQueueChange: () => {
     void sessionCollaboration.drain().catch((error: unknown) => {

@@ -131,6 +131,7 @@ async function hubFetch(input) {
     if (auth && auth.startsWith("Bearer ") && hub.tokens.has(auth.slice(7))) return ok("rahul@teambackoffice.com");
     return { status: 401, headers: {}, bodyText: '{"exc_type":"AuthenticationError"}' };
   }
+  if (path === "helpdesk.api.mobile.get_task" && hub.task) return ok({ v: 1, data: hub.task });
   if (path === "helpdesk.api.copilot_feedback.report_problem") {
     assert.equal(input.method, "POST");
     hub.reports.push(body);
@@ -687,4 +688,128 @@ test("unknown panel channels are refused", async () => {
   assert.equal(res.code, "UNSUPPORTED");
   await plugin.onUnload();
   assert.equal(eventHandlers.has("plugin:settingsChanged"), false);
+});
+
+// --- Phase 22: a tbo-copilot:// task link only ever asks first ---
+
+test("a task link for the signed-in site opens the panel's Projects view and waits for the person", async () => {
+  await plugin.onLoad();
+  settings.siteUrl = SITE;
+  const panels = [];
+  const openPanel = pi.ui.openPanel;
+  pi.ui.openPanel = async (p) => panels.push(p);
+  try {
+    assert.ok(eventHandlers.has("app:openUrl"), "the plugin listens for task links");
+    await eventHandlers.get("app:openUrl")({ url: `tbo-copilot://task/TASK-2026-00123?site=${encodeURIComponent(SITE)}` });
+    assert.equal(panels.length, 1);
+    const state = await plugin.onPanelInvoke("tbo-support.state");
+    assert.equal(state.askProjects, true);
+    // nothing opened by itself: the person presses Open (or dismisses it)
+    assert.deepEqual(await plugin.onPanelInvoke("tbo-support.dismiss-request"), { ok: true });
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, false);
+  } finally {
+    pi.ui.openPanel = openPanel;
+  }
+});
+
+test("a task link for another site, or anything else, opens nothing", async () => {
+  await plugin.onLoad();
+  settings.siteUrl = SITE;
+  const panels = [];
+  const openPanel = pi.ui.openPanel;
+  pi.ui.openPanel = async (p) => panels.push(p);
+  try {
+    toasts.length = 0;
+    await plugin.onOpenUrl({ url: "tbo-copilot://task/TASK-2026-00123?site=https%3A%2F%2Fevil.example.com" });
+    assert.match(toasts.at(-1), /That task link is for https:\/\/evil\.example\.com/);
+    await plugin.onOpenUrl({ url: "tbo-copilot://ticket/0042" });
+    await plugin.onOpenUrl({ url: "javascript:alert(1)" });
+    assert.deepEqual(panels, []);
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, false);
+  } finally {
+    pi.ui.openPanel = openPanel;
+  }
+});
+
+test("a task opened, or a folder kept, for one site never acts on another", async () => {
+  await plugin.onLoad();
+  settings.siteUrl = SITE;
+  const opened = await plugin.onPanelInvoke("tbo-support.open-task", { task: "TASK-2026-00123", site: "https://demo-tbo.tbocloud.in" });
+  assert.equal(opened.ok, false);
+  assert.equal(opened.code, "STALE");
+  // the site changes while the folder picker is open: nothing is kept
+  const fsBefore = pi.fs;
+  pi.fs = {
+    requestDirectory: async () => {
+      settings.siteUrl = "https://demo-tbo.tbocloud.in";
+      return { path: "/tmp", name: "tmp" };
+    },
+  };
+  try {
+    const added = await plugin.onPanelInvoke("tbo-support.add-folder", { project: "PROJ-0002", name: "Alpha", site: SITE });
+    assert.equal(added.ok, false);
+    assert.equal(added.code, "STALE");
+  } finally {
+    pi.fs = fsBefore;
+    settings.siteUrl = SITE;
+  }
+});
+
+test("a settings change forgets a task link still waiting for Open", async () => {
+  await plugin.onLoad();
+  settings.siteUrl = SITE;
+  const openPanel = pi.ui.openPanel;
+  pi.ui.openPanel = async () => {};
+  try {
+    await plugin.onOpenUrl({ url: `tbo-copilot://task/TASK-2026-00123?site=${encodeURIComponent(SITE)}` });
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, true);
+    await settingsChanged();
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, false);
+  } finally {
+    pi.ui.openPanel = openPanel;
+  }
+});
+
+// --- CodeRabbit round 3 on PR #27 ---
+
+test("an older open that ends after a settings change keeps a newer task link's request", async (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  await plugin.onLoad();
+  settings = { siteUrl: SITE };
+  assert.equal((await plugin.onPanelInvoke("tbo-support.sign-in", { ...GOOD })).ok, true);
+  fs.rmSync("/tmp/tbo-support-test/projects.json", { force: true });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tbo-main-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  hub.task = { name: "TASK-2026-00123", subject: "Fix it", project: "PROJ-0002", project_name: "Alpha ERP" };
+  const before = { fs: pi.fs, desktop: pi.desktop, openPanel: pi.ui.openPanel };
+  const link = `tbo-copilot://task/TASK-2026-00123?site=${encodeURIComponent(SITE)}`;
+  pi.ui.openPanel = async () => {};
+  pi.fs = { requestDirectory: async () => ({ path: dir, name: "app" }) };
+  pi.desktop = {
+    invoke: async ({ operation }) => {
+      if (operation === "session/create") return { session: { id: "s-1" } };
+      if (operation === "agent/prompt") {
+        // the open's last step: the settings change now, and a new link for the same task number arrives
+        await settingsChanged();
+        await plugin.onOpenUrl({ url: link });
+      }
+      return {};
+    },
+  };
+  try {
+    assert.equal((await plugin.onPanelInvoke("tbo-support.add-folder", { project: "PROJ-0002", name: "Alpha ERP", site: SITE })).ok, true);
+    const opened = await plugin.onPanelInvoke("tbo-support.open-task", { task: "TASK-2026-00123", site: SITE });
+    assert.equal(opened.opened, true);
+    // the request made after the change is still waiting for the person's Open
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, true);
+  } finally {
+    pi.fs = before.fs;
+    pi.desktop = before.desktop;
+    pi.ui.openPanel = before.openPanel;
+    hub.task = null;
+    await plugin.onPanelInvoke("tbo-support.dismiss-request");
+    fs.rmSync("/tmp/tbo-support-test/projects.json", { force: true });
+  }
 });

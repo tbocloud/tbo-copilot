@@ -445,6 +445,8 @@ export type PluginHostServices = {
     cdp: (method: string, params?: unknown) => Promise<unknown>;
   };
   onPluginUnload?: (pluginId: string) => void;
+  /** Fired once a plugin finished loading, so `sendEventTo` can reach it. */
+  onPluginLoaded?: (pluginId: string) => void;
   listModels?: () => Promise<PluginModelInfo[]>;
   getSessionContext?: (sessionId: string, stripToolName?: string) => Promise<PluginLlmContext>;
   complete?: (input: PluginCompleteInput & {
@@ -747,6 +749,8 @@ type LoadedPlugin = {
   pending: Map<string, PendingCall>;
   nextCallId: number;
   disposing: boolean;
+  /** Set once the load finished: the plugin's `onLoad` listeners exist. */
+  ready?: boolean;
 };
 
 type PluginApiError = Error & { code?: string };
@@ -1754,6 +1758,30 @@ export class PluginRuntime {
   }
 
   /**
+   * Push a one-way host event to one plugin process, not the whole fan-out.
+   * Returns false, sending nothing, while that plugin is not loaded, still
+   * loading (its listeners may not exist yet) or unloading.
+   */
+  sendEventTo(pluginId: string, event: string, args: unknown[] = []): boolean {
+    const loaded = this.loaded.get(pluginId);
+    if (!loaded?.ready || loaded.disposing || !loaded.child) return false;
+    try {
+      loaded.child.postMessage({ t: "event", event, args });
+      return true;
+    } catch (error) {
+      this.services.audit?.({
+        pluginId,
+        api: "plugin.event.error",
+        ok: false,
+        event,
+        message: (error as Error).message,
+        ts: Date.now(),
+      });
+      return false;
+    }
+  }
+
+  /**
    * Validate the manifest, start a dedicated host process and run `onLoad`
    * inside it. Contribution points arrive over RPC while `onLoad` runs; a
    * failure anywhere rolls the whole load back (spec 05 §7).
@@ -1871,12 +1899,14 @@ export class PluginRuntime {
     // declared shortcut whose command was never registered is reported and
     // skipped rather than held against a command that cannot run.
     this.registerDeclaredShortcuts(loaded);
+    loaded.ready = true;
     this.services.audit?.({
       pluginId: manifest.id,
       api: "plugin.load.success",
       ok: true,
       ts: Date.now(),
     });
+    this.services.onPluginLoaded?.(manifest.id);
     return manifest;
   }
 
