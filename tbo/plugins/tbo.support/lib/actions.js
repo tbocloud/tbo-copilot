@@ -483,21 +483,30 @@ const ACTIONS = {
     };
   },
 
-  // TBO Support asks Press for the backup and then watches Press's job for up to three minutes
-  // before it answers. The plugin waits BACKUP_WAIT_MS at most: a backup already running is
-  // never started again, and one TBO Support is still watching answers "started" with its job,
-  // whose status press_jobs gives (Phase 23).
+  // TBO Support asks Press for the backup and answers once Press took it, with its job (an older
+  // hub watches the job for minutes). The plugin waits BACKUP_WAIT_MS at most. A backup already
+  // running is never started again, and when Press's jobs cannot be read nothing is started
+  // either: the answer is "not confirmed" (Phase 23).
   async press_backup(client, args) {
     const site = pressName(args, "site");
-    const running = await runningBackup(client, site);
-    if (running) return backupAnswer("already running", site, running);
+    const before = await runningBackup(client, site);
+    if (!before.known) {
+      return {
+        status: "not confirmed",
+        site,
+        next:
+          `Press's jobs for ${site} could not be read, so no backup was started: one may already be running. ` +
+          `Try again in a minute, or check with tbo_support press_jobs (site ${site}).`,
+      };
+    }
+    if (before.job) return backupAnswer("already running", site, before.job);
     let done;
     try {
       done = await client.post("helpdesk.api.copilot_press.backup", { site }, { timeoutMs: BACKUP_WAIT_MS });
     } catch (e) {
       if (e.code !== "NETWORK") throw e; // refused: nothing started
-      const job = await runningBackup(client, site);
-      if (job) return backupAnswer("started", site, job);
+      const after = await runningBackup(client, site);
+      if (after.job) return backupAnswer("started", site, after.job);
       return {
         status: "not confirmed",
         site,
@@ -636,14 +645,16 @@ const BACKUP_WAIT_MS = 20000;
 const JOB_RUNNING = new Set(["Undelivered", "Pending", "Running"]);
 
 // The site's backup job that has not ended, or null (also when Press cannot be read: the person asked).
+// {known, job}: `known` false when Press's jobs could not be read (then nothing may be started)
 async function runningBackup(client, site) {
   let jobs;
   try {
     jobs = await client.method("helpdesk.api.copilot_press.jobs", { site, limit: 10 });
   } catch {
-    return null;
+    return { known: false, job: null };
   }
-  return (Array.isArray(jobs) ? jobs : []).find((j) => j && j.job_type === "Backup Site" && JOB_RUNNING.has(j.status)) || null;
+  const job = (Array.isArray(jobs) ? jobs : []).find((j) => j && j.job_type === "Backup Site" && JOB_RUNNING.has(j.status)) || null;
+  return { known: true, job };
 }
 
 function backupAnswer(status, site, job) {

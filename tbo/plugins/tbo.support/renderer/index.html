@@ -411,6 +411,7 @@
         if (!res.projects.length && !unassigned.length) return note("You have no open projects in TBO Support.");
         for (const p of res.projects) list.append(projectCard(p));
         if (unassigned.length) list.append(unassignedCard(unassigned));
+        if (res.projects_cut) note(`Showing the first ${res.projects.length} projects; TBO Support has more.`);
       }
 
       $("projects-box").addEventListener("toggle", () => {

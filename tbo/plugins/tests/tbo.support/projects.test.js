@@ -237,6 +237,28 @@ test("a task moved to another project gets a chat in that project's folders", as
   assert.equal(store.chatEntry(SITE, "TASK-2026-00123").project, "PROJ-0009");
 });
 
+test("a task whose first folder changed gets a chat in the new first folder", async (t) => {
+  const store = createProjectStore({ dataDir: tmp(t) });
+  const [a, b] = folders(t, 2);
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", a);
+  const first = desktop();
+  await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: first.invoke });
+  assert.equal(store.chatEntry(SITE, "TASK-2026-00123").folder, a);
+  // the same folder again: the same chat
+  const again = desktop();
+  await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: again.invoke });
+  assert.deepEqual(again.ops(), ["session/get", "session/open"]);
+  // the app's folder is made first: a new chat there, given the task
+  store.addFolder(SITE, "PROJ-0002", "Alpha ERP", b);
+  store.makeFirst(SITE, "PROJ-0002", b);
+  const moved = desktop({ "session/create": () => ({ session: { id: "s-2" } }) });
+  await openTask({ task: "TASK-2026-00123", site: SITE, client: client(), store, invoke: moved.invoke });
+  const made = moved.calls.find((c) => c.operation === "session/create");
+  assert.equal(made.args[0].projectPath, b);
+  assert.ok(moved.ops().includes("agent/prompt"));
+  assert.equal(store.chatEntry(SITE, "TASK-2026-00123").sessionId, "s-2");
+});
+
 test("only a chat the app says is gone is replaced; any other failure keeps the link", async (t) => {
   const store = createProjectStore({ dataDir: tmp(t) });
   const [a] = folders(t, 1);

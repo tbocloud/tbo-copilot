@@ -382,6 +382,19 @@ test("a backup TBO Support is still watching answers started, and a retry starts
   assert.equal(hub.posts.length, 1);
 });
 
+test("when Press's jobs cannot be read, no backup is started", async () => {
+  // CodeRabbit on #28: "never started again" holds even when the first read fails
+  const hub = pressHub({ backup: () => ({}) });
+  hub.method = async (path, params) => {
+    hub.reads.push([path, params]);
+    throw Object.assign(new Error("Could not reach TBO Support (ECONNRESET)."), { code: "NETWORK" });
+  };
+  const got = await runAction(hub, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL);
+  assert.equal(got.status, "not confirmed");
+  assert.match(got.next, /no backup was started/);
+  assert.deepEqual(hub.posts, []);
+});
+
 test("a backup that cannot be confirmed says so and how to check, never to ask again", async () => {
   const hub = pressHub({
     backup() {

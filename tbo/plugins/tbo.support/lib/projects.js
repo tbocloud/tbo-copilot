@@ -170,15 +170,16 @@ function createProjectStore({ dataDir }) {
       return (entry && entry.sessionId) || null;
     },
 
-    // {sessionId, project, briefed}: briefed once the chat accepted the task's first message
+    // {sessionId, project, folder, briefed}: the folder the chat was made in; briefed once the chat
+    // accepted the task's first message
     chatEntry(site, task) {
       const entry = siteOf(read(), site).tasks[checkTask(task)];
       return entry && entry.sessionId ? { ...entry } : null;
     },
 
-    rememberChat(site, task, project, sessionId) {
+    rememberChat(site, task, project, sessionId, folder = null) {
       const data = read();
-      siteOf(data, site).tasks[checkTask(task)] = { sessionId, project, briefed: false, at: new Date().toISOString() };
+      siteOf(data, site).tasks[checkTask(task)] = { sessionId, project, folder, briefed: false, at: new Date().toISOString() };
       write(data);
     },
 
@@ -274,13 +275,16 @@ async function openTaskOnce({ task, site, client, store, invoke: invokeRaw, stil
     });
     const id = created && created.session && created.session.id;
     if (!id) throw fail("DESKTOP", "The app did not make the task's chat.");
-    store.rememberChat(site, task, project, id); // replaces the old link only now it exists
+    store.rememberChat(site, task, project, id, folders[0]); // replaces the old link only now it exists
     return id;
   };
 
   const remembered = store.chatEntry(site, task);
-  // a task moved to another project gets a chat in its new project's folders
-  let sessionId = remembered && remembered.project === project ? remembered.sessionId : null;
+  // a task moved to another project gets a chat in its new project's folders, and so does one whose
+  // first folder changed (the app keeps a chat in the folder it was made in); a chat remembered
+  // before the folder was kept is reused
+  const sameFolder = remembered && (!remembered.folder || remembered.folder === folders[0]);
+  let sessionId = remembered && remembered.project === project && sameFolder ? remembered.sessionId : null;
   if (sessionId) {
     let got;
     try {

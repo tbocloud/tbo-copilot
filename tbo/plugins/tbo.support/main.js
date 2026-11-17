@@ -534,10 +534,11 @@ const plainText = (value, max) =>
 // folders kept for each here. The panel shows text only (never HTML).
 async function projectsView() {
   return withClient(async (client, site) => {
-    const [projectRows, tasks] = await Promise.all([
+    const [projectList, tasks] = await Promise.all([
       allProjects(client), // every page of the person's open projects (Phase 23)
       allTasks(client), // every page of My Work
     ]);
+    const projectRows = projectList.rows;
     const kept = projectStore.projects(site);
     const rows = projectRows.map((p) => ({
       project: p.name,
@@ -600,23 +601,36 @@ async function projectsView() {
     const unassigned = tasks
       .filter((t) => !t.project)
       .map((t) => ({ task: t.name, subject: plainText(t.subject, 200), status: t.status, deadline: t.exp_end_date || null, overdue: Boolean(t.is_overdue) }));
-    return { site, projects: rows, unassigned, request: openRequest && openRequest.site === site ? openRequest : null };
+    return {
+      site,
+      projects: rows,
+      unassigned,
+      // the list was cut (a very long one, or a hub that did not move on): the panel says so
+      projects_cut: projectList.cut,
+      request: openRequest && openRequest.site === site ? openRequest : null,
+    };
   });
 }
 
-// The person's open projects, every page (at most MAX_PROJECT_PAGES of 50).
-const MAX_PROJECT_PAGES = 10;
+// The person's open projects, every page, until TBO Support says there are no more. A cursor
+// seen before ends the reading (a hub that does not move on); a list cut by the safety cap
+// (MAX_PROJECT_PAGES of 50) says so in the panel, never silently.
+const MAX_PROJECT_PAGES = 200;
 
 async function allProjects(client) {
   const rows = [];
+  const seen = new Set();
   let cursor;
   for (let page = 0; page < MAX_PROJECT_PAGES; page += 1) {
     const got = await client.method("helpdesk.api.mobile.get_projects", { status: "Open", limit: 50, cursor });
     rows.push(...(Array.isArray(got && got.data) ? got.data : []));
-    if (!got || !got.has_more || got.next_cursor == null) break;
+    if (!got || !got.has_more || got.next_cursor == null) return { rows, cut: false };
+    const next = String(got.next_cursor);
+    if (seen.has(next)) return { rows, cut: true };
+    seen.add(next);
     cursor = got.next_cursor;
   }
-  return rows;
+  return { rows, cut: true };
 }
 
 // the panel's own site must still be the current one: a settings change meanwhile acts on nothing

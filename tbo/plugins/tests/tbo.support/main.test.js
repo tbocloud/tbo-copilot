@@ -969,6 +969,13 @@ test("the Projects view reads every page of projects, shows tasks without a proj
   const view = await plugin.onPanelInvoke("tbo-support.projects");
   assert.equal(view.ok, true, view.error);
   assert.equal(view.projects.filter((p) => /^PROJ-00\d\d$/.test(p.project)).length, 60);
+  assert.equal(view.projects_cut, false);
+  // more than the old ten pages: every one is read (CodeRabbit on #28)
+  hub.projects = Array.from({ length: 520 }, (_, i) => ({ name: `PROJ-${String(i + 1).padStart(4, "0")}`, project_name: `Project ${i + 1}`, my_role: "Developer" }));
+  const long = await plugin.onPanelInvoke("tbo-support.projects");
+  assert.equal(long.projects.filter((p) => /^PROJ-\d{4}$/.test(p.project) && p.project !== "PROJ-0999").length, 520);
+  assert.equal(long.projects_cut, false);
+  hub.projects = Array.from({ length: 60 }, (_, i) => ({ name: `PROJ-${String(i + 1).padStart(4, "0")}`, project_name: `Project ${i + 1}`, my_role: "Developer" }));
   assert.deepEqual(view.unassigned, [{ task: "TASK-2026-00002", subject: "No project", status: "Working", deadline: null, overdue: false }]);
 
   const opened = await plugin.onPanelInvoke("tbo-support.open-task", { task: "TASK-2026-00777", site: SITE });
