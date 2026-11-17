@@ -30,6 +30,13 @@ function parse(bodyText) {
   }
 }
 
+const LIMITED = {
+  start_sign_in: "Too many sign-in attempts. Wait a few minutes and try again.",
+  finish_sign_in: "TBO Support is limiting this sign-in's checks. They go on more slowly.",
+  refresh: "TBO Support is limiting this computer's renewals. It tries again in a few minutes.",
+  sign_out: "TBO Support is limiting sign-outs from this computer. Wait a few minutes and try again.",
+};
+
 async function call(request, siteUrl, name, body) {
   let res;
   try {
@@ -53,7 +60,8 @@ async function call(request, siteUrl, name, body) {
   if (res.status === 404 || MISSING_METHOD.test(res.bodyText || "")) {
     throw fail("NOT_AVAILABLE", "This TBO Support site does not offer Microsoft sign-in yet. Use an API key, or ask TBO.");
   }
-  if (res.status === 429) throw fail("RATE_LIMITED", "Too many sign-in attempts. Wait a few minutes and try again.");
+  // TBO Support says which limit (Phase 23: per computer); an older one says nothing, so name the call
+  if (res.status === 429) throw fail("RATE_LIMITED", frappeMessage(res.bodyText || "") || LIMITED[name] || LIMITED.start_sign_in);
   if (res.status < 200 || res.status >= 300 || !message) {
     throw fail("HELPDESK_ERROR", `TBO Support could not handle the sign-in (HTTP ${res.status}).`);
   }

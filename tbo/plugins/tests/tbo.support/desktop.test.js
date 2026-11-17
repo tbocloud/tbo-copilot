@@ -175,3 +175,23 @@ test("a site without TBO's desktop sign-in says so plainly, not HTTP 417", async
     return true;
   });
 });
+
+// --- Phase 23, C14: a limit says what it is about ---
+
+test("a rate limit gives TBO Support's reason, and a renewal's is not called a sign-in attempt", async () => {
+  const body = JSON.stringify({ _server_messages: JSON.stringify([JSON.stringify({ message: "This computer asked to renew its sign-in too often. It tries again in a few minutes." })]) });
+  const told = fakeSite([{ status: 429, headers: {}, bodyText: body }]);
+  await assert.rejects(desktop.refresh({ request: told.request, siteUrl: SITE, computerToken: "x" }), {
+    code: "RATE_LIMITED",
+    message: /renew its sign-in too often/,
+  });
+  const older = fakeSite([{ status: 429, headers: {}, bodyText: "{}" }]);
+  await assert.rejects(desktop.refresh({ request: older.request, siteUrl: SITE, computerToken: "x" }), (e) => {
+    assert.equal(e.code, "RATE_LIMITED");
+    assert.match(e.message, /renew/);
+    assert.doesNotMatch(e.message, /sign-in attempts/);
+    return true;
+  });
+  const starting = fakeSite([{ status: 429, headers: {}, bodyText: "{}" }]);
+  await assert.rejects(desktop.start({ request: starting.request, siteUrl: SITE, os: OS }), { code: "RATE_LIMITED", message: /sign-in attempts/ });
+});
