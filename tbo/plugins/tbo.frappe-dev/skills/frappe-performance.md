@@ -59,6 +59,9 @@ rows = frappe.get_all("Sales Invoice", filters=filters, fields=["name", "custome
 
 - `frappe.get_doc` loads the whole document with all its child tables. Use it when you need the document's methods or
   will save it; read values with `frappe.get_all(..., fields=[...])`, `frappe.db.get_value(...)` or `frappe.qb`.
+- `frappe.get_all` (like `frappe.db.get_value` and `frappe.qb`) checks no permission. For a list a user sees, use
+  `frappe.get_list`, which applies their permissions; keep `get_all` for internal work, as in the skill "Frappe
+  conventions".
 - `frappe.get_all` with `fields` lists only the columns needed; never `fields=["*"]` on a wide table.
 - Fetch related records once (`filters={"parent": ("in", names)}`) and group them in Python, not one query per row.
 - In a loop that saves many documents, no `frappe.db.commit()` per row. Many rows at once is a background job or, for
@@ -69,14 +72,17 @@ rows = frappe.get_all("Sales Invoice", filters=filters, fields=["name", "custome
 - `frappe.get_cached_doc` and `frappe.get_cached_value` for records that rarely change (settings, Company, Item Group);
   never for something the same request changes.
 - `@redis_cache(ttl=...)` from `frappe.utils.caching` for a function whose result is the same for everyone for a
-  while; `@request_cache` within one request. Clear what you cache when its source changes (`frappe.cache.delete_value`
-  in `on_update` of that DocType).
+  while; `@request_cache` within one request. Clear what you cache when its source changes: call the decorated
+  function's own `clear_cache()` (it clears every argument's entry) in `on_update` of that DocType;
+  `frappe.cache.delete_value` does not reach the decorator's keys.
 - Cache results, not permissions: a cached list must not show one user's records to another.
 
 ## Long work out of the request
 
 A request that runs for more than a few seconds becomes a background job: `frappe.enqueue("my_app.jobs.rebuild",
-queue="long", job_id=..., deduplicate=True)`; the user gets a message, and the job reports when it is done.
+queue="long", job_id=..., deduplicate=True, enqueue_after_commit=True)`; the user gets a message, and the job reports
+when it is done. `enqueue_after_commit=True` starts the job only after the request's changes are saved, so a job that
+reads what the request just wrote finds it.
 
 ## Prove it
 

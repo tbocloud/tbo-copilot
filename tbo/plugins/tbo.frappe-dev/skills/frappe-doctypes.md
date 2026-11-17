@@ -28,8 +28,9 @@ when nothing else works, and say why in the PR.
    one site's database. The files appear in `<app>/<module>/doctype/<doctype>/`: the `.json`, the controller `.py`,
    the form `.js` and `test_<doctype>.py`. By hand: copy the folder of an existing DocType of the app and keep the
    JSON's format and key order.
-3. After every change to a DocType's JSON: `tbo_dev` `bench` with `command: migrate` (the test site), then
-   `job_status`. Commit the JSON together with the code that uses it.
+3. After every change to a DocType's JSON: `tbo_dev` `bench` with `command: migrate` and `site: <dev site>` (without
+   `site` it migrates the test site), then `job_status` until it has finished. Migrate the test site too before
+   `run_tests`. Commit the JSON together with the code that uses it.
 
 **Fields**
 - `fieldname` in snake_case, never renamed once there is data. A Link's `options` is a DocType that exists.
@@ -62,16 +63,19 @@ when nothing else works, and say why in the PR.
 
 Pick one way per app and keep to it.
 
-- **Fixtures.** Make the field in the desk (Customize Form) on the dev site, with **Module** set to your app's module.
-  List it in `hooks.py`, always with a filter:
+- **Fixtures.** Make the field in the desk (Customize Form) on the dev site. Customize Form does not set the
+  **Module** of the Custom Fields and Property Setters it makes: open each new record (Custom Field list, Property
+  Setter list) and set **Module** to your app's module, or the filter below leaves it out. List them in `hooks.py`,
+  always with a filter:
   ```python
   fixtures = [
       {"dt": "Custom Field", "filters": [["module", "=", "My App"]]},
       {"dt": "Property Setter", "filters": [["module", "=", "My App"]]},
   ]
   ```
-  Then `bench --site <dev site> export-fixtures --app my_app` and commit `my_app/fixtures/*.json`. Without a filter
-  the export takes every customisation on the site, other apps' too.
+  Then `bench --site <dev site> export-fixtures --app my_app` and commit `my_app/fixtures/*.json`. Open the exported
+  files and check every field and property you made is there (a missing one has no Module). Without a filter the
+  export takes every customisation on the site, other apps' too.
 - **In code.** `create_custom_fields({"Sales Invoice": [{...}]}, update=True)` from
   `frappe.custom.doctype.custom_field.custom_field`, called from `after_install` and from a patch for sites that
   already have the app. `make_property_setter(...)` from `frappe.custom.doctype.property_setter.property_setter` for

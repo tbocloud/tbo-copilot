@@ -526,6 +526,23 @@ test("one job at a time on a bench: no migrate under running tests, no tests und
   assert.equal((await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "migrate" })).job)).state, "passed");
 });
 
+test("a running bench job stays in the history however many jobs finish after it", async (t) => {
+  // CodeRabbit on #29: an evicted running migrate let a second bench job start on the same bench
+  const w = world(t);
+  await readyBranch(w);
+  let release;
+  w.hooks.holdBench = new Promise((r) => {
+    release = r;
+  });
+  const migrate = await w.dev.runDev({ action: "bench", command: "migrate" });
+  assert.equal(migrate.state, "running");
+  for (let i = 0; i < 25; i += 1) await finished(w.dev, (await w.dev.runDev({ action: "check" })).job);
+  await assert.rejects(w.dev.runDev({ action: "bench", command: "build" }), { code: "BUSY", message: /migrate/ });
+  w.hooks.holdBench = null;
+  release();
+  assert.equal((await finished(w.dev, migrate.job)).state, "passed");
+});
+
 // --- open_pr -----------------------------------------------------------------------------
 
 async function checkedAndTested(w) {

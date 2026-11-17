@@ -289,7 +289,12 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     counter += 1;
     const job = { id: `${kind}-${counter}`, kind, repo: root, head, bench: more.bench, command: more.command, state: "running", started: new Date().toISOString() };
     jobs.set(job.id, job);
-    while (jobs.size > MAX_JOBS) jobs.delete(jobs.keys().next().value);
+    // the history keeps MAX_JOBS; only finished jobs leave it: a running migrate must keep its bench busy
+    while (jobs.size > MAX_JOBS) {
+      const done = [...jobs.values()].find((j) => j.state !== "running");
+      if (!done) break;
+      jobs.delete(done.id);
+    }
     work()
       .then(async (result) => {
         const stale = head ? await whyStale(root, head, Boolean(result.passed)) : "";

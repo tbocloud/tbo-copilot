@@ -55,18 +55,28 @@ Called with `communication=` and no `recipients`, `cc` or `bcc`, it throws "At l
 the whole action fails; without a communication it quietly sends nothing. Build the list, drop empty values, and when
 it is empty skip the mail (and say so where it matters) instead of calling `sendmail`.
 
-## Private files: copy as the uploader
+## Private files: check first, then copy
 
 A new File row with the `file_url` of an existing private file is refused (`File.validate_private_file_access`)
 unless the current user is Administrator, uploaded that file, or can read it. `ignore_permissions=True` does not skip
 the check. Code that copies attachments to another document (an order's to its invoice, a ticket's to a task) often
-runs as someone who cannot read the original: a background job, a portal user, a webhook. Make the copy as the file's
-uploader and switch back:
+runs as someone who cannot read the original: a background job, a portal user, a webhook.
+
+Never get around it by acting as the file's uploader: that copies a file the asker may not read onto a document they
+can, and the uploader may not even write the destination. Check both sides under the asker's own identity, then make
+the copy as Administrator, the one identity the check always lets through, and switch back:
 
 ```python
 source = frappe.get_doc("File", file_name)
+# the asker may read where the file comes from and write where it goes
+if not (
+    frappe.has_permission(source.attached_to_doctype, "read", source.attached_to_name)
+    and frappe.has_permission(doctype, "write", name)
+):
+    frappe.throw(_("You may not copy this file there."), frappe.PermissionError)
+
 current = frappe.session.user
-frappe.set_user(source.owner)
+frappe.set_user("Administrator")
 try:
     frappe.get_doc({
         "doctype": "File",
@@ -78,6 +88,9 @@ try:
 finally:
     frappe.set_user(current)
 ```
+
+A background job has no asker: the rule that decided the copy (this invoice was made from that order) is the check;
+write it before the copy, never only "the job may".
 
 Test it as a user who cannot read the original file.
 

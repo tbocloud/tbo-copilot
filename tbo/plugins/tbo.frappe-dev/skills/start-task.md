@@ -26,10 +26,12 @@ workspace (or pass `repo`, e.g. `apps/my_app`, when the workspace is a bench).
    asks.
 7. **Commits.** Conventional titles in lower case: `feat(invoicing): cap the discount per tier`,
    `fix(margin): skip cancelled invoices`. One commit per step is fine.
-8. **Tests.** After a change to a DocType's JSON, a patch or fixtures, first `tbo_dev` `bench` with `command: migrate`
-   (and `build` after JavaScript or CSS), each followed by `job_status`. Then `tbo_dev` `run_tests` (the modules the
-   branch touched, or name them), then `job_status` until it is no longer running. Fix failures and commit. Never run
-   the whole suite locally: CI runs it.
+8. **Tests.** One bench job at a time: after each `tbo_dev` `bench` or `run_tests`, ask `job_status` until the job has
+   finished (a second job on the same bench is refused while one runs). In this order:
+   - after a change to a DocType's JSON, a patch or fixtures: `bench` with `command: migrate`;
+   - after any JavaScript or CSS change (with or without a schema change): `bench` with `command: build`;
+   - then `run_tests` (the modules the branch touched, or name them).
+   Fix failures and commit. Never run the whole suite locally: CI runs it.
 9. **Checks.** `tbo_dev` `check`, then `job_status`. Fix what it finds, commit, and check again until it passes on the
    last commit. pre-commit may fix formatting itself: review those changes and commit them. If the check says
    pre-commit could not install a hook's tools (not a problem in the code), and the change has no file that hook checks

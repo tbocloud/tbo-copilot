@@ -45,9 +45,9 @@ ships (Custom Fields, Property Setters, roles, settings) are **fixtures** or are
           last = names[-1]
   ```
 - `update_modified=False` when the change is not a user's edit, so `modified` keeps its meaning.
-- A field from a fixture is not there yet in a patch: migrate syncs fixtures after the patches. Create what the patch
-  needs in the patch (`create_custom_fields`), or reload a DocType it needs with `frappe.reload_doc(module, "doctype",
-  name)`.
+- A field from a fixture (a Custom Field) is not there yet in a patch: migrate syncs fixtures after the patches.
+  Create it in the patch with `create_custom_fields` before using it. `frappe.reload_doc(module, "doctype", name)`
+  reloads only a DocType's own JSON: use it for a field defined in your DocType's JSON, never for a fixture's field.
 - No `print` noise and no prompts. A patch that can fail on bad data says which record and why, then raises.
 
 **Try it on the dev bench**
