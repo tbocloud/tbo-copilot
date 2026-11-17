@@ -26,8 +26,10 @@ workspace (or pass `repo`, e.g. `apps/my_app`, when the workspace is a bench).
    asks.
 7. **Commits.** Conventional titles in lower case: `feat(invoicing): cap the discount per tier`,
    `fix(margin): skip cancelled invoices`. One commit per step is fine.
-8. **Tests.** One bench job at a time: after each `tbo_dev` `bench` or `run_tests`, ask `job_status` with that job's
-   `job` id until it has finished (a second job on the same bench is refused while one runs). In this order:
+8. **Tests.** One job at a time on a bench: while a `bench` job runs, nothing else starts there, and while tests run,
+   no `bench` job and no other repository's tests start (they share the test site). After each `tbo_dev` `bench` or
+   `run_tests`, ask `job_status` with that job's `job` id until it has finished, and go on only when it says
+   `passed` (fix and run it again otherwise). In this order:
    - after a change to a DocType's JSON, a patch or fixtures: `bench` with `command: migrate`;
    - after a change to any file the build bundles (JavaScript, TypeScript, CSS, SCSS, Vue, the app's `public/`
      assets), with or without a schema change: `bench` with `command: build`;

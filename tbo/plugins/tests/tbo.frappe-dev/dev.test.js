@@ -145,9 +145,10 @@ function makeSite(bench, name) {
   fs.writeFileSync(path.join(bench, "sites", name, "site_config.json"), "{}\n");
 }
 
-async function finished(dev, job) {
+// `repo`: needed when the workspace is the bench folder, not the repository
+async function finished(dev, job, repo) {
   for (let i = 0; i < 200; i += 1) {
-    const s = await dev.runDev({ action: "job_status", job });
+    const s = await dev.runDev({ action: "job_status", job, ...(repo ? { repo } : {}) });
     if (s.state !== "running") return s;
     await new Promise((r) => setTimeout(r, 10));
   }
@@ -541,6 +542,33 @@ test("a running bench job stays in the history however many jobs finish after it
   w.hooks.holdBench = null;
   release();
   assert.equal((await finished(w.dev, migrate.job)).state, "passed");
+});
+
+test("tests from two repositories on one bench run one at a time; the same repository gets its running job back", async (t) => {
+  // CodeRabbit on #29: run_tests checked only for bench jobs, so another repository's tests could share the test site
+  const w = world(t, { workspace: "bench" });
+  w.git(w.top, "clone", "-q", GITHUB_URL, path.join(w.bench, "apps", "other_app"));
+  for (const repo of ["apps/my_app", "apps/other_app"]) {
+    await w.dev.runDev({ action: "start_work", repo, task: TASK, subject: "Cap the discount per tier" });
+    const root = path.join(w.bench, repo);
+    w.write(root, "my_app/selling/discounts.py", "def cap(x):\n    return min(x, 10)\n");
+    w.git(root, "add", ".");
+    w.git(root, "commit", "-q", "-m", "feat(selling): cap the discount per tier");
+  }
+  let release;
+  w.hooks.holdBench = new Promise((r) => {
+    release = r;
+  });
+  const first = await w.dev.runDev({ action: "run_tests", repo: "apps/my_app" });
+  assert.equal(first.state, "running");
+  await assert.rejects(w.dev.runDev({ action: "run_tests", repo: "apps/other_app" }), { code: "BUSY", message: /run_tests/ });
+  const again = await w.dev.runDev({ action: "run_tests", repo: "apps/my_app" });
+  assert.equal(again.job, first.job);
+  w.hooks.holdBench = null;
+  release();
+  assert.equal((await finished(w.dev, first.job, "apps/my_app")).state, "passed");
+  const second = await w.dev.runDev({ action: "run_tests", repo: "apps/other_app" });
+  assert.equal((await finished(w.dev, second.job, "apps/other_app")).state, "passed");
 });
 
 test("one bench reached two ways is one bench: a link or a trailing slash does not let a job start beside a migrate", async (t) => {

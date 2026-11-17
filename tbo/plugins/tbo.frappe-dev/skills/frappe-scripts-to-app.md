@@ -119,8 +119,16 @@ def disable_moved_scripts():
             doc.save(ignore_permissions=True)  # the save calls ServerScript.clear_cache, which drops the map
 
 
-# my_app/patches/v1_0/disable_moved_scripts.py:  def execute(): disable_moved_scripts()
 # hooks.py:  after_install = "my_app.setup.scripts.disable_moved_scripts"  (or call it from the existing one)
+```
+
+```python
+# my_app/patches/v1_0/disable_moved_scripts.py
+from my_app.setup.scripts import disable_moved_scripts
+
+
+def execute():
+    disable_moved_scripts()
 ```
 
 **No moment when both run.** On a deploy the new code can be live before migrate runs the patch, so a document event

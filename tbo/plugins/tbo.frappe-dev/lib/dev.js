@@ -318,8 +318,8 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     return { ...summaryOf(job), next: more.next || "Ask job_status in a minute; the first run of a repository takes longer." };
   }
 
-  // One bench job at a time on a bench, and no tests under it: a migrate under running tests, or two
-  // builds at once, would trip over each other.
+  // One bench job at a time on a bench, no tests under it, and one test run at a time (tests share the test
+  // site): a migrate under running tests, two builds at once, or two repositories' tests would trip over each other.
   function busyOn(bench, kinds) {
     return [...jobs.values()].find((j) => j.state === "running" && j.bench === bench && kinds.includes(j.kind));
   }
@@ -377,8 +377,10 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     if (!modules.length) modules = testModules(root, await git.changedFiles(root, await git.mergeBase(root, base, info.remote, info.head), info.head));
     if (!modules.length) throw fail("NO_TESTS", "The branch changes no file that has tests beside it: name the test modules, or add tests.");
     checkModules(modules); // refused now, not later in the background
-    const busy = busyOn(bench, ["bench"]);
-    if (busy) throw busyError(busy);
+    // tests share the bench's test site, so one test run at a time on a bench, whichever repository asks;
+    // the same repository asking again gets its running job back from startJob
+    const busy = busyOn(bench, ["bench", "run_tests"]);
+    if (busy && !(busy.kind === "run_tests" && busy.repo === root)) throw busyError(busy);
     const tests = createTests({ runFn, env, log });
     const key = `${root}@${info.head}`;
     const started = startJob(

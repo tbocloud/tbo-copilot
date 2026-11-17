@@ -63,21 +63,44 @@ the check. Code that copies attachments to another document (an order's to its i
 runs as someone who cannot read the original: a background job, a portal user, a webhook.
 
 Never get around it by acting as the file's uploader: that copies a file the asker may not read onto a document they
-can, and the uploader may not even write the destination. Check both sides under the asker's own identity, then make
-the copy as Administrator, the one identity the check always lets through, and switch back:
+can, and the uploader may not even write the destination.
+
+**Who may cause the copy.** A copy shows the file to everyone who can read the destination, including people who
+cannot read the source. So the asker's own rights are not enough on their own, and neither is a link between the
+documents (this invoice was made from that order). Every copy, asked by a person or made by a job, needs a **rule the
+owner of that data agreed in the task** (for example "an invoice made from an order carries the order's attachments,
+for the invoice's readers"). Write the rule as a function, check it before the copy, copy only what it covers, and
+name it in the PR; never only "the job may". When a person asks, check also that they can read the source and write
+the destination.
+
+**Where to switch identity.** Make the copy as Administrator, the one identity the check always lets through, in a
+**background job**, never in the request: `frappe.set_user` empties `frappe.form_dict` and `frappe.session.data`,
+sets the session id to the user's name, and switching back restores none of it, while Frappe still runs the
+`after_request` hooks and saves the session after the handler returns. A job has no request state to lose.
+`frappe.set_user` also leaves `@request_cache` results in place, so a request-cached function that depends on the user
+without taking it as an argument would answer for the wrong identity on either side of a switch.
 
 ```python
+# In the request: the checks, as the asker; then the job.
 source = frappe.get_doc("File", file_name)
-# the asker may read where the file comes from and write where it goes
 if not (
-    frappe.has_permission(source.attached_to_doctype, "read", source.attached_to_name)
+    copy_allowed(source, doctype, name)  # the data owner's rule, in the app
+    and frappe.has_permission(source.attached_to_doctype, "read", source.attached_to_name)
     and frappe.has_permission(doctype, "write", name)
 ):
     frappe.throw(_("You may not copy this file there."), frappe.PermissionError)
+frappe.enqueue(
+    "my_app.files.copy_private_file",
+    file_name=file_name, doctype=doctype, name=name, enqueue_after_commit=True,
+)
 
-current = frappe.session.user
-frappe.set_user("Administrator")
-try:
+
+# my_app/files.py: the job checks the rule again (things may have changed) and copies as Administrator.
+def copy_private_file(file_name, doctype, name):
+    source = frappe.get_doc("File", file_name)
+    if not copy_allowed(source, doctype, name):
+        return
+    frappe.set_user("Administrator")
     frappe.get_doc({
         "doctype": "File",
         "file_url": source.file_url,
@@ -85,21 +108,9 @@ try:
         "attached_to_doctype": doctype,
         "attached_to_name": name,
     }).insert()
-finally:
-    frappe.set_user(current)
 ```
 
-`frappe.set_user` resets more than the user: `frappe.form_dict`, `frappe.session.data` and the request's caches start
-empty, and switching back does not bring them back. So in a request, keep the permission checks in the request, then
-hand the copy to a background job (`frappe.enqueue(..., enqueue_after_commit=True)`) that switches to Administrator
-there: a job has no request state to lose. If the copy must happen inside the request, make it the last thing the
-handler does.
-
-A background job has no asker, and a link between the documents (this invoice was made from that order) does not by
-itself allow the copy: the invoice's readers would then see a private file they could not see before. The copy needs
-a rule that says so, agreed in the task by the person who owns that data (for example "an invoice made from an order
-carries the order's attachments, for the invoice's readers"). Write that rule in the code as the check before you
-switch to Administrator, copy only what it covers, and name it in the PR; never only "the job may".
+A job that copies by itself (no person asked) checks only `copy_allowed`.
 
 Test it as a user who cannot read the original file.
 
