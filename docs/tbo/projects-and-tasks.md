@@ -19,7 +19,8 @@ of date; a folder step that fails says why.
 
 **Add folder…** picks a folder; a project can have up to ten. They are kept on this computer only, per TBO Support site:
 everyone's paths differ. The first folder (★) is the chat's own; **First** makes another one first. **Remove** forgets
-a folder (it deletes nothing).
+a folder (it deletes nothing). For Frappe app code, make the app's repository (or its bench) the first folder: the
+Frappe dev plugin works in the chat's own folder only.
 
 ## 2. Opening a task
 

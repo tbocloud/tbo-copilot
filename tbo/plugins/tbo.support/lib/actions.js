@@ -612,6 +612,8 @@ function taskRow(t) {
     overdue: Boolean(t.is_overdue),
     priority: t.priority,
     timer: t.timer || null,
+    // the ticket a task was made from, when TBO Support gives it: get_ticket has the customer's side
+    ticket: t.hd_ticket ? String(t.hd_ticket) : null,
   };
 }
 

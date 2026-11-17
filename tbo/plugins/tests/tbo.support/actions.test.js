@@ -679,3 +679,13 @@ test("restore and new_site are not offered until the plugin can send what they n
   assert.deepEqual(posts, []);
   assert.deepEqual(PRESS_ACTIONS, ["restart_bench", "update_site", "migrate_site", "change_plan", "deploy"]);
 });
+
+// --- Phase 23, C12: a task from a ticket names its ticket ---
+
+test("get_task gives the task's ticket when TBO Support has one", async () => {
+  const client = fakeClient({ "helpdesk.api.mobile.get_task": { data: { ...TASK_ROW, hd_ticket: "0042" } } });
+  const got = await runAction(client, { action: "get_task", task: "TASK-2026-00021" }, ENV);
+  assert.equal(got.ticket, "0042");
+  const none = fakeClient({ "helpdesk.api.mobile.get_task": { data: { ...TASK_ROW } } });
+  assert.equal((await runAction(none, { action: "get_task", task: "TASK-2026-00021" }, ENV)).ticket, null);
+});
