@@ -31,8 +31,8 @@ when nothing else works, and say why in the PR.
 3. After every change to a DocType's JSON: `tbo_dev` `bench` with `command: migrate` and `site: <dev site>` (without
    `site` it migrates the test site), then `job_status` with the **`job` id that answer gave** until that job has
    finished (not just the latest job: a check that finished meanwhile says nothing about the migrate). Go on only
-   when it says **`passed`**: `failed` or `error` means the schema was not updated, so read its detail, fix the
-   cause and migrate again. Migrate the test site too before `run_tests`. Commit the JSON together with the code that
+   when it says **`passed`**: `failed` or `error` means the migration may be incomplete (a patch after the schema
+   sync can fail, so some changes may be in and others not), so read its detail, fix the cause and migrate again. Migrate the test site too before `run_tests`. Commit the JSON together with the code that
    uses it.
 
 **Fields**
