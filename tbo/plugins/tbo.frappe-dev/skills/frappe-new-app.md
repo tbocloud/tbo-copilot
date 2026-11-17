@@ -23,8 +23,10 @@ version's way (`bench version`).
   the app's module, and the files appear in `<app>/<module>/doctype/<doctype>/`: the `.json`, the controller `.py`,
   the form `.js`, and `test_<doctype>.py`.
 - By hand: copy the folder layout of an existing DocType in the app and edit the JSON in the same format and key order.
-- `bench --site <dev site> migrate` applies it. Field names are snake_case; links point at existing DocTypes;
-  permissions are set in the JSON's `permissions` table.
+- `tbo_dev` `bench` with `command: migrate` and `site: <dev site>` (or `bench --site <dev site> migrate`) applies it;
+  without `site` the action migrates the test site. Field names are
+  snake_case; links point at existing DocTypes; permissions are set in the JSON's `permissions` table. More in the
+  skill "Frappe DocTypes and fields".
 
 ## A patch (a data change)
 
@@ -32,8 +34,9 @@ version's way (`bench version`).
   - under `[pre_model_sync]` when it must run on the **old** schema (before the DocType JSON is applied);
   - under `[post_model_sync]` when it needs the **new** fields.
 - It runs once per site (Frappe records it in Patch Log) and must be safe to run twice: check before you change.
-- Try it on the dev site: `bench --site <dev site> migrate` (or `bench --site <dev site> execute
-  <app>.patches.v1.<name>.execute` while writing it).
+- Try it on the dev site: `tbo_dev` `bench` `migrate` with `site: <dev site>` (or `bench --site <dev site> execute
+  <app>.patches.v1.<name>.execute` while writing it). Big tables and fixtures: the skill "Frappe patches and
+  fixtures".
 
 ## Tests
 

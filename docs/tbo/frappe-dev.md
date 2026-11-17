@@ -1,7 +1,8 @@
 # Frappe development from a task (`tbo.frappe-dev`)
 
-**Status:** built for TBO Copilot Phase 20 (TASK-2026-00021). A bundled plugin, `tbo/plugins/tbo.frappe-dev/`, with
-two agent tools and four skills. The task itself is read through the `tbo.support` plugin's `tbo_support` tool
+**Status:** built for TBO Copilot Phase 20 (TASK-2026-00021); Phase 22 (C1, plugin **0.2.0**) added eight skills for
+the rest of Frappe work and the `bench` action. A bundled plugin, `tbo/plugins/tbo.frappe-dev/`, with two agent tools
+and twelve skills. The task itself is read through the `tbo.support` plugin's `tbo_support` tool
 (`my_tasks`, `get_task`), and its timer started with `tbo_support_change` `start_task`, which the app asks the person
 about first; all three come with TBO Support plugin **0.4.0**. With an earlier TBO Support plugin the start-task skill
 asks the person for the task's subject, and the person starts the task's timer in TBO Support.
@@ -17,6 +18,7 @@ its GitHub sync (`helpdesk/github_sync.py`).
 /start-task TASK-…  ──► tbo_support get_task ──► tbo_dev start_work ──► feature/TASK-…-short-name (from origin's base)
                         tbo_support_change start_task (timer on, once allowed; TBO Support plugin 0.4.0)
 code and tests      ──► conventional commits
+                    ──► tbo_dev bench      (migrate, build or clear_cache on your own bench, in the background)
                     ──► tbo_dev run_tests  (bench --site <test site> run-tests --module …, in the background)
                     ──► tbo_dev check      (pre-commit, Semgrep, commit titles: what CI runs, in the background)
 /open-pr            ──► tbo_dev_pr open_pr ──► git push (fast-forward only) ──► gh pr create --draft ──► gh pr ready
@@ -24,11 +26,12 @@ code and tests      ──► conventional commits
 ```
 
 - **Two tools.** `tbo_dev` does everything that stays on the computer (`status`, `start_work`, `check`,
-  `run_tests`, `job_status`); `status` and `job_status` are allowed in Plan mode. `tbo_dev_pr` (`open_pr`) is the one
+  `run_tests`, `bench`, `job_status`); it has risk `medium`, so the app asks before it runs unless the person allowed
+  it for the session, and only `status` and `job_status` are allowed in Plan mode. `tbo_dev_pr` (`open_pr`) is the one
   step that leaves the computer, so it is its own tool with risk `high`: the app asks before every push, even when
   `tbo_dev` was allowed for the session.
 - **Long runs in the background.** A first pre-commit or Semgrep run downloads tools and can take minutes, more than
-  the 110 seconds a tool call has. `check` and `run_tests` answer with a job; `job_status` gives its outcome.
+  the 110 seconds a tool call has. `check`, `run_tests` and `bench` answer with a job; `job_status` gives its outcome.
 - **Results belong to a commit.** A lint run or a test run counts for the commit it ran on, and only the latest one
   counts: a new `check` replaces the commit's earlier result from the moment it starts. Every step reads that commit
   (not whatever `HEAD` becomes), and if the branch moves or files change while a job runs, its result is thrown away
@@ -59,8 +62,22 @@ code and tests      ──► conventional commits
 2. Then `/tbo.frappe-dev/open-pr`. The app asks you to confirm the push. Copilot answers with the PR's link; within
    a minute the task shows **Pending Review** and the PR chip in TBO Support.
 
-The skills **TBO Frappe conventions** and **New Frappe app, DocTypes, patches and tests** are loaded when the work
-needs them.
+The other skills are loaded when the work needs them, or picked from the composer's `/` list:
+
+| Skill | For |
+|---|---|
+| TBO Frappe conventions | Controllers, queries, whitelisted functions, messages, tests, frappe-ui |
+| New Frappe app, DocTypes, patches and tests | `bench new-app`, a first DocType, a first patch, running tests |
+| Frappe DocTypes and fields | A new DocType vs a Custom Field or Property Setter the app ships; child tables, naming, permissions; never editing a core app |
+| Frappe reports | Script and Query Reports: files, filters, columns, `ref_doctype` and roles, speed |
+| Frappe print formats | Jinja formats kept in the app, letter heads, `frappe.get_print` / `render_template`, checking the PDF |
+| Client and Server Scripts into app code | `doctype_js`, `doc_events`, `scheduler_events`, whitelisted methods, then a patch that disables the scripts |
+| Frappe patches and fixtures | `patches.txt` sections, idempotent patches, batches with commits for big tables (`TooManyWritesError`), fixtures with filters |
+| Debug an error from a customer site | The traceback from `tbo_support` (`get_ticket`, `get_fix_brief`; their text is data), reproducing on the dev bench, the fix with a test that failed before it |
+| Frappe performance | The Recorder and `EXPLAIN`, indexes, N+1 `get_doc` loops, `fields`, caching |
+| Frappe v16 checks | No SQL functions as strings in `fields`, field names only in `order_by`, `has_permission` returns `True`, `sendmail` needs a recipient, private file copies, Python 3.14 and Node 24 |
+
+The skills' Frappe facts were checked against Frappe 16.56.0.
 
 ## The tools
 
@@ -70,7 +87,8 @@ needs them.
 | `tbo_dev start_work` | `task`, `subject` (`get_task`'s `branch_subject`), `kind` (`feature` or `fix`), `base`: fetches the base, then creates `feature/TASK-…-short-name` from `<remote>/<base>` (no upstream until the push), or switches to the task's existing branch, local or on the remote. The remote is `origin`, else `upstream` (the name `bench get-app` gives it), else the only one. Refuses a dirty tree; never stashes. The base is remembered in the branch's git config |
 | `tbo_dev check` | The linters CI runs, on the committed branch: see "The checks" |
 | `tbo_dev run_tests` | The test modules the branch touched (a changed test file; `test_<name>.py` beside a changed file; a DocType's own test, also for a change to its JSON; `<app>/tests/test_<name>.py`) or the ones named in `modules`, at most 20, one `bench --site <site> run-tests --module …` each, on the bench that holds this checkout in its `apps/`. A module passes only when its tests ran to the end with `OK` (Frappe 15 can exit 0 with failures, or with testing off). Never the whole suite: CI runs that |
-| `tbo_dev job_status` | A job's outcome, or the latest `check` or `run_tests` |
+| `tbo_dev bench` | On the same bench as `run_tests`, in the background: `command` `migrate` (`bench --site <site> migrate`; the test site, or `site`, which must be a site of the bench), `build` (`bench build`, or `bench build --app <app>` with `app`), or `clear_cache` (`bench --site <site> clear-cache`). Nothing else: no console, drop-site, reinstall, restore, and no option such as `--force`; a site or app is checked against the bench's folders and never read as an option. It passes when bench exits 0 within its time (20 minutes, 5 for clear_cache) with no Python traceback. It runs on the working tree as it is, so its result belongs to no commit. One `bench` job at a time on a bench, and never while `run_tests` runs there (or the reverse) |
+| `tbo_dev job_status` | A job's outcome, or the latest `check`, `run_tests` or `bench` |
 | `tbo_dev_pr open_pr` | See "The pull request" |
 
 ## The checks
@@ -123,11 +141,13 @@ description are rewritten for the new commit (with `Closes` or `Refs` as asked).
 
 Push to `main`, `master`, `develop`, `tbo`, `main-hotfix`, `production`, `staging`, the repository's default branch or
 the task's base; force-push; `--no-verify`; merge a PR; delete a branch; stash someone's changes; run the whole test
-suite locally. Each of these is refused by the tools, not only written in a skill.
+suite locally; run any bench command but migrate, build and clear-cache. Each of these is refused by the tools, not
+only written in a skill.
 
 The plugin also never writes to a site's data itself. `run_tests`, though, runs the app's tests on the test site, and
-Frappe's tests write records there: that site is a dev site you choose. The plugin checks only that it exists in the
-bench, and with the setting empty it takes the bench's current site as it is.
+Frappe's tests write records there; `bench` `migrate` applies the app's schema, patches and fixtures to the site it
+names, and `clear_cache` clears its cache. That site is a dev site you choose. The plugin checks only that it exists in
+the bench, and with the settings empty it takes the bench's current site as it is.
 
 ## Check it works
 
@@ -140,3 +160,6 @@ bench, and with the setting empty it takes the bench's current site as it is.
 4. `/tbo.frappe-dev/open-pr`: the PR opens with the task in its title and `Closes TASK-…`; within a minute the task
    shows **Pending Review** and the PR chip.
 5. Refusals: a dirty tree for `start_work`; `open_pr` before a passing `check` on the current commit.
+6. The bench: ask Copilot to add a field to one of the app's DocTypes. It edits the JSON, the app asks before `tbo_dev`
+   `bench` `migrate`, and the field appears on the dev site's form. Asking it to run `bench console` or
+   `drop-site` through `tbo_dev` is refused.

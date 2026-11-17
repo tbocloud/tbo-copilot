@@ -20,12 +20,22 @@ workspace (or pass `repo`, e.g. `apps/my_app`, when the workspace is a bench).
    first. If it has none, say so: the person starts the timer in TBO Support themselves.
 5. **The plan.** Search the code before creating anything (the same helper, field or report may exist). If the task is
    unclear or bigger than its subject says, tell the person your plan in a few lines and wait.
-6. **The change.** Follow the skill "TBO Frappe conventions". Write or update the tests in the same change. Keep it to
-   what the task asks.
+6. **The change.** Follow the skill "TBO Frappe conventions", the skill for the kind of work (DocTypes and fields,
+   reports, print formats, Client and Server Scripts into app code, patches and fixtures, an error from a customer
+   site, performance) and "Frappe v16 checks". Write or update the tests in the same change. Keep it to what the task
+   asks.
 7. **Commits.** Conventional titles in lower case: `feat(invoicing): cap the discount per tier`,
    `fix(margin): skip cancelled invoices`. One commit per step is fine.
-8. **Tests.** `tbo_dev` `run_tests` (the modules the branch touched, or name them), then `job_status` until it is no
-   longer running. Fix failures and commit. Never run the whole suite locally: CI runs it.
+8. **Tests.** One job at a time on a bench: while a `bench` job runs, no other `bench` job and no tests start there,
+   and while tests run, no `bench` job and no other repository's tests start (they share the test site). A `check`
+   may run alongside either. After each `tbo_dev` `bench` or
+   `run_tests`, ask `job_status` with that job's `job` id until it has finished, and go on only when it says
+   `passed` (fix and run it again otherwise). In this order:
+   - after a change to a DocType's JSON, a patch or fixtures: `bench` with `command: migrate`;
+   - after a change to any file the build bundles (JavaScript, TypeScript, CSS, SCSS, Vue, the app's `public/`
+     assets), with or without a schema change: `bench` with `command: build`;
+   - then `run_tests` (the modules the branch touched, or name them).
+   Fix failures and commit. Never run the whole suite locally: CI runs it.
 9. **Checks.** `tbo_dev` `check`, then `job_status`. Fix what it finds, commit, and check again until it passes on the
    last commit. pre-commit may fix formatting itself: review those changes and commit them. If the check says
    pre-commit could not install a hook's tools (not a problem in the code), and the change has no file that hook checks
@@ -33,4 +43,5 @@ workspace (or pass `repo`, e.g. `apps/my_app`, when the workspace is a bench).
    skip a hook that checks a file you changed.
 10. Tell the person what changed and that it is ready for **/open-pr**.
 
-Never push, merge, delete branches, force anything or write to a site's data from this skill.
+Never push, merge, delete branches, force anything or write to a site's data from this skill. The only site changes
+are your own dev bench's migrate, build and clear_cache through `tbo_dev` `bench`, and the test runs.

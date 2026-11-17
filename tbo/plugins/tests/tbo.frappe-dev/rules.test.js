@@ -187,8 +187,11 @@ test("the title is the task number and one line, never doubled or too long", () 
 test("the bench is the setting or the folder that holds the repository in apps/; the site must exist", (t) => {
   const bench = tempTree(t, { "apps/frappe/setup.py": "", "apps/my_app/my_app/hooks.py": "", "sites/dev.localhost/site_config.json": "{}", "sites/currentsite.txt": "dev.localhost\n" });
   const repo = path.join(bench, "apps", "my_app");
-  assert.equal(findBench(repo, ""), bench);
-  assert.equal(findBench(repo, bench), bench);
+  // the answer is the bench's real path (the temp folder may sit behind a link, as /var does on macOS)
+  const real = fs.realpathSync(bench);
+  assert.equal(findBench(repo, ""), real);
+  assert.equal(findBench(repo, bench), real);
+  assert.equal(findBench(repo, `${bench}${path.sep}`), real);
   assert.equal(findBench(tempTree(t, { "x/y.py": "" }), ""), null);
   assert.throws(() => findBench(repo, "/nowhere"), { code: "NO_BENCH" });
   assert.equal(findSite(bench, ""), "dev.localhost");

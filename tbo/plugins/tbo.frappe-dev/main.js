@@ -1,9 +1,11 @@
 "use strict";
 
 // TBO Frappe Dev plugin (TBO Copilot Phase 20, TASK-2026-00021): Frappe and ERPNext work from a
-// TBO Support task, the way TBO does it. Two tools (lib/dev.js) and four skills: TBO's Frappe
-// conventions, a new app and its parts, /start-task and /open-pr. The task itself is read with
-// the tbo_support tool of the TBO Support plugin. See docs/tbo/frappe-dev.md.
+// TBO Support task, the way TBO does it. Two tools (lib/dev.js) and twelve skills: /start-task and
+// /open-pr, TBO's Frappe conventions, a new app, and one for each kind of Frappe work (DocTypes,
+// reports, print formats, scripts into app code, patches and fixtures, a customer site's error,
+// performance, Frappe 16 checks). The task itself is read with the tbo_support tool of the TBO
+// Support plugin. See docs/tbo/frappe-dev.md.
 
 const { createDev, DEV_TOOL, PR_TOOL } = require("./lib/dev");
 

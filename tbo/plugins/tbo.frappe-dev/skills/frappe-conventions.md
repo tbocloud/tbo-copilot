@@ -56,8 +56,9 @@ The repository's own `AGENTS.md` (or `CLAUDE.md`) comes first; these are the rul
 ## Patches and DocTypes
 
 - A schema change is the DocType's JSON (exported by the desk in developer mode, or edited by hand in the same
-  format). A data change is a patch in `patches.txt`: idempotent, safe to run twice. Details in the skill
-  "New Frappe app, DocTypes, patches and tests".
+  format). A data change is a patch in `patches.txt`: idempotent, safe to run twice. Details in the skills
+  "Frappe DocTypes and fields" and "Frappe patches and fixtures".
+- TBO's sites run Frappe 16: run the skill "Frappe v16 checks" on every change.
 
 ## Frontend (frappe-ui apps)
 

@@ -4,7 +4,8 @@
 // feature from a TBO Support task the way TBO does.
 // - tbo_dev, all local: `status`; `start_work` (the task's branch); `check` (the linters CI runs)
 //   and `run_tests` (module tests on the developer's bench), both in the background because a
-//   first run can take minutes and a tool call has 110 seconds; `job_status`.
+//   first run can take minutes and a tool call has 110 seconds; `bench` (migrate, build or
+//   clear_cache on that bench, in the background; nothing else); `job_status`.
 // - tbo_dev_pr, the one step that leaves the computer: `open_pr` pushes the branch and opens the
 //   pull request. It is its own tool so the app asks before it every time. It needs a passing
 //   lint run on the current commit, and test results for it (or a reason there are none).
@@ -18,6 +19,7 @@ const { run, tail, fail } = require("./run");
 const { createGit, taskId, taskOf, branchFor, checkBranchName } = require("./git");
 const { createLint, checkSkips } = require("./lint");
 const { createTests, checkModules, findBench, findSite, testModules } = require("./tests");
+const { benchCall, runBench, BENCH_COMMANDS } = require("./bench");
 const pr = require("./pr");
 
 const MAX_JOBS = 20;
@@ -29,7 +31,8 @@ const TOOL_TEXT = [
   "- start_work: create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from the remote's default branch or `base` (the remote: origin, else upstream as bench get-app names it). Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.",
   "- check: run the linters the repository's CI runs (pre-commit on changed files, Semgrep with Frappe's rules, commit titles) on the committed branch. Runs in the background: answers with a job.",
   "- run_tests: run the test modules the branch touched (or `modules`) on the local bench's test site, one by one; never the whole suite. Runs in the background.",
-  "- job_status: the outcome of a check or run_tests job (`job`, or the latest of `kind`).",
+  "- bench: on that same local bench, `command` migrate (the test site, or `site`), build (every app, or `app`) or clear_cache (the test site, or `site`). Runs in the background. Nothing else: never console, drop-site, reinstall, restore or --force.",
+  "- job_status: the outcome of a check, run_tests or bench job (`job`, or the latest of `job_kind`).",
   "Commit with conventional titles (feat: …, fix(scope): …). Then open the PR with tbo_dev_pr.",
 ].join("\n");
 
@@ -41,15 +44,18 @@ const DEV_TOOL = {
   schema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["status", "start_work", "check", "run_tests", "job_status"], description: "What to do." },
+      action: { type: "string", enum: ["status", "start_work", "check", "run_tests", "bench", "job_status"], description: "What to do." },
       repo: { type: "string", description: "The repository folder, relative to the workspace, when the workspace is not the repository itself (e.g. apps/my_app)." },
       task: { type: "string", description: "start_work: the TBO Support task, e.g. TASK-2026-00021." },
       subject: { type: "string", description: "start_work: the task's subject; it becomes the branch's short name." },
       kind: { type: "string", enum: ["feature", "fix"], description: "start_work: fix for a bug fix, else feature." },
       base: { type: "string", description: "start_work: the branch to start from, when the repository's AGENTS.md names one; default the remote's default branch." },
       modules: { type: "array", items: { type: "string" }, description: "run_tests: test modules such as my_app.tests.test_invoices; default the ones the branch touched." },
-      job: { type: "string", description: "job_status: the job id check or run_tests answered." },
-      job_kind: { type: "string", enum: ["check", "run_tests"], description: "job_status: the latest job of this kind, when no job id is given." },
+      command: { type: "string", enum: BENCH_COMMANDS, description: "bench: what to run on your local bench. Nothing else is run." },
+      site: { type: "string", description: "bench migrate or clear_cache: a site of your local bench; default the test site." },
+      app: { type: "string", description: "bench build: one app of your local bench; default every app." },
+      job: { type: "string", description: "job_status: the job id check, run_tests or bench answered." },
+      job_kind: { type: "string", enum: ["check", "run_tests", "bench"], description: "job_status: the latest job of this kind, when no job id is given." },
       skip_hooks: {
         type: "array",
         items: { type: "string" },
@@ -182,6 +188,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       bench_problem: benchProblem || undefined,
       last_check: lastOf("check", root),
       last_tests: lastOf("run_tests", root),
+      last_bench: lastOf("bench", root),
     };
   }
 
@@ -253,7 +260,10 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
   }
 
   function summaryOf(job) {
-    const out = { job: job.id, kind: job.kind, state: job.state, commit: job.head.slice(0, 12), started: job.started };
+    const out = { job: job.id, kind: job.kind, state: job.state };
+    if (job.head) out.commit = job.head.slice(0, 12);
+    if (job.command) out.command = job.command;
+    out.started = job.started;
     if (job.finished) out.finished = job.finished;
     if (job.error) out.error = job.error;
     if (job.result) out.result = job.result;
@@ -271,16 +281,23 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     return dirty.length ? `Files changed while this ran, so the pass does not belong to ${head.slice(0, 12)}; commit and run it again.` : "";
   }
 
-  function startJob(kind, root, head, work, keep) {
+  // `head`: the commit the result belongs to, or null for a bench job, which belongs to no commit.
+  // `more`: the bench the job runs on, its command line, and what to say next.
+  function startJob(kind, root, head, work, keep, more = {}) {
     const running = [...jobs.values()].find((j) => j.kind === kind && j.repo === root && j.state === "running");
     if (running) return { ...summaryOf(running), note: "already running; ask job_status for it" };
     counter += 1;
-    const job = { id: `${kind}-${counter}`, kind, repo: root, head, state: "running", started: new Date().toISOString() };
+    const job = { id: `${kind}-${counter}`, kind, repo: root, head, bench: more.bench, command: more.command, state: "running", started: new Date().toISOString() };
     jobs.set(job.id, job);
-    while (jobs.size > MAX_JOBS) jobs.delete(jobs.keys().next().value);
+    // the history keeps MAX_JOBS; only finished jobs leave it: a running migrate must keep its bench busy
+    while (jobs.size > MAX_JOBS) {
+      const done = [...jobs.values()].find((j) => j.state !== "running");
+      if (!done) break;
+      jobs.delete(done.id);
+    }
     work()
       .then(async (result) => {
-        const stale = await whyStale(root, head, Boolean(result.passed));
+        const stale = head ? await whyStale(root, head, Boolean(result.passed)) : "";
         if (stale) {
           job.state = "stale";
           job.error = stale;
@@ -298,8 +315,16 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
         job.finished = new Date().toISOString();
         log(`tbo_dev ${job.id} ${job.state}`);
       });
-    return { ...summaryOf(job), next: "Ask job_status in a minute; the first run of a repository takes longer." };
+    return { ...summaryOf(job), next: more.next || "Ask job_status in a minute; the first run of a repository takes longer." };
   }
+
+  // One bench job at a time on a bench, no tests under it, and one test run at a time (tests share the test
+  // site): a migrate under running tests, two builds at once, or two repositories' tests would trip over each other.
+  function busyOn(bench, kinds) {
+    return [...jobs.values()].find((j) => j.state === "running" && j.bench === bench && kinds.includes(j.kind));
+  }
+
+  const busyError = (job) => fail("BUSY", `${job.id} (${job.command || job.kind}) is still running on this bench; wait for it (job_status).`);
 
   // The committed state of a task branch: lint and test results belong to one commit.
   async function committedBranch(root) {
@@ -352,6 +377,10 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     if (!modules.length) modules = testModules(root, await git.changedFiles(root, await git.mergeBase(root, base, info.remote, info.head), info.head));
     if (!modules.length) throw fail("NO_TESTS", "The branch changes no file that has tests beside it: name the test modules, or add tests.");
     checkModules(modules); // refused now, not later in the background
+    // tests share the bench's test site, so one test run at a time on a bench, whichever repository asks;
+    // the same repository asking again gets its running job back from startJob
+    const busy = busyOn(bench, ["bench", "run_tests"]);
+    if (busy && !(busy.kind === "run_tests" && busy.repo === root)) throw busyError(busy);
     const tests = createTests({ runFn, env, log });
     const key = `${root}@${info.head}`;
     const started = startJob(
@@ -360,9 +389,27 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       info.head,
       () => tests.runModules({ bench, site, modules, benchCommand: conf.benchCommand }),
       (result) => testRuns.set(key, result),
+      { bench },
     );
     if (started.state === "running" && !started.note) testRuns.delete(key);
     return started;
+  }
+
+  // migrate, build or clear_cache on the bench run_tests uses (lib/bench.js). It runs on the working tree
+  // as it is (a DocType's JSON before it is committed, too), so its result belongs to no commit.
+  async function benchRun(args) {
+    const root = await repoOf(args);
+    const conf = await settings();
+    const bench = findBench(root, conf.benchPath);
+    if (!bench) throw fail("NO_BENCH", 'No bench found: set "Frappe bench folder" in the plugin settings, or work in <bench>/apps/<app>.');
+    const call = benchCall(bench, args, conf.testSite); // refused now, not later in the background
+    const busy = busyOn(bench, ["bench", "run_tests"]);
+    if (busy) throw busyError(busy);
+    return startJob("bench", root, null, () => runBench({ runFn, env, log }, { bench, call, benchCommand: conf.benchCommand }), () => {}, {
+      bench,
+      command: call.line,
+      next: "Ask job_status in a minute; a migrate or a build can take several minutes.",
+    });
   }
 
   async function jobStatus(args) {
@@ -498,6 +545,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     if (action === "start_work") return startWork(args);
     if (action === "check") return check(args);
     if (action === "run_tests") return runTests(args);
+    if (action === "bench") return benchRun(args);
     if (action === "job_status") return jobStatus(args);
     throw fail("INVALID_ARGUMENT", `Unknown action "${action}". Use one of: ${DEV_TOOL.schema.properties.action.enum.join(", ")}.`);
   }
