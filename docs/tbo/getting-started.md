@@ -28,7 +28,9 @@ It always acts **as you**, with your own TBO Support permissions. It asks before
 3. Check that the code in the browser matches the one in the app, and press **Allow**.
 
 The app is then ready, with nothing to type:
-- **TBO AI** is the model.
+- pick **TBO AI** as the model (the panel says when it is ready). **TBO AI · DeepSeek** (DeepSeek V3.2, run in TBO's
+  own AWS account) is the second choice; it reads text only, and works once TBO Support's settings list `tbo-deepseek`
+  for your key;
 - TBO Support is connected as you.
 
 **Signing in again:** the sign-in lasts 30 days. If it ends, the app asks you again.

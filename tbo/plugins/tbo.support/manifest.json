@@ -423,6 +423,11 @@
             "id": "tbo-default",
             "name": "TBO AI",
             "supportsImages": true
+          },
+          {
+            "id": "tbo-deepseek",
+            "name": "TBO AI · DeepSeek",
+            "supportsImages": false
           }
         ]
       }

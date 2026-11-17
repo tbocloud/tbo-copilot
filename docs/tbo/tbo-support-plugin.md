@@ -206,7 +206,9 @@ their role allows.
      failure half way leaves no key rather than a mixed pair.
    - The app accepts the address only on a host in the plugin's `net.domains` (the gateway,
      `copilot-gateway.tbocloud.in`, is listed for that and is never accepted as a TBO Support address).
-   - The model picker refreshes as soon as the key is set.
+   - The model picker refreshes as soon as the key is set. The row offers the gateway's two model names:
+     `tbo-default` (**TBO AI**) and `tbo-deepseek` (**TBO AI · DeepSeek**, text only); TBO Desktop Settings → Models
+     decides which of them a person's key may use.
    - The row holds one site's key: changing the site address clears it at once, and the new site's sign-in (if
      any) sets it again. At start the plugin first asks the app to clear the row (a key from an earlier run belongs to no
      known sign-in), then the renewal sets it; if that renewal fails, the next panel read, check or tool call
