@@ -205,3 +205,15 @@ test("an older TBO Support without the method, and an ordinary refusal, read pla
     return true;
   });
 });
+
+// --- Phase 23, C16 (security F5): an AWS command never travels in a URL ---
+
+test("asking whether an AWS command is approved sends the command in the body", async () => {
+  const { request, calls } = fakeRequest([{ status: 200, headers: {}, bodyText: JSON.stringify({ message: null }) }]);
+  const client = createClient({ siteUrl: SITE, credentials: CREDS, request });
+  const payload = { command: "aws ec2 describe-instances --filters Name=tag:Customer,Values=acme", profile: "default", region: "ap-south-1" };
+  await client.method("helpdesk.api.copilot_actions.approved_action", { kind: "AWS", payload });
+  assert.equal(calls[0].method, "POST");
+  assert.equal(calls[0].url, `${SITE}/api/method/helpdesk.api.copilot_actions.approved_action`);
+  assert.deepEqual(JSON.parse(calls[0].body), { kind: "AWS", payload });
+});

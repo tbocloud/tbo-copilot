@@ -51,6 +51,8 @@ const READ_BY_POST = new Set([
   "helpdesk.api.search.search",
   "helpdesk.api.article.search",
   "helpdesk.api.copilot_press.sites",
+  // an AWS command and its profile (Phase 23): never in a URL
+  "helpdesk.api.copilot_actions.approved_action",
 ]);
 
 const WRITE_METHODS = new Set([
@@ -187,7 +189,7 @@ function authorization(credentials) {
 function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS }) {
   const auth = authorization(credentials);
   if (!auth) {
-    throw fail("NOT_SIGNED_IN", "Not signed in to TBO Support. Run 'TBO Support: Sign in' from the command menu.");
+    throw fail("NOT_SIGNED_IN", "Not signed in to TBO Support. Run 'TBO Support: Sign in' from the command palette.");
   }
   const headers = { Accept: "application/json", Authorization: auth };
 

@@ -9,7 +9,7 @@ repository.
 | Plugin | What it adds |
 |---|---|
 | [`tbo.theme`](tbo.theme/) | TBO colours: the brand orange as the accent, everything else neutral |
-| [`tbo.support`](tbo.support/) | Signs the app in with Microsoft through TBO Support and gives it TBO AI; lets the agent read TBO Support: tickets, conversation, triage, fix brief, session replay, duplicates, knowledge base. Read-only. [Design](../../docs/tbo/tbo-support-plugin.md) |
+| [`tbo.support`](tbo.support/) | Signs the app in with Microsoft through TBO Support and gives it TBO AI; lets the agent read TBO Support (tickets, conversation, triage, fix brief, session replay, duplicates, knowledge base, Press, the person's tasks and projects); opens a task in its project's folders; asks before every change (a Press backup or request, the person's own task, going live, a report), and Press and AWS changes then wait for an approver. [Design](../../docs/tbo/tbo-support-plugin.md), [projects and tasks](../../docs/tbo/projects-and-tasks.md) |
 | [`tbo.frappe-dev`](tbo.frappe-dev/) | Frappe and ERPNext work from a TBO Support task: the task's branch, TBO's conventions, module tests, the linters CI runs, and a PR that moves the task to Pending Review. [Design](../../docs/tbo/frappe-dev.md) |
 
 ## Working on a plugin
@@ -30,8 +30,9 @@ node --test "tbo/plugins/tests/**/*.test.js"                                    
 - To ship one inside the installers, list it in `scripts/tbo/bundled-plugins.json`
   (see [docs/tbo/README.md](../../docs/tbo/README.md), "Bundled TBO plugins").
 
-This repository is public: never put keys or customer data in a plugin. Each user enters their own
-TBO Support key in the app, which keeps it in the computer's credential store.
+This repository is public: never put keys or customer data in a plugin. Each person signs in with
+Microsoft through TBO Support; the app keeps that sign-in in the computer's credential store (an API
+key only for a local test bench).
 
 ## Licence
 

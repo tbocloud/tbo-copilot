@@ -280,12 +280,15 @@ by tests.
 | Permission | Why |
 |---|---|
 | `agent.tool.register` | The `tbo_support`, `tbo_support_change` and `tbo_aws` tools |
-| `net.fetch`, with `net.domains: ["teams.teambackoffice.com", "demo-tbo.tbocloud.in", "copilot-gateway.tbocloud.in", "localhost", "*.localhost", "127.0.0.1"]` | Calls to TBO Support (the real site or the demo hub), or to a local test bench on the same computer. The gateway is listed because the app checks the TBO AI address against `net.domains`; the plugin never sends a TBO Support token there. The host refuses every other host, and re-checks redirects. |
-| `ui.panel` | The sign-in panel |
+| `net.fetch`, with `net.domains: ["teams.teambackoffice.com", "demo-tbo.tbocloud.in", "copilot-gateway.tbocloud.in", "localhost", "*.localhost", "127.0.0.1"]` | Calls to TBO Support (the real site or the demo hub), or to a local test bench on the same computer. The gateway is listed because the app checks the TBO AI address against `net.domains`; the plugin never sends a TBO Support token there. The host refuses every other host, and re-checks redirects. The copy the installers ship has no local hosts (`scripts/tbo/fetch-plugins.mjs`, security F4): a local bench works only with the plugin loaded as a development plugin |
+| `ui.panel` | The sign-in panel, and its Projects and tasks view |
 | `shell.openExternal` | Opens TBO Support's Allow page in the browser (only a page on the same site) |
 | `provider.register` | The **TBO AI** provider row, and storing its key and address after the sign-in |
+| `agent.prompt.inject` | Its skills (the AWS ones and *Work on a TBO Support task*) |
+| `desktop.control` (0.5.0, Phase 22) | Making and opening a task's chat and giving it the task, and grouping a project's folders (`session/get`, `session/create`, `session/open`, `agent/prompt`, `project/groups/*`); never a dangerous operation |
+| `fs.read` (0.5.0) | The folder picker for a project's folders; the plugin reads no file |
 
-There is no file, command, MCP or clipboard permission (`shell.openExternal` only opens the Allow page). `tbo_support` is `risk: "low"` because it only reads; `tbo_support_change` is `risk: "high"`, so the app asks before each call (Phase 21). The host audits every call. The plugin also logs each action and ticket number through `ctx.log`, never the content.
+There is no command, MCP or clipboard permission (`shell.openExternal` only opens the Allow page). `tbo_support` is `risk: "low"` because it only reads; `tbo_support_change` is `risk: "high"`, so the app asks before each call (Phase 21). The host audits every call. The plugin also logs each action and ticket number through `ctx.log`, never the content.
 
 The **site address** is a plugin setting (`siteUrl`, default `https://teams.teambackoffice.com`). The plugin refuses an address whose host is not in `net.domains`. It also refuses plain HTTP, except for `localhost`, `127.0.0.1` and names ending in `.localhost`, which always mean this computer (RFC 6761). So a developer can test against a local bench site such as `http://tbo.localhost:8002`. The saved sign-in and key are per site (scheme, host and port), so a local key and the real one never mix.
 
@@ -316,7 +319,7 @@ The **site address** is a plugin setting (`siteUrl`, default `https://teams.team
 
 | Situation | What the agent sees |
 |---|---|
-| Not signed in | "Not signed in to TBO Support. Run 'TBO Support: Sign in' from the command menu." |
+| Not signed in | "Not signed in to TBO Support. Run 'TBO Support: Sign in' from the command palette." |
 | 401 | "TBO Support did not accept your sign-in. Run 'TBO Support: Sign in' again." (with a sign-in, the plugin first renews once) |
 | The sign-in ended | "Your TBO sign-in ended: <TBO Support's reason>" as a notice; the session and the TBO AI key are removed |
 | 403 / `PermissionError` | "Your TBO Support account may not read this." |
