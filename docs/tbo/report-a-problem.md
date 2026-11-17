@@ -26,7 +26,9 @@ When TBO Copilot gets something wrong, report it. Each report becomes a task for
    - **subject:** "Copilot feedback: " and your first line;
    - **category:** Development, priority Medium;
    - **project:** the one set in HDS Copilot Settings → **Feedback tasks go to** (else the hub's internal project).
-2. It answers with the task's number and a link to it in My Work.
+2. It answers with the task's number, and a link to it in My Work when you can open it. The task is in the TBO
+   Copilot team's project, which not everyone can open: then the desktop app gives the number only (and no
+   **Open the task**).
 3. The TBO Copilot team reads every report during the pilot. They either fix it, or say why not on the task.
 
 ## 3. What the task holds

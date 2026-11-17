@@ -482,6 +482,10 @@ test("report_problem sends the person's words to TBO Support's feedback, from th
       posted.push([path, params]);
       return { task: "TASK-2026-00099", url: "https://teams.teambackoffice.com/helpdesk/my-work?task=TASK-2026-00099" };
     },
+    // the reporter may read the task here
+    async method(path, params) {
+      return path === "helpdesk.api.mobile.get_task" ? { data: { name: params.task } } : {};
+    },
   };
   const r = await runAction(client, { action: "report_problem", text: " The fix card showed the wrong ticket " }, ENV, CHANGE_TOOL);
   assert.deepEqual(posted, [["helpdesk.api.copilot_feedback.report_problem", { text: "The fix card showed the wrong ticket", where: "Desktop" }]]);
@@ -688,4 +692,22 @@ test("get_task gives the task's ticket when TBO Support has one", async () => {
   assert.equal(got.ticket, "0042");
   const none = fakeClient({ "helpdesk.api.mobile.get_task": { data: { ...TASK_ROW } } });
   assert.equal((await runAction(none, { action: "get_task", task: "TASK-2026-00021" }, ENV)).ticket, null);
+});
+
+// --- Phase 23, C13: a report's link is offered only to a reporter who can open it ---
+
+test("a report the reporter cannot open comes without a link, and says so", async () => {
+  const client = {
+    async post() {
+      return { task: "TASK-2026-00099", url: "https://teams.teambackoffice.com/helpdesk/my-work?task=TASK-2026-00099" };
+    },
+    async method(path) {
+      assert.equal(path, "helpdesk.api.mobile.get_task");
+      throw Object.assign(new Error("Your TBO Support account may not read this."), { code: "FORBIDDEN" });
+    },
+  };
+  const r = await runAction(client, { action: "report_problem", text: "The card showed the wrong ticket" }, ENV, CHANGE_TOOL);
+  assert.equal(r.task, "TASK-2026-00099");
+  assert.equal(r.url, null);
+  assert.match(r.next, /cannot open/);
 });

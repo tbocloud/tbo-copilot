@@ -463,10 +463,23 @@ const ACTIONS = {
     const text = textArg(args, "text", 4000);
     if (!text) throw fail("INVALID_ARGUMENT", 'report_problem needs "text": what was asked, what was expected and what happened.');
     const filed = (await client.post("helpdesk.api.copilot_feedback.report_problem", { text, where: "Desktop" })) || {};
+    // the task sits in the TBO Copilot team's project, which the reporter may not be able to open (Phase 23):
+    // its link is offered only when they can read it
+    let url = filed.url || null;
+    if (url && filed.task) {
+      try {
+        const seen = await client.method("helpdesk.api.mobile.get_task", { task: filed.task });
+        if (!(seen && seen.data && seen.data.name)) url = null;
+      } catch {
+        url = null;
+      }
+    }
     return {
       task: filed.task,
-      url: filed.url,
-      next: "The TBO Copilot team has it as a task. Give the person the task's number and link.",
+      url,
+      next: url
+        ? "The TBO Copilot team has it as a task. Give the person the task's number and link."
+        : "The TBO Copilot team has it as a task. Give the person the task's number; the task is in that team's project, which they cannot open themselves.",
     };
   },
 

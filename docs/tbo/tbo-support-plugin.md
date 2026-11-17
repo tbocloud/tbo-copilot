@@ -158,7 +158,7 @@ Copilot actions by number only (TBO Support adds them). The user guide is `docs/
 
 | Action | Does | Helpdesk API | Inputs | Plan-safe |
 |---|---|---|---|---|
-| `report_problem` (`tbo_support_change`) | Files the person's words as a task for the TBO Copilot team; answers with its number and link | `POST helpdesk.api.copilot_feedback.report_problem` (`where`: Desktop) | `text`, up to 4,000 characters | no |
+| `report_problem` (`tbo_support_change`) | Files the person's words as a task for the TBO Copilot team; answers with its number, and its link only when the person can read the task (`get_task` as them; Phase 23) | `POST helpdesk.api.copilot_feedback.report_problem` (`where`: Desktop), then `helpdesk.api.mobile.get_task` | `text`, up to 4,000 characters | no |
 
 **Input rules:**
 - `ticket` accepts `1`, `#1`, `0001` or `HD-0001`. HD Ticket names are zero-padded to four digits (autoname `.####`: `0001`, `0042`, `12345`), so the number is padded the same way. If that name is not found, the plain number is tried once, for a site that names tickets without padding.

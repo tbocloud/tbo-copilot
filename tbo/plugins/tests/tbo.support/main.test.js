@@ -133,6 +133,8 @@ async function hubFetch(input) {
     return { status: 401, headers: {}, bodyText: '{"exc_type":"AuthenticationError"}' };
   }
   if (path === "helpdesk.api.mobile.get_task" && hub.task) return ok({ v: 1, data: hub.task });
+  // the reporter may open their report's task (Phase 23, C13: the link is offered only then)
+  if (path === "helpdesk.api.mobile.get_task" && hub.reports.length) return ok({ v: 1, data: { name: "TASK-2026-00099" } });
   if (path === "helpdesk.api.mobile.get_projects" && hub.projects) {
     const q = new URL(input.url).searchParams;
     const start = Number(q.get("cursor") || 0);
