@@ -332,8 +332,9 @@
       }
 
       function projectCard(p) {
-        const card = el("div", "project");
+        const card = el("div", p.needed ? "project request" : "project");
         card.append(el("h2", "", p.name));
+        if (p.needed) card.append(el("p", "meta", "A task you opened belongs to this project: add its folders here, then open the task again."));
         const who = [p.customer, p.role].filter(Boolean).join(" · ");
         if (who) card.append(el("p", "meta", who));
         const folders = el("ul", "list");
@@ -341,8 +342,14 @@
           const row = el("li", "item");
           row.append(el("span", f.here ? "" : "missing", `${i === 0 ? "★ " : ""}${f.path}${f.here ? "" : " (not found here)"}`));
           const actions = el("span", "row");
-          if (i > 0) actions.append(button("First", async () => { await call("tbo-support.first-folder", { project: p.project, folder: f.path, site: shownSite }); loadProjects(); }));
-          actions.append(button("Remove", async () => { await call("tbo-support.remove-folder", { project: p.project, folder: f.path, site: shownSite }); loadProjects(); }));
+          // a refused step says why (Phase 23); the list is read again either way
+          const step = async (channel, failed) => {
+            const res = await call(channel, { project: p.project, folder: f.path, site: shownSite });
+            if (!res.ok) note(res.error || failed);
+            await loadProjects();
+          };
+          if (i > 0) actions.append(button("First", () => step("tbo-support.first-folder", "The folder could not be made first.")));
+          actions.append(button("Remove", () => step("tbo-support.remove-folder", "The folder could not be removed.")));
           row.append(actions);
           folders.append(row);
         });
@@ -369,18 +376,41 @@
         return card;
       }
 
+      // tasks without a project cannot open here: listed, with what to do (Phase 23)
+      function unassignedCard(tasks) {
+        const card = el("div", "project");
+        card.append(el("h2", "", "Tasks without a project"));
+        card.append(el("p", "meta", "A task opens in its project's folders. Ask the task's coordinator to put it in a project in TBO Support; it then shows here with Open."));
+        const list = el("ul", "list");
+        for (const t of tasks) {
+          const when = t.deadline ? ` · due ${t.deadline}` : "";
+          list.append(el("li", t.overdue ? "late" : "", `${t.task} ${t.subject} · ${t.status}${when}`));
+        }
+        card.append(list);
+        return card;
+      }
+
       async function loadProjects() {
-        const res = await call("tbo-support.projects");
         const list = $("projects");
+        // the first read shows that it is reading; later ones keep the list until the answer
+        if (!list.childElementCount) list.replaceChildren(el("p", "help", "Reading your projects…"));
+        const res = await call("tbo-support.projects");
+        if (!res.ok) {
+          // offline or refused: the last list stays, marked as possibly out of date
+          if (list.querySelector(".project")) return note(`${res.error || "Your projects could not be read."} The list below may be out of date.`);
+          list.replaceChildren();
+          return note(res.error || "Your projects could not be read.");
+        }
         list.replaceChildren();
-        if (!res.ok) return note(res.error || "Your projects could not be read.");
         shownSite = res.site || null;
         const request = res.request;
         requested = request || null;
         $("task-request").hidden = !request;
         if (request) $("task-request-text").textContent = `Open task ${request.task} from ${request.site} in TBO Copilot?`;
-        if (!res.projects.length) return note("You have no open projects in TBO Support.");
+        const unassigned = Array.isArray(res.unassigned) ? res.unassigned : [];
+        if (!res.projects.length && !unassigned.length) return note("You have no open projects in TBO Support.");
         for (const p of res.projects) list.append(projectCard(p));
+        if (unassigned.length) list.append(unassignedCard(unassigned));
       }
 
       $("projects-box").addEventListener("toggle", () => {

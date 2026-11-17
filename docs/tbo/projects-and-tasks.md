@@ -7,9 +7,15 @@ Do your TBO Support tasks in the desktop app, in your project's folders, and com
 
 Every task in TBO Support belongs to a project. In the TBO Support panel (**TBO Support: Projects and tasks** in the
 command palette) you see:
-- your open projects, the ones with your open tasks first;
+- your open projects (all of them, page after page), the ones with your open tasks first;
 - each project's open tasks of yours;
-- each project's **folders on this computer**: the app's code, a bench, a documents folder.
+- each project's **folders on this computer**: the app's code, a bench, a documents folder;
+- **Tasks without a project**: they cannot open here, since a task opens in its project's folders. Ask the task's
+  coordinator to put it in a project.
+
+When you open a task whose project is not in your list (a task link for a project you only help on), that project
+gets its own card at the top, so you can add its folders. Offline, the panel keeps the last list and says it may be out
+of date; a folder step that fails says why.
 
 **Add folder…** picks a folder; a project can have up to ten. They are kept on this computer only, per TBO Support site:
 everyone's paths differ. The first folder (★) is the chat's own; **First** makes another one first. **Remove** forgets

@@ -48,6 +48,7 @@ const COMMANDS = {
 let store = null;
 let projectStore = null; // each TBO Support project's folders and each task's chat, on this computer
 let openRequest = null; // a task link waiting for the person's Open in the panel: { task, site }
+let neededProject = null; // the project an opened task needs folders for: { site, project, name } (Phase 23)
 let aws = null;
 // "TBO Support: Report a problem" opens the panel on its report form (read once by the panel)
 let reportAsked = false;
@@ -533,12 +534,12 @@ const plainText = (value, max) =>
 // folders kept for each here. The panel shows text only (never HTML).
 async function projectsView() {
   return withClient(async (client, site) => {
-    const [projectPage, tasks] = await Promise.all([
-      client.method("helpdesk.api.mobile.get_projects", { status: "Open", limit: 50 }),
+    const [projectRows, tasks] = await Promise.all([
+      allProjects(client), // every page of the person's open projects (Phase 23)
       allTasks(client), // every page of My Work
     ]);
     const kept = projectStore.projects(site);
-    const rows = (Array.isArray(projectPage && projectPage.data) ? projectPage.data : []).map((p) => ({
+    const rows = projectRows.map((p) => ({
       project: p.name,
       name: plainText(p.project_name || p.name, 140),
       customer: plainText(p.customer, 140) || null,
@@ -579,10 +580,43 @@ async function projectsView() {
         });
       }
     }
-    // the projects with the person's own open tasks first
-    rows.sort((a, b) => b.tasks.length - a.tasks.length || a.name.localeCompare(b.name));
-    return { site, projects: rows, request: openRequest && openRequest.site === site ? openRequest : null };
+    // the project a task the person opened needs folders for, though it is not in their lists (a
+    // task link for a project they only help on): its own card, first, so the folders can be added
+    const needed = neededProject && neededProject.site === site ? neededProject : null;
+    if (needed && !rows.some((r) => r.project === needed.project)) {
+      rows.push({
+        project: needed.project,
+        name: plainText(needed.name || needed.project, 140),
+        customer: null,
+        role: null,
+        folders: ((kept[needed.project] && kept[needed.project].folders) || []).map((f) => ({ path: f, here: projects.isFolder(f) })),
+        tasks: [],
+      });
+    }
+    for (const row of rows) if (needed && row.project === needed.project) row.needed = true;
+    // the project a task needs first, then those with the person's own open tasks
+    rows.sort((a, b) => Number(Boolean(b.needed)) - Number(Boolean(a.needed)) || b.tasks.length - a.tasks.length || a.name.localeCompare(b.name));
+    // tasks without a project cannot open here (a task opens in its project's folders): listed, with why
+    const unassigned = tasks
+      .filter((t) => !t.project)
+      .map((t) => ({ task: t.name, subject: plainText(t.subject, 200), status: t.status, deadline: t.exp_end_date || null, overdue: Boolean(t.is_overdue) }));
+    return { site, projects: rows, unassigned, request: openRequest && openRequest.site === site ? openRequest : null };
   });
+}
+
+// The person's open projects, every page (at most MAX_PROJECT_PAGES of 50).
+const MAX_PROJECT_PAGES = 10;
+
+async function allProjects(client) {
+  const rows = [];
+  let cursor;
+  for (let page = 0; page < MAX_PROJECT_PAGES; page += 1) {
+    const got = await client.method("helpdesk.api.mobile.get_projects", { status: "Open", limit: 50, cursor });
+    rows.push(...(Array.isArray(got && got.data) ? got.data : []));
+    if (!got || !got.has_more || got.next_cursor == null) break;
+    cursor = got.next_cursor;
+  }
+  return rows;
 }
 
 // the panel's own site must still be the current one: a settings change meanwhile acts on nothing
@@ -620,6 +654,9 @@ async function openTaskFromPanel(payload) {
       stillCurrent: () => generation === epoch,
     });
   });
+  // a project the person must add folders for keeps a card in the list until they have
+  if (result.needFolders && generation === epoch) neededProject = { site, project: result.project, name: result.projectName };
+  else if (result.opened && neededProject && neededProject.project === result.project) neededProject = null;
   // the link's request is done only when this open is still the current one: an open started before a
   // settings change must not clear a newer request for the same task number on the new site
   if (result.opened && generation === epoch && openRequest && openRequest.task === result.task && sameOrigin(openRequest.site, site)) {
@@ -773,6 +810,7 @@ async function onSettingsChanged() {
   if (aws && (!before || before.aws !== now.aws)) aws.stop(); // a new AWS profile or region starts a new AWS server
   if (before && before.site === now.site) return;
   openRequest = null; // a task link asked for under the old site opens nothing now
+  neededProject = null;
   lastReport = null; // a report's link belongs to the site it was sent to
   epoch += 1;
   if (pending) pending.cancelled = true;
@@ -916,6 +954,7 @@ async function onUnload() {
   store = null;
   projectStore = null;
   openRequest = null;
+  neededProject = null;
 }
 
 // `startup` and `check` are what the plugin's two timers run; exported for the tests.

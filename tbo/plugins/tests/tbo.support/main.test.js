@@ -133,6 +133,14 @@ async function hubFetch(input) {
     return { status: 401, headers: {}, bodyText: '{"exc_type":"AuthenticationError"}' };
   }
   if (path === "helpdesk.api.mobile.get_task" && hub.task) return ok({ v: 1, data: hub.task });
+  if (path === "helpdesk.api.mobile.get_projects" && hub.projects) {
+    const q = new URL(input.url).searchParams;
+    const start = Number(q.get("cursor") || 0);
+    const limit = Number(q.get("limit") || 20);
+    const more = hub.projects.length > start + limit;
+    return ok({ v: 1, data: hub.projects.slice(start, start + limit), has_more: more, next_cursor: more ? start + limit : null });
+  }
+  if (path === "helpdesk.api.mobile.get_tasks" && hub.myTasks) return ok({ v: 1, data: hub.myTasks, has_more: false, next_cursor: null });
   if (path === "helpdesk.api.copilot_feedback.report_problem") {
     assert.equal(input.method, "POST");
     hub.reports.push(body);
@@ -931,4 +939,41 @@ test("TBO Support out of reach at start is said as that, not as TBO AI not set u
   } finally {
     Date.now = realNow;
   }
+});
+
+// --- Phase 23, C11: the Projects view ---
+
+test("the Projects view reads every page of projects, shows tasks without a project, and the project a link needs", async (t) => {
+  const fs = require("node:fs");
+  await plugin.onLoad();
+  settings = { siteUrl: SITE };
+  await settingsChanged();
+  await signedOut();
+  assert.equal((await plugin.onPanelInvoke("tbo-support.sign-in", { ...GOOD })).ok, true);
+  fs.rmSync("/tmp/tbo-support-test/projects.json", { force: true });
+  hub.projects = Array.from({ length: 60 }, (_, i) => ({ name: `PROJ-${String(i + 1).padStart(4, "0")}`, project_name: `Project ${i + 1}`, my_role: "Developer" }));
+  hub.myTasks = [
+    { name: "TASK-2026-00001", subject: "In a project", status: "Open", project: "PROJ-0055", project_name: "Project 55" },
+    { name: "TASK-2026-00002", subject: "<b>No</b> project", status: "Working", project: null },
+  ];
+  // a task link whose project is not among the person's open projects
+  hub.task = { name: "TASK-2026-00777", subject: "Helping out", project: "PROJ-0999", project_name: "Someone else's" };
+  t.after(() => {
+    hub.projects = null;
+    hub.myTasks = null;
+    hub.task = null;
+    fs.rmSync("/tmp/tbo-support-test/projects.json", { force: true });
+  });
+  const view = await plugin.onPanelInvoke("tbo-support.projects");
+  assert.equal(view.ok, true, view.error);
+  assert.equal(view.projects.filter((p) => /^PROJ-00\d\d$/.test(p.project)).length, 60);
+  assert.deepEqual(view.unassigned, [{ task: "TASK-2026-00002", subject: "No project", status: "Working", deadline: null, overdue: false }]);
+
+  const opened = await plugin.onPanelInvoke("tbo-support.open-task", { task: "TASK-2026-00777", site: SITE });
+  assert.equal(opened.needFolders, true);
+  const again = await plugin.onPanelInvoke("tbo-support.projects");
+  const needed = again.projects[0];
+  assert.equal(needed.project, "PROJ-0999", "the project the task needs comes first, with its own card");
+  assert.equal(needed.name, "Someone else's");
+  assert.equal(needed.needed, true);
 });
