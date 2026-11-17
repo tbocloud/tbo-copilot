@@ -72,9 +72,14 @@ rows = frappe.get_all("Sales Invoice", filters=filters, fields=["name", "custome
 - `frappe.get_cached_doc` and `frappe.get_cached_value` for records that rarely change (settings, Company, Item Group);
   never for something the same request changes.
 - `@redis_cache(ttl=...)` from `frappe.utils.caching` for a function whose result is the same for everyone for a
-  while; `@request_cache` within one request. Clear what you cache when its source changes: call the decorated
-  function's own `clear_cache()` (it clears every argument's entry) in `on_update` of that DocType;
-  `frappe.cache.delete_value` does not reach the decorator's keys.
+  while. Clear it when its source changes: in `on_update` of that DocType, register the decorated function's own
+  `clear_cache()` (it clears every argument's entry) to run after the save commits,
+  `frappe.db.after_commit.add(get_tier_prices.clear_cache)`. Cleared before the commit, a request still reading the
+  old row could fill the cache again with the old value. `frappe.cache.delete_value` does not reach the decorator's
+  keys. Where a stale value for up to `ttl` would do harm, do not cache it.
+- `@request_cache` keeps a result only until the request ends (`frappe.local.request_cache`) and has no
+  `clear_cache()`. Use it for a value that cannot change within the request; if the request itself changes the
+  source, call the function again only through code that does not rely on the cached answer.
 - Cache results, not permissions: a cached list must not show one user's records to another.
 
 ## Long work out of the request

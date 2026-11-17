@@ -54,7 +54,7 @@ def validate(doc, method=None):
 from frappe.rate_limiter import rate_limit
 
 @frappe.whitelist(methods=["GET", "POST"])  # the methods the script answered; narrow them only after the callers moved
-@rate_limit(limit=5, seconds=60)  # only when the script had enable_rate_limit: its rate_limit_count and _seconds
+@rate_limit(limit=5, seconds=86400)  # only when the script had enable_rate_limit: the limit it really applied (below)
 def get_tier_price(item_code: str, qty: float) -> float:
     ...
 ```
@@ -62,7 +62,9 @@ def get_tier_price(item_code: str, qty: float) -> float:
 - An API Server Script answers GET and POST. Keep both while callers may use either; restrict to POST (or GET for a
   read) in a later change, once every caller is known to use it.
 - A script with `enable_rate_limit` keeps the same limit through `@rate_limit` (its `rate_limit_count` and
-  `rate_limit_seconds`); dropping it would remove a protection.
+  `rate_limit_seconds`); dropping it would remove a protection. A count or a period of 0 or empty means Frappe's
+  defaults, **5** calls and **86400** seconds (`rate_limit_count or 5`, `rate_limit_seconds or 24 * 60 * 60` in
+  Frappe 16): write those numbers, never a 0, which would refuse every call.
 
 - Arguments come in as parameters with type hints (the script read `frappe.form_dict`); return the value (the script
   set `frappe.response["message"]`). Check permissions inside the function.
@@ -87,34 +89,55 @@ the test proves the script's work, not the app's). `tbo_dev` `run_tests`.
 
 ## 5. Disable the scripts
 
-Once the app's code is deployed, the scripts must not run. Ship that with the change: a patch under
-`[post_model_sync]` that disables them by name if they exist (skill "Frappe patches and fixtures"). Save each script
-as a document, so Frappe clears its map of Server Scripts too; a bare `frappe.db.set_value` leaves a worker that
-already loaded the map running the disabled script.
+Once the app's code is deployed, the scripts must not run. Ship that with the change: one function that disables
+them by name if they exist, called from two places (skill "Frappe patches and fixtures"):
+
+- a patch under `[post_model_sync]`, for a site that already has the app;
+- the app's `after_install` hook, for a site that gets the app for the first time. Installing an app marks all its
+  patches as done without running them, so on that site the patch alone would leave the scripts on, and both would
+  run.
+
+Save each script as a document, so Frappe clears its map of Server Scripts too; a bare `frappe.db.set_value` leaves a
+worker that already loaded the map running the disabled script. Test both paths: a migrate on a site with the app,
+and a fresh install on a site with the scripts.
 
 ```python
+# my_app/setup/scripts.py
 import frappe
 
+MOVED = (
+    ("Server Script", "Sales Invoice - tier price", "disabled", 1),
+    ("Client Script", "Sales Invoice - tier form", "enabled", 0),
+)
 
-def execute():
-    for doctype, name, field, value in (
-        ("Server Script", "Sales Invoice - tier price", "disabled", 1),
-        ("Client Script", "Sales Invoice - tier form", "enabled", 0),
-    ):
+
+def disable_moved_scripts():
+    for doctype, name, field, value in MOVED:
         if frappe.db.exists(doctype, name):
             doc = frappe.get_doc(doctype, name)
             doc.set(field, value)
-            doc.save(ignore_permissions=True)  # on_update clears the Server Script map
+            doc.save(ignore_permissions=True)  # the save calls ServerScript.clear_cache, which drops the map
+
+
+# my_app/patches/v1_0/disable_moved_scripts.py:  def execute(): disable_moved_scripts()
+# hooks.py:  after_install = "my_app.setup.scripts.disable_moved_scripts"  (or call it from the existing one)
 ```
 
 **No moment when both run.** On a deploy the new code can be live before migrate runs the patch, so a document event
-could run the new hook and the old Server Script once each. Close that gap one of two ways, and say which in the PR:
+could run the new hook and the old Server Script once each. A guard in the new code is not enough on its own: while
+the patch saves a script, a worker can load the map with the script still enabled, and keep running it from that map
+after the patch commits. A scheduled Server Script has one more way in: a job queued before the cutover still runs
+the old script afterwards (Frappe does not check `disabled` when it runs a queued one). So the cutover is a short
+pause, and the PR says so:
 
-- **Guard the new code** until the patch has run: the moved hook returns at once while the old script is still
-  enabled (`if not frappe.db.get_value("Server Script", "Sales Invoice - tier price", "disabled"): return`), and the
-  guard is removed in a later change; or
-- **A short pause:** the site in maintenance mode (no requests, workers stopped) from the deploy until the migrate
-  has run.
+1. Before the deploy: `bench --site <site> disable-scheduler`, then wait until `bench --site <site>
+   show-pending-jobs` shows no queued jobs for the site, so nothing queued can run the old script later.
+2. The site in maintenance mode, with no requests and the workers stopped, from the deploy on.
+3. The migrate runs the patch (on a first install, `after_install` does the same).
+4. `bench --site <site> clear-cache`, so no process keeps the old map (the migrate does not clear it when it ends).
+5. Workers start, maintenance mode off, `bench --site <site> enable-scheduler`.
 
-Disable, never delete: the person can turn one back on if something was missed. Say in the PR which scripts the patch
-disables and what to check on the site after the deploy.
+On TBO's Press, ask DevOps for that window when the deploy is planned.
+
+Disable, never delete: the person can turn one back on if something was missed. Say in the PR which scripts the
+function disables and what to check on the site after the deploy.

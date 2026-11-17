@@ -543,6 +543,34 @@ test("a running bench job stays in the history however many jobs finish after it
   assert.equal((await finished(w.dev, migrate.job)).state, "passed");
 });
 
+test("one bench reached two ways is one bench: a link or a trailing slash does not let a job start beside a migrate", async (t) => {
+  // CodeRabbit on #29: the bench's path was compared as written, so a second path to it was a second bench
+  const settings = {};
+  const w = world(t, { settings });
+  await readyBranch(w);
+  let release;
+  w.hooks.holdBench = new Promise((r) => {
+    release = r;
+  });
+  const migrate = await w.dev.runDev({ action: "bench", command: "migrate" });
+  assert.equal(migrate.state, "running");
+  const link = path.join(w.top, "bench-link");
+  fs.symlinkSync(w.bench, link);
+  for (const benchPath of [link, `${w.bench}${path.sep}`, link + path.sep]) {
+    settings.benchPath = benchPath;
+    await assert.rejects(w.dev.runDev({ action: "bench", command: "build" }), { code: "BUSY", message: /migrate/ }, benchPath);
+    await assert.rejects(w.dev.runDev({ action: "run_tests" }), { code: "BUSY" }, benchPath);
+  }
+  w.hooks.holdBench = null;
+  release();
+  assert.equal((await finished(w.dev, migrate.job)).state, "passed");
+  // once it is done, the same linked path starts a job, and the job runs in the bench's real path
+  settings.benchPath = link;
+  const build = await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "build" })).job);
+  assert.equal(build.state, "passed");
+  assert.equal(w.benchRuns.at(-1).cwd, fs.realpathSync(w.bench));
+});
+
 // --- open_pr -----------------------------------------------------------------------------
 
 async function checkedAndTested(w) {

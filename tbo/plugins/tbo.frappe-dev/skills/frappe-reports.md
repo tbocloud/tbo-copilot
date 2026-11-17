@@ -89,7 +89,10 @@ A filter's `fieldname` is its key in `filters` in Python. Make the filters that 
   background) unless `disable_prepared_report_automation` is set. For a report known to be heavy, set
   `prepared_report` yourself, on each site that runs it: Frappe clears it when the report is exported, so it never
   ships in the report's JSON. Do it in a patch (`frappe.db.set_value("Report", "<name>", "prepared_report", 1)`) so
-  every site gets it, and say so in the PR.
+  every site gets it, and say so in the PR. List the patch under **`[post_model_sync]`** in `patches.txt`: Frappe
+  imports a new report during the model sync, so a patch before it finds no Report row and changes nothing. A site
+  that installs the app later never runs the patch (installing marks every patch as done), so call the same function
+  from the app's `after_install` hook too.
 
 ## Check it
 

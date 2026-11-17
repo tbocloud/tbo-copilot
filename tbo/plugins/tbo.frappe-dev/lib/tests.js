@@ -17,17 +17,18 @@ function isBench(dir) {
 
 // The bench: the setting, or the folder that holds the repository as apps/<app>. A configured bench
 // must hold this very checkout in its apps/ folder: the tests run the code the bench loads, and a
-// result counts only for the commit it ran on.
+// result counts only for the commit it ran on. The answer is the bench's real path, so one bench
+// reached two ways (a link, a trailing slash) is still one bench for the one-job-at-a-time rule.
 function findBench(root, configured) {
   if (configured) {
     if (!isBench(configured)) throw fail("NO_BENCH", `"Frappe bench folder" (${configured}) is not a bench: it needs sites/ and apps/frappe.`);
     if (!holds(configured, root)) {
       throw fail("NO_BENCH", `The bench ${configured} runs the apps in its apps/ folder, and this repository (${root}) is not one of them: work in ${configured}/apps/<app>, or set the bench that holds it.`);
     }
-    return configured;
+    return fs.realpathSync(configured);
   }
   const parent = path.dirname(root);
-  if (path.basename(parent) === "apps" && isBench(path.dirname(parent))) return path.dirname(parent);
+  if (path.basename(parent) === "apps" && isBench(path.dirname(parent))) return fs.realpathSync(path.dirname(parent));
   return null;
 }
 

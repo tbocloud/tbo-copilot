@@ -89,8 +89,17 @@ finally:
     frappe.set_user(current)
 ```
 
-A background job has no asker: the rule that decided the copy (this invoice was made from that order) is the check;
-write it before the copy, never only "the job may".
+`frappe.set_user` resets more than the user: `frappe.form_dict`, `frappe.session.data` and the request's caches start
+empty, and switching back does not bring them back. So in a request, keep the permission checks in the request, then
+hand the copy to a background job (`frappe.enqueue(..., enqueue_after_commit=True)`) that switches to Administrator
+there: a job has no request state to lose. If the copy must happen inside the request, make it the last thing the
+handler does.
+
+A background job has no asker, and a link between the documents (this invoice was made from that order) does not by
+itself allow the copy: the invoice's readers would then see a private file they could not see before. The copy needs
+a rule that says so, agreed in the task by the person who owns that data (for example "an invoice made from an order
+carries the order's attachments, for the invoice's readers"). Write that rule in the code as the check before you
+switch to Administrator, copy only what it covers, and name it in the PR; never only "the job may".
 
 Test it as a user who cannot read the original file.
 
