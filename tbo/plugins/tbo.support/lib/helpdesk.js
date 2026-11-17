@@ -157,6 +157,9 @@ function frappeMessage(bodyText) {
   return "";
 }
 
+const MISSING_METHOD = /Failed to get method/i;
+const NOT_YET = "This TBO Support site does not have this yet: it needs a newer TBO Support. Ask TBO.";
+
 function errorFor(status, bodyText) {
   const detail = frappeMessage(bodyText);
   const short = detail ? ` ${detail.slice(0, 300)}` : "";
@@ -166,6 +169,10 @@ function errorFor(status, bodyText) {
   if (status === 429) return fail("RATE_LIMITED", "TBO Support is rate-limiting requests. Wait a minute and try again.");
   if (/DoesNotExistError/.test(bodyText)) return fail("NOT_FOUND", `Not found in TBO Support.${short}`);
   if (/PermissionError/.test(bodyText)) return fail("FORBIDDEN", `Your TBO Support account may not read this.${short}`);
+  // an older TBO Support without this call answers 417 "Failed to get method …" (Phase 23)
+  if (MISSING_METHOD.test(bodyText)) return fail("NOT_AVAILABLE", NOT_YET);
+  // an ordinary refusal (a ValidationError) says its reason, not an HTTP code
+  if (status === 417 && detail) return fail("HELPDESK_ERROR", `TBO Support refused it: ${detail.slice(0, 300)}`);
   return fail("HELPDESK_ERROR", `TBO Support returned an error (HTTP ${status}).${short}`);
 }
 
@@ -255,4 +262,15 @@ function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS })
   };
 }
 
-module.exports = { createClient, normalizeSite, frappeMessage, hostAllowed, isLoopback, READ_METHODS, WRITE_METHODS, READ_DOCTYPES, LOOPBACK_HOSTS };
+module.exports = {
+  createClient,
+  normalizeSite,
+  frappeMessage,
+  hostAllowed,
+  isLoopback,
+  READ_METHODS,
+  WRITE_METHODS,
+  READ_DOCTYPES,
+  LOOPBACK_HOSTS,
+  MISSING_METHOD,
+};

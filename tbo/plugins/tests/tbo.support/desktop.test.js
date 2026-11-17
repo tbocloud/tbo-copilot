@@ -163,3 +163,15 @@ test("sign-out tells TBO Support, never fails, and says whether TBO Support hear
   const ended = fakeSite([reply(401, { status: "signed_out", reason: "already ended" })]);
   assert.equal(await desktop.signOut({ request: ended.request, siteUrl: SITE, computerToken: "x" }), true);
 });
+
+test("a site without TBO's desktop sign-in says so plainly, not HTTP 417", async () => {
+  const body = JSON.stringify({
+    _server_messages: JSON.stringify([JSON.stringify({ message: "Failed to get method for command tbo_desktop.api.start_sign_in with No module named 'tbo_desktop'" })]),
+  });
+  const site = fakeSite([{ status: 417, headers: {}, bodyText: body }]);
+  await assert.rejects(desktop.start({ request: site.request, siteUrl: SITE, os: OS }), (e) => {
+    assert.equal(e.code, "NOT_AVAILABLE");
+    assert.doesNotMatch(e.message, /417/);
+    return true;
+  });
+});

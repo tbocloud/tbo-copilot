@@ -229,7 +229,10 @@ restarts only the AWS tool's server.
 
 **When TBO Support ends the sign-in** (the person lost access, the 30 days are over, a System Manager signed the
 computer out), renewal answers 401. The plugin then removes the session and clears the TBO AI key, and tells the
-person why.
+person why; the panel keeps that reason until the next sign-in. When TBO Support cannot be reached, the panel says
+so, instead of "TBO AI is not set up". An older TBO Support without a call the plugin makes (or a site without
+tbo_desktop) reads "does not have this yet" rather than a raw HTTP 417, and an ordinary refusal reads "TBO Support
+refused it: …" with its reason.
 
 **Sign out** tells TBO Support (which revokes the token and removes the AI key), asks the app to clear the TBO AI
 key on this computer, then removes the saved sign-in. Clearing the key is best effort: if the app refuses it,

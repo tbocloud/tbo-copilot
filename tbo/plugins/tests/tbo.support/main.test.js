@@ -883,3 +883,52 @@ test("changing another setting keeps a waiting sign-in and a task link; changing
     await settingsChanged();
   }
 });
+
+// --- Phase 23, C9: plain reasons in the panel ---
+
+test("the reason TBO Support ended a sign-in stays in the panel until the next sign-in", async () => {
+  await plugin.onLoad();
+  settings = { siteUrl: SITE };
+  await settingsChanged();
+  await signedOut();
+  await signInMicrosoft();
+  hub.tokens.clear();
+  hub.refreshStatus = 401;
+  hub.refreshReason = "You are not on TBO Copilot desktop's Allowed People. Ask a System Manager.";
+  try {
+    await assert.rejects(tool().execute({ action: "who_am_i" }, { log() {} }), { code: "SIGNED_OUT" });
+  } finally {
+    hub.refreshStatus = 200;
+  }
+  for (const read of [1, 2]) {
+    const state = await plugin.onPanelInvoke("tbo-support.state");
+    assert.equal(state.signedIn, false, `read ${read}`);
+    assert.match(state.error || "", /Allowed People/, `read ${read}`);
+  }
+  hub.finishAnswers = ["pending", "pending", "pending"];
+  await plugin.onPanelInvoke("tbo-support.microsoft");
+  assert.equal((await plugin.onPanelInvoke("tbo-support.state")).error, undefined);
+  await plugin.onPanelInvoke("tbo-support.cancel");
+});
+
+test("TBO Support out of reach at start is said as that, not as TBO AI not set up", async () => {
+  await signInMicrosoft();
+  hub.refreshStatus = 502;
+  try {
+    await plugin.startup();
+    const state = await plugin.onPanelInvoke("tbo-support.state");
+    assert.equal(state.signedIn, true);
+    assert.equal(state.ai.ready, false);
+    assert.match(state.ai.error || "", /HTTP 502|could not/i);
+  } finally {
+    hub.refreshStatus = 200;
+  }
+  // TBO Support is back: the next try (within about 5 minutes) sets TBO AI up
+  const realNow = Date.now;
+  Date.now = () => realNow() + 6 * 60 * 1000;
+  try {
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).ai.ready, true);
+  } finally {
+    Date.now = realNow;
+  }
+});

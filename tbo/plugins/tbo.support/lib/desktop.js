@@ -11,7 +11,7 @@
 // 4. refresh() renews the TBO Support token while the person may use the app;
 //    a 401 means the sign-in is over.
 
-const { frappeMessage } = require("./helpdesk");
+const { frappeMessage, MISSING_METHOD } = require("./helpdesk");
 
 const TIMEOUT_MS = 30000;
 const API = "/api/method/tbo_desktop.api.";
@@ -49,7 +49,8 @@ async function call(request, siteUrl, name, body) {
     const reason = (message && message.reason) || frappeMessage(res.bodyText || "") || "Your TBO sign-in has ended.";
     throw fail("SIGNED_OUT", reason);
   }
-  if (res.status === 404) {
+  // no tbo_desktop on the site: Frappe answers 417 "Failed to get method …" (a 404 from a proxy)
+  if (res.status === 404 || MISSING_METHOD.test(res.bodyText || "")) {
     throw fail("NOT_AVAILABLE", "This TBO Support site does not offer Microsoft sign-in yet. Use an API key, or ask TBO.");
   }
   if (res.status === 429) throw fail("RATE_LIMITED", "Too many sign-in attempts. Wait a few minutes and try again.");

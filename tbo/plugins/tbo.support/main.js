@@ -63,6 +63,8 @@ let aiState = { ready: false };
 let aiRetryAt = 0; // when to fetch the TBO AI key again after the app refused it (0: not needed)
 let epoch = 0;
 let knownSettings = null; // { site, aws } as last seen: a settings change acts on what moved
+// why TBO Support ended this computer's sign-in: { site, reason }, shown until the next sign-in (Phase 23)
+let endedSignIn = null;
 let chain = Promise.resolve();
 let version = null;
 
@@ -213,7 +215,15 @@ async function endLocally(site, computerToken, reason) {
     await store.removeSession(key).catch(() => {});
     return true;
   });
-  if (ended && reason) await pi.ui.showToast(`Your TBO sign-in ended: ${reason}`, "error").catch(() => {});
+  if (ended && reason) {
+    endedSignIn = { site, reason: `Your TBO sign-in ended: ${reason}` };
+    await pi.ui.showToast(endedSignIn.reason, "error").catch(() => {});
+  }
+}
+
+// The reason the last sign-in on `site` ended, for the panel ({} when there is none).
+function endedReason(site) {
+  return endedSignIn && endedSignIn.site === site ? { error: endedSignIn.reason } : {};
 }
 
 // A TBO Support token with at least an hour left; renewed (and the AI key
@@ -239,6 +249,8 @@ async function renew(site, session, { force = false } = {}) {
       throw e;
     }
     if (aiDue) aiRetryAt = Date.now() + AI_RETRY_MS; // not on every call while TBO Support is down
+    // no TBO AI key in the row yet: the panel says TBO Support could not be reached, not "not set up"
+    if (!aiApplied && TRANSIENT.has(e.code)) aiState = { ready: false, error: e.message };
     // TBO Support could not answer: the saved token still works until it runs out
     if (!force && TRANSIENT.has(e.code) && session.accessExpiresAt > Date.now()) return session;
     throw e;
@@ -281,6 +293,7 @@ async function runSignedIn(args, tool = TOOL) {
 async function startMicrosoft() {
   const gen = epoch; // before the first wait: a sign-out or API-key sign-in meanwhile ends this attempt
   const site = await currentSite();
+  endedSignIn = null; // a new attempt: the last one's end is history
   if (pending) pending.cancelled = true;
   pending = null;
   const started = await desktop.start({ request, siteUrl: site, os, appVersion: await appVersion() });
@@ -383,7 +396,7 @@ async function panelState(retried = false) {
   }
   await clearAiUnlessSignedIn(site);
   const credentials = await store.load(keyOf(site));
-  if (!credentials) return { site, local, signedIn: false, pending: waiting };
+  if (!credentials) return { site, local, signedIn: false, pending: waiting, ...endedReason(site) };
   try {
     const me = await runAction(await clientFor(site, credentials), { action: "who_am_i" }, { siteUrl: site });
     return { site, local, signedIn: true, method: "key", user: me.user, ai: aiState };

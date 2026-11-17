@@ -177,3 +177,31 @@ test("the write list never lets the app approve its own request", () => {
   ]);
   for (const p of WRITE_METHODS) assert.ok(!READ_METHODS.has(p), p);
 });
+
+// --- Phase 23, C9: plain reasons instead of a raw HTTP 417 ---
+
+test("an older TBO Support without the method, and an ordinary refusal, read plainly", async () => {
+  const missing = JSON.stringify({
+    exc_type: "ValidationError",
+    _server_messages: JSON.stringify([
+      JSON.stringify({ message: "Failed to get method for command helpdesk.api.copilot_go_live.task_release with No module named 'helpdesk.api.copilot_go_live'" }),
+    ]),
+  });
+  const refused = JSON.stringify({ exc_type: "ValidationError", _server_messages: JSON.stringify([JSON.stringify({ message: "This task is already completed." })]) });
+  const { request } = fakeRequest([
+    { status: 417, headers: {}, bodyText: missing },
+    { status: 417, headers: {}, bodyText: refused },
+  ]);
+  const client = createClient({ siteUrl: SITE, credentials: CREDS, request });
+  await assert.rejects(client.method("helpdesk.api.copilot_go_live.task_release", { task: "TASK-2026-00021" }), (e) => {
+    assert.equal(e.code, "NOT_AVAILABLE");
+    assert.match(e.message, /does not have this yet/);
+    assert.doesNotMatch(e.message, /HTTP 417|No module/);
+    return true;
+  });
+  await assert.rejects(client.post("helpdesk.api.mobile.complete_task", { task: "TASK-2026-00021" }), (e) => {
+    assert.equal(e.code, "HELPDESK_ERROR");
+    assert.equal(e.message, "TBO Support refused it: This task is already completed.");
+    return true;
+  });
+});
