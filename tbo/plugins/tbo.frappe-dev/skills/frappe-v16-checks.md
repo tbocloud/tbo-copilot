@@ -99,7 +99,11 @@ frappe.enqueue(
 def copy_private_file(file_name, doctype, name):
     source = frappe.get_doc("File", file_name)
     if not copy_allowed(source, doctype, name):
-        return
+        # a failure, not a quiet success: the job shows as failed, with this reason, for someone to look at
+        frappe.throw(
+            _("The copy rule no longer allows copying {0} to {1} {2}.").format(file_name, doctype, name),
+            frappe.PermissionError,
+        )
     frappe.set_user("Administrator")
     frappe.get_doc({
         "doctype": "File",
@@ -110,7 +114,9 @@ def copy_private_file(file_name, doctype, name):
     }).insert()
 ```
 
-A job that copies by itself (no person asked) checks only `copy_allowed`.
+A job that copies by itself (no person asked) checks only `copy_allowed`. When the rule refuses in the job, the job
+fails with the reason instead of ending quietly, so a missing attachment can be traced; tell the person who asked
+where it matters (a comment on the destination, or a notification).
 
 Test it as a user who cannot read the original file.
 
