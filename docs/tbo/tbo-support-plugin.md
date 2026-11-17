@@ -120,8 +120,8 @@ The reads are actions of `tbo_support`. The backup, the requests and `start_task
 | `press_sites` | Hosted sites: name, status, bench group, server, plan | `helpdesk.api.copilot_press.sites` | `query` | yes |
 | `press_status` | A site's plan and usage, health (a ping from TBO Support), apps and versions, last backup, last update | `helpdesk.api.copilot_press.site_status` | `site` | yes |
 | `press_jobs` | Recent jobs of a site or bench, one job's steps (as untrusted text), or failed jobs | `…copilot_press.jobs`, `job`, `failed_jobs` | `site`, `bench`, `job`, `failed`, `hours`, `limit` | yes |
-| `press_backup` (`tbo_support_change`) | A backup now, once the person allows the call; logged | `POST helpdesk.api.copilot_press.backup` | `site` | no |
-| `press_action` (`tbo_support_change`) | Asks for `restart_bench`, `update_site`, `migrate_site`, `change_plan` (with `plan`), `deploy`, `restore` or `new_site`: an approver gets a card in Teams; TBO Support runs it after Approve and tells the person | `POST helpdesk.api.copilot_press.request_action` | `press_action`, `target`, `plan` | no |
+| `press_backup` (`tbo_support_change`) | A backup now, once the person allows the call; logged. First reads the site's jobs: a backup already running is never started again, and when the jobs cannot be read nothing is started (**not confirmed**). TBO Support answers once Press took the backup (an older hub watches the job for up to 3 minutes); the plugin waits 20 seconds at most, then answers **started** with the job (or **not confirmed**, with how to check), and `press_jobs` gives its status | `…copilot_press.jobs`, then `POST helpdesk.api.copilot_press.backup` | `site` | no |
+| `press_action` (`tbo_support_change`) | Asks for `restart_bench`, `update_site`, `migrate_site`, `change_plan` (with `plan`) or `deploy`: an approver gets a card in Teams; TBO Support runs it after Approve and tells the person. `restore` (which backup files) and `new_site` (the new site's details) are left out until the plugin can send what they need (Phase 23) | `POST helpdesk.api.copilot_press.request_action` | `press_action`, `target`, `plan` | no |
 
 Deletes (archive a site, drop a bench, archive a server, and the like) are not offered and TBO Support refuses them.
 
@@ -135,6 +135,14 @@ For work on a TBO Support task in the desktop app with the `tbo.frappe-dev` plug
 | `my_tasks` | The signed-in person's open tasks, overdue first: number, subject (untrusted), status, group, project, customer, deadline, priority, timer | `helpdesk.api.mobile.get_tasks` | `group`, `limit` | yes |
 | `get_task` | One task with its description and last ten activity items (untrusted), its pull requests, and `branch_subject`: the subject with only letters, digits, spaces and `._-`, for `tbo_dev` `start_work` | `helpdesk.api.mobile.get_task` | `task` | yes |
 | `start_task` (`tbo_support_change`) | Starts the person's own timer on the task (Open becomes Working), once they allow the call: a write on their own work is theirs to allow | `POST helpdesk.api.mobile.start_task` | `task` | no |
+| `pause_task`, `hold_task`, `resume_task` (`tbo_support_change`) | Pauses the timer; puts the task On Hold with one of TBO Support's reasons; takes it off hold (Phase 22) | `POST helpdesk.api.mobile.pause_task`, `hold_task`, `resume_task` | `task`; `reason`, `notes` | no |
+| `completion_days` | Before completing: the days the task's timer ran, the hours still free on each day, the earliest day hours may be typed in, and the rule below (Phase 23) | `helpdesk.tasky.api.get_completion_days` (what TBO Support's Complete dialog reads) | `task` | yes |
+| `complete_task` (`tbo_support_change`) | Completes the person's own task with what was done and their hours: `hours_worked` puts them all on today; `days` (`[{date, hours}]`, each date once, at most 24 h) puts each day's hours on its own date, through the call TBO Support's Complete dialog makes (Phase 23) | `POST helpdesk.api.mobile.complete_task` (hours) or `POST helpdesk.tasky.api.complete_task` (days) | `task`, `notes`, `hours_worked` or `days` | no |
+
+**The hours rule** (TBO Support's, for both ways): a day takes at most what is left of the person's working day (hours
+already on their timesheet count), and only a working day; hours are typed in for today and the last few working days
+(HD Work Settings, 7 by default), an older day only up to what the task's timer recorded on it; never a day in the
+future or before the task was made. The tool text says so, so Copilot asks for each day's hours and never guesses.
 
 ### 5c. Report a problem (0.4.0)
 
@@ -150,7 +158,7 @@ Copilot actions by number only (TBO Support adds them). The user guide is `docs/
 
 | Action | Does | Helpdesk API | Inputs | Plan-safe |
 |---|---|---|---|---|
-| `report_problem` (`tbo_support_change`) | Files the person's words as a task for the TBO Copilot team; answers with its number and link | `POST helpdesk.api.copilot_feedback.report_problem` (`where`: Desktop) | `text`, up to 4,000 characters | no |
+| `report_problem` (`tbo_support_change`) | Files the person's words as a task for the TBO Copilot team; answers with its number, and its link only when the person can read the task (`get_task` as them; Phase 23) | `POST helpdesk.api.copilot_feedback.report_problem` (`where`: Desktop), then `helpdesk.api.mobile.get_task` | `text`, up to 4,000 characters | no |
 
 **Input rules:**
 - `ticket` accepts `1`, `#1`, `0001` or `HD-0001`. HD Ticket names are zero-padded to four digits (autoname `.####`: `0001`, `0042`, `12345`), so the number is padded the same way. If that name is not found, the plain number is tried once, for a site that names tickets without padding.
@@ -182,8 +190,12 @@ their role allows.
 2. The plugin asks TBO Support for a code (`tbo_desktop.api.start_sign_in`, sending the computer's name and
    system) and opens the browser at TBO Support's Allow page. It opens only a page on the same site.
 3. The person logs in with Microsoft. The page shows the computer's name and the same code as the panel, and they
-   press **Allow**.
-4. The plugin waits (`finish_sign_in`, every few seconds, at most 10 minutes) and gets, once:
+   press **Allow**. If they may not sign in (not on Allowed People, not an active agent, never logged in with
+   Microsoft…), the page says why, and so does the panel at once, under the code, while it keeps waiting: a System
+   Manager can still add them, or they log in with Microsoft from the page's button, and then press Allow.
+4. The plugin waits (`finish_sign_in`, every few seconds, until the code expires, 10 minutes by default). A check
+   that fails for a moment (offline, rate limited, a server error) does not end the wait: the panel says so and
+   it goes on, more slowly after a rate limit. It gets, once:
    - a computer token (30 days);
    - a TBO Support token (a Frappe bearer token, 12 hours);
    - the person's TBO AI key and the gateway's address.
@@ -194,7 +206,9 @@ their role allows.
      failure half way leaves no key rather than a mixed pair.
    - The app accepts the address only on a host in the plugin's `net.domains` (the gateway,
      `copilot-gateway.tbocloud.in`, is listed for that and is never accepted as a TBO Support address).
-   - The model picker refreshes as soon as the key is set.
+   - The model picker refreshes as soon as the key is set. The row offers the gateway's two model names:
+     `tbo-default` (**TBO AI**) and `tbo-deepseek` (**TBO AI · DeepSeek**, text only); TBO Desktop Settings → Models
+     decides which of them a person's key may use.
    - The row holds one site's key: changing the site address clears it at once, and the new site's sign-in (if
      any) sets it again. At start the plugin first asks the app to clear the row (a key from an earlier run belongs to no
      known sign-in), then the renewal sets it; if that renewal fails, the next panel read, check or tool call
@@ -211,10 +225,16 @@ their role allows.
 still running drop its answer (a Microsoft sign-in overtaken while it starts opens no browser), and all writes to the saved sign-in and the TBO AI row happen one at a time. So a renewal
 can never put a key back after sign-out, a cancelled sign-in keeps nothing, and the panel never shows a sign-in
 whose TBO AI is still being set up. An API-key sign-in is refused while a Microsoft sign-in is kept for that site.
+Only a change of the site address counts as a site change: changing another plugin setting (the AWS ones) keeps a
+waiting sign-in, a task that is opening and a task link waiting for Open (Phase 23); a change to an AWS setting
+restarts only the AWS tool's server.
 
 **When TBO Support ends the sign-in** (the person lost access, the 30 days are over, a System Manager signed the
 computer out), renewal answers 401. The plugin then removes the session and clears the TBO AI key, and tells the
-person why.
+person why; the panel keeps that reason until the next sign-in. When TBO Support cannot be reached, the panel says
+so, instead of "TBO AI is not set up". An older TBO Support without a call the plugin makes (or a site without
+tbo_desktop) reads "does not have this yet" rather than a raw HTTP 417, and an ordinary refusal reads "TBO Support
+refused it: …" with its reason.
 
 **Sign out** tells TBO Support (which revokes the token and removes the AI key), asks the app to clear the TBO AI
 key on this computer, then removes the saved sign-in. Clearing the key is best effort: if the app refuses it,
@@ -260,12 +280,15 @@ by tests.
 | Permission | Why |
 |---|---|
 | `agent.tool.register` | The `tbo_support`, `tbo_support_change` and `tbo_aws` tools |
-| `net.fetch`, with `net.domains: ["teams.teambackoffice.com", "demo-tbo.tbocloud.in", "copilot-gateway.tbocloud.in", "localhost", "*.localhost", "127.0.0.1"]` | Calls to TBO Support (the real site or the demo hub), or to a local test bench on the same computer. The gateway is listed because the app checks the TBO AI address against `net.domains`; the plugin never sends a TBO Support token there. The host refuses every other host, and re-checks redirects. |
-| `ui.panel` | The sign-in panel |
+| `net.fetch`, with `net.domains: ["teams.teambackoffice.com", "demo-tbo.tbocloud.in", "copilot-gateway.tbocloud.in", "localhost", "*.localhost", "127.0.0.1"]` | Calls to TBO Support (the real site or the demo hub), or to a local test bench on the same computer. The gateway is listed because the app checks the TBO AI address against `net.domains`; the plugin never sends a TBO Support token there. The host refuses every other host, and re-checks redirects. The copy the installers ship has no local hosts (`scripts/tbo/fetch-plugins.mjs`, security F4): a local bench works only with the plugin loaded as a development plugin |
+| `ui.panel` | The sign-in panel, and its Projects and tasks view |
 | `shell.openExternal` | Opens TBO Support's Allow page in the browser (only a page on the same site) |
 | `provider.register` | The **TBO AI** provider row, and storing its key and address after the sign-in |
+| `agent.prompt.inject` | Its skills (the AWS ones and *Work on a TBO Support task*) |
+| `desktop.control` (0.5.0, Phase 22) | Making and opening a task's chat and giving it the task, and grouping a project's folders (`session/get`, `session/create`, `session/open`, `agent/prompt`, `project/groups/*`); never a dangerous operation |
+| `fs.read` (0.5.0) | The folder picker for a project's folders; the plugin reads no file |
 
-There is no file, command, MCP or clipboard permission (`shell.openExternal` only opens the Allow page). `tbo_support` is `risk: "low"` because it only reads; `tbo_support_change` is `risk: "high"`, so the app asks before each call (Phase 21). The host audits every call. The plugin also logs each action and ticket number through `ctx.log`, never the content.
+There is no command, MCP or clipboard permission (`shell.openExternal` only opens the Allow page). `tbo_support` is `risk: "low"` because it only reads; `tbo_support_change` is `risk: "high"`, so the app asks before each call (Phase 21). The host audits every call. The plugin also logs each action and ticket number through `ctx.log`, never the content.
 
 The **site address** is a plugin setting (`siteUrl`, default `https://teams.teambackoffice.com`). The plugin refuses an address whose host is not in `net.domains`. It also refuses plain HTTP, except for `localhost`, `127.0.0.1` and names ending in `.localhost`, which always mean this computer (RFC 6761). So a developer can test against a local bench site such as `http://tbo.localhost:8002`. The saved sign-in and key are per site (scheme, host and port), so a local key and the real one never mix.
 
@@ -296,7 +319,7 @@ The **site address** is a plugin setting (`siteUrl`, default `https://teams.team
 
 | Situation | What the agent sees |
 |---|---|
-| Not signed in | "Not signed in to TBO Support. Run 'TBO Support: Sign in' from the command menu." |
+| Not signed in | "Not signed in to TBO Support. Run 'TBO Support: Sign in' from the command palette." |
 | 401 | "TBO Support did not accept your sign-in. Run 'TBO Support: Sign in' again." (with a sign-in, the plugin first renews once) |
 | The sign-in ended | "Your TBO sign-in ended: <TBO Support's reason>" as a notice; the session and the TBO AI key are removed |
 | 403 / `PermissionError` | "Your TBO Support account may not read this." |

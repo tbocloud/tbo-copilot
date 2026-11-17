@@ -101,6 +101,7 @@ async function hubFetch(input) {
   }
   if (path === "tbo_desktop.api.finish_sign_in") {
     const next = hub.finishAnswers.shift() || "approved";
+    if (next && typeof next === "object") return next.http ? { status: next.http, headers: {}, bodyText: "{}" } : ok(next);
     if (next !== "approved") return ok({ status: next });
     return ok({
       status: "approved",
@@ -132,6 +133,16 @@ async function hubFetch(input) {
     return { status: 401, headers: {}, bodyText: '{"exc_type":"AuthenticationError"}' };
   }
   if (path === "helpdesk.api.mobile.get_task" && hub.task) return ok({ v: 1, data: hub.task });
+  // the reporter may open their report's task (Phase 23, C13: the link is offered only then)
+  if (path === "helpdesk.api.mobile.get_task" && hub.reports.length) return ok({ v: 1, data: { name: "TASK-2026-00099" } });
+  if (path === "helpdesk.api.mobile.get_projects" && hub.projects) {
+    const q = new URL(input.url).searchParams;
+    const start = Number(q.get("cursor") || 0);
+    const limit = Number(q.get("limit") || 20);
+    const more = hub.projects.length > start + limit;
+    return ok({ v: 1, data: hub.projects.slice(start, start + limit), has_more: more, next_cursor: more ? start + limit : null });
+  }
+  if (path === "helpdesk.api.mobile.get_tasks" && hub.myTasks) return ok({ v: 1, data: hub.myTasks, has_more: false, next_cursor: null });
   if (path === "helpdesk.api.copilot_feedback.report_problem") {
     assert.equal(input.method, "POST");
     hub.reports.push(body);
@@ -325,7 +336,7 @@ test("when TBO Support ends the sign-in, the session and the AI key are removed"
   hub.refreshStatus = 200;
 });
 
-test("a denied sign-in is reported once and nothing is kept", async () => {
+test("a denied sign-in keeps saying why until the next sign-in, and nothing is kept", async () => {
   hub.finishAnswers = ["denied"];
   await plugin.onPanelInvoke("tbo-support.microsoft");
   await waitFor(async () => {
@@ -333,8 +344,34 @@ test("a denied sign-in is reported once and nothing is kept", async () => {
     return s.pending && s.pending.error;
   });
   assert.equal(sessions.has(HOST), false);
+  // the panel refreshes when the person comes back to it: the reason is still there
   const after = await plugin.onPanelInvoke("tbo-support.state");
-  assert.equal(after.pending, null);
+  assert.match(after.pending.error, /denied/);
+  // the next sign-in starts clean
+  hub.finishAnswers = ["pending", "pending", "pending"];
+  const again = await plugin.onPanelInvoke("tbo-support.microsoft");
+  assert.equal(again.pending.error, "");
+  await plugin.onPanelInvoke("tbo-support.cancel");
+});
+
+// --- Phase 23, C3 ---
+
+test("while it waits, the panel shows TBO Support's reason at once, and a failed check does not end it", async () => {
+  const reason = "You are not on TBO Copilot desktop's Allowed People. Ask a System Manager.";
+  hub.finishAnswers = [{ status: "pending", reason }, { http: 502 }, { http: 502 }, "pending", "pending", "pending", "pending"];
+  await plugin.onPanelInvoke("tbo-support.microsoft");
+  await waitFor(async () => {
+    const s = await plugin.onPanelInvoke("tbo-support.state");
+    return s.pending && s.pending.reason === reason;
+  });
+  await waitFor(async () => {
+    const s = await plugin.onPanelInvoke("tbo-support.state");
+    return s.pending && /HTTP 502/.test(s.pending.problem);
+  });
+  const state = await plugin.onPanelInvoke("tbo-support.state");
+  assert.equal(state.pending.error, ""); // still waiting
+  await plugin.onPanelInvoke("tbo-support.cancel");
+  assert.equal((await plugin.onPanelInvoke("tbo-support.state")).pending, null);
 });
 
 test("cancel stops waiting", async () => {
@@ -755,7 +792,7 @@ test("a task opened, or a folder kept, for one site never acts on another", asyn
   }
 });
 
-test("a settings change forgets a task link still waiting for Open", async () => {
+test("a site change forgets a task link still waiting for Open", async () => {
   await plugin.onLoad();
   settings.siteUrl = SITE;
   const openPanel = pi.ui.openPanel;
@@ -763,6 +800,9 @@ test("a settings change forgets a task link still waiting for Open", async () =>
   try {
     await plugin.onOpenUrl({ url: `tbo-copilot://task/TASK-2026-00123?site=${encodeURIComponent(SITE)}` });
     assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, true);
+    settings.siteUrl = "https://demo-tbo.tbocloud.in";
+    await settingsChanged();
+    settings.siteUrl = SITE;
     await settingsChanged();
     assert.equal((await plugin.onPanelInvoke("tbo-support.state")).askProjects, false);
   } finally {
@@ -791,7 +831,10 @@ test("an older open that ends after a settings change keeps a newer task link's 
     invoke: async ({ operation }) => {
       if (operation === "session/create") return { session: { id: "s-1" } };
       if (operation === "agent/prompt") {
-        // the open's last step: the settings change now, and a new link for the same task number arrives
+        // the open's last step: the site changes away and back now, and a new link for the same task number arrives
+        settings = { siteUrl: "https://demo-tbo.tbocloud.in" };
+        await settingsChanged();
+        settings = { siteUrl: SITE };
         await settingsChanged();
         await plugin.onOpenUrl({ url: link });
       }
@@ -812,4 +855,134 @@ test("an older open that ends after a settings change keeps a newer task link's 
     await plugin.onPanelInvoke("tbo-support.dismiss-request");
     fs.rmSync("/tmp/tbo-support-test/projects.json", { force: true });
   }
+});
+
+// --- Phase 23, C10: only a change of the site acts like one ---
+
+test("changing another setting keeps a waiting sign-in and a task link; changing the site ends them", async () => {
+  await plugin.onLoad();
+  settings = { siteUrl: SITE };
+  await settingsChanged();
+  await plugin.onPanelInvoke("tbo-support.sign-out"); // signed out: the panel shows the waiting sign-in
+  const openPanel = pi.ui.openPanel;
+  pi.ui.openPanel = async () => {};
+  try {
+    await plugin.onOpenUrl({ url: `tbo-copilot://task/TASK-2026-00123?site=${encodeURIComponent(SITE)}` });
+    hub.finishAnswers = Array.from({ length: 20 }, () => "pending");
+    await plugin.onPanelInvoke("tbo-support.microsoft");
+    settings = { siteUrl: SITE, awsAllowChanges: true, awsRegion: "ap-south-1" };
+    await settingsChanged();
+    const kept = await plugin.onPanelInvoke("tbo-support.state");
+    assert.equal(kept.pending && kept.pending.code, "K7P-4QX", "the sign-in still waits");
+    assert.equal(kept.pending.error, "");
+    assert.equal(kept.askProjects, true, "the task link still waits");
+    // the same site written another way is the same site
+    settings = { siteUrl: `${SITE}/`, awsAllowChanges: true };
+    await settingsChanged();
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).pending.code, "K7P-4QX");
+    settings = { siteUrl: "https://demo-tbo.tbocloud.in" };
+    await settingsChanged();
+    const moved = await plugin.onPanelInvoke("tbo-support.state");
+    assert.equal(moved.pending, null);
+    assert.equal(moved.askProjects, false);
+  } finally {
+    pi.ui.openPanel = openPanel;
+    hub.finishAnswers = [];
+    await plugin.onPanelInvoke("tbo-support.cancel");
+    settings = { siteUrl: SITE };
+    await settingsChanged();
+  }
+});
+
+// --- Phase 23, C9: plain reasons in the panel ---
+
+test("the reason TBO Support ended a sign-in stays in the panel until the next sign-in", async () => {
+  await plugin.onLoad();
+  settings = { siteUrl: SITE };
+  await settingsChanged();
+  await signedOut();
+  await signInMicrosoft();
+  hub.tokens.clear();
+  hub.refreshStatus = 401;
+  hub.refreshReason = "You are not on TBO Copilot desktop's Allowed People. Ask a System Manager.";
+  try {
+    await assert.rejects(tool().execute({ action: "who_am_i" }, { log() {} }), { code: "SIGNED_OUT" });
+  } finally {
+    hub.refreshStatus = 200;
+  }
+  for (const read of [1, 2]) {
+    const state = await plugin.onPanelInvoke("tbo-support.state");
+    assert.equal(state.signedIn, false, `read ${read}`);
+    assert.match(state.error || "", /Allowed People/, `read ${read}`);
+  }
+  hub.finishAnswers = ["pending", "pending", "pending"];
+  await plugin.onPanelInvoke("tbo-support.microsoft");
+  assert.equal((await plugin.onPanelInvoke("tbo-support.state")).error, undefined);
+  await plugin.onPanelInvoke("tbo-support.cancel");
+});
+
+test("TBO Support out of reach at start is said as that, not as TBO AI not set up", async () => {
+  await signInMicrosoft();
+  hub.refreshStatus = 502;
+  try {
+    await plugin.startup();
+    const state = await plugin.onPanelInvoke("tbo-support.state");
+    assert.equal(state.signedIn, true);
+    assert.equal(state.ai.ready, false);
+    assert.match(state.ai.error || "", /HTTP 502|could not/i);
+  } finally {
+    hub.refreshStatus = 200;
+  }
+  // TBO Support is back: the next try (within about 5 minutes) sets TBO AI up
+  const realNow = Date.now;
+  Date.now = () => realNow() + 6 * 60 * 1000;
+  try {
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).ai.ready, true);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+// --- Phase 23, C11: the Projects view ---
+
+test("the Projects view reads every page of projects, shows tasks without a project, and the project a link needs", async (t) => {
+  const fs = require("node:fs");
+  await plugin.onLoad();
+  settings = { siteUrl: SITE };
+  await settingsChanged();
+  await signedOut();
+  assert.equal((await plugin.onPanelInvoke("tbo-support.sign-in", { ...GOOD })).ok, true);
+  fs.rmSync("/tmp/tbo-support-test/projects.json", { force: true });
+  hub.projects = Array.from({ length: 60 }, (_, i) => ({ name: `PROJ-${String(i + 1).padStart(4, "0")}`, project_name: `Project ${i + 1}`, my_role: "Developer" }));
+  hub.myTasks = [
+    { name: "TASK-2026-00001", subject: "In a project", status: "Open", project: "PROJ-0055", project_name: "Project 55" },
+    { name: "TASK-2026-00002", subject: "<b>No</b> project", status: "Working", project: null },
+  ];
+  // a task link whose project is not among the person's open projects
+  hub.task = { name: "TASK-2026-00777", subject: "Helping out", project: "PROJ-0999", project_name: "Someone else's" };
+  t.after(() => {
+    hub.projects = null;
+    hub.myTasks = null;
+    hub.task = null;
+    fs.rmSync("/tmp/tbo-support-test/projects.json", { force: true });
+  });
+  const view = await plugin.onPanelInvoke("tbo-support.projects");
+  assert.equal(view.ok, true, view.error);
+  assert.equal(view.projects.filter((p) => /^PROJ-00\d\d$/.test(p.project)).length, 60);
+  assert.equal(view.projects_cut, false);
+  // more than the old ten pages: every one is read (CodeRabbit on #28)
+  hub.projects = Array.from({ length: 520 }, (_, i) => ({ name: `PROJ-${String(i + 1).padStart(4, "0")}`, project_name: `Project ${i + 1}`, my_role: "Developer" }));
+  const long = await plugin.onPanelInvoke("tbo-support.projects");
+  assert.equal(long.projects.filter((p) => /^PROJ-\d{4}$/.test(p.project) && p.project !== "PROJ-0999").length, 520);
+  assert.equal(long.projects_cut, false);
+  hub.projects = Array.from({ length: 60 }, (_, i) => ({ name: `PROJ-${String(i + 1).padStart(4, "0")}`, project_name: `Project ${i + 1}`, my_role: "Developer" }));
+  assert.deepEqual(view.unassigned, [{ task: "TASK-2026-00002", subject: "No project", status: "Working", deadline: null, overdue: false }]);
+
+  const opened = await plugin.onPanelInvoke("tbo-support.open-task", { task: "TASK-2026-00777", site: SITE });
+  assert.equal(opened.needFolders, true);
+  const again = await plugin.onPanelInvoke("tbo-support.projects");
+  const needed = again.projects[0];
+  assert.equal(needed.project, "PROJ-0999", "the project the task needs comes first, with its own card");
+  assert.equal(needed.name, "Someone else's");
+  assert.equal(needed.needed, true);
 });

@@ -40,6 +40,9 @@ const READ_METHODS = new Set([
   "helpdesk.api.mobile.get_projects",
   // where a task's change stands on its way to the customer's sites (Phase 22)
   "helpdesk.api.copilot_go_live.task_release",
+  // what TBO Support's Complete dialog offers before a task is completed: the days its timer ran,
+  // the hours still free on each (Phase 23)
+  "helpdesk.tasky.api.get_completion_days",
 ]);
 
 // a search's words, a customer's name: sent in the body (TBO Copilot Phase 21, docs/tbo/security.md F5).
@@ -48,6 +51,8 @@ const READ_BY_POST = new Set([
   "helpdesk.api.search.search",
   "helpdesk.api.article.search",
   "helpdesk.api.copilot_press.sites",
+  // an AWS command and its profile (Phase 23): never in a URL
+  "helpdesk.api.copilot_actions.approved_action",
 ]);
 
 const WRITE_METHODS = new Set([
@@ -63,6 +68,8 @@ const WRITE_METHODS = new Set([
   "helpdesk.api.mobile.hold_task",
   "helpdesk.api.mobile.resume_task",
   "helpdesk.api.mobile.complete_task",
+  // completing with the hours of several days, each on its own date: TBO Support's Complete dialog's call (Phase 23)
+  "helpdesk.tasky.api.complete_task",
   // asks the release's approver for the task's change to go live tonight or now; they decide
   "helpdesk.api.copilot_go_live.ask_go_live",
   // the person's report for the TBO Copilot team: a task in their project, never a ticket (Phase 21)
@@ -152,6 +159,9 @@ function frappeMessage(bodyText) {
   return "";
 }
 
+const MISSING_METHOD = /Failed to get method/i;
+const NOT_YET = "This TBO Support site does not have this yet: it needs a newer TBO Support. Ask TBO.";
+
 function errorFor(status, bodyText) {
   const detail = frappeMessage(bodyText);
   const short = detail ? ` ${detail.slice(0, 300)}` : "";
@@ -161,6 +171,10 @@ function errorFor(status, bodyText) {
   if (status === 429) return fail("RATE_LIMITED", "TBO Support is rate-limiting requests. Wait a minute and try again.");
   if (/DoesNotExistError/.test(bodyText)) return fail("NOT_FOUND", `Not found in TBO Support.${short}`);
   if (/PermissionError/.test(bodyText)) return fail("FORBIDDEN", `Your TBO Support account may not read this.${short}`);
+  // an older TBO Support without this call answers 417 "Failed to get method …" (Phase 23)
+  if (MISSING_METHOD.test(bodyText)) return fail("NOT_AVAILABLE", NOT_YET);
+  // an ordinary refusal (a ValidationError) says its reason, not an HTTP code
+  if (status === 417 && detail) return fail("HELPDESK_ERROR", `TBO Support refused it: ${detail.slice(0, 300)}`);
   return fail("HELPDESK_ERROR", `TBO Support returned an error (HTTP ${status}).${short}`);
 }
 
@@ -175,7 +189,7 @@ function authorization(credentials) {
 function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS }) {
   const auth = authorization(credentials);
   if (!auth) {
-    throw fail("NOT_SIGNED_IN", "Not signed in to TBO Support. Run 'TBO Support: Sign in' from the command menu.");
+    throw fail("NOT_SIGNED_IN", "Not signed in to TBO Support. Run 'TBO Support: Sign in' from the command palette.");
   }
   const headers = { Accept: "application/json", Authorization: auth };
 
@@ -196,7 +210,7 @@ function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS })
     return parseBody(res);
   }
 
-  async function post(path, params) {
+  async function post(path, params, wait = timeoutMs) {
     let res;
     try {
       res = await request({
@@ -204,7 +218,7 @@ function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS })
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify(params || {}),
-        timeoutMs,
+        timeoutMs: wait,
       });
     } catch (e) {
       throw fail("NETWORK", `Could not reach TBO Support (${e && e.message ? e.message : e}).`);
@@ -227,9 +241,11 @@ function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS })
       const body = READ_BY_POST.has(path) ? await post(`/api/method/${path}`, params) : await get(`/api/method/${path}`, params);
       return body.message;
     },
-    async post(path, params) {
+    // `opts.timeoutMs`: a shorter wait for a write whose answer may come late (a Press backup)
+    async post(path, params, opts) {
       if (!WRITE_METHODS.has(path)) throw fail("NOT_ALLOWED", `The plugin may not call ${path}.`);
-      const body = await post(`/api/method/${path}`, params);
+      const wait = opts && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? Math.min(opts.timeoutMs, timeoutMs) : timeoutMs;
+      const body = await post(`/api/method/${path}`, params, wait);
       return body.message;
     },
     // the filters may hold a customer's name: a POST to frappe.client.get_list, the same
@@ -248,4 +264,15 @@ function createClient({ siteUrl, credentials, request, timeoutMs = TIMEOUT_MS })
   };
 }
 
-module.exports = { createClient, normalizeSite, frappeMessage, hostAllowed, isLoopback, READ_METHODS, WRITE_METHODS, READ_DOCTYPES, LOOPBACK_HOSTS };
+module.exports = {
+  createClient,
+  normalizeSite,
+  frappeMessage,
+  hostAllowed,
+  isLoopback,
+  READ_METHODS,
+  WRITE_METHODS,
+  READ_DOCTYPES,
+  LOOPBACK_HOSTS,
+  MISSING_METHOD,
+};

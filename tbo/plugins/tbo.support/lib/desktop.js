@@ -11,7 +11,7 @@
 // 4. refresh() renews the TBO Support token while the person may use the app;
 //    a 401 means the sign-in is over.
 
-const { frappeMessage } = require("./helpdesk");
+const { frappeMessage, MISSING_METHOD } = require("./helpdesk");
 
 const TIMEOUT_MS = 30000;
 const API = "/api/method/tbo_desktop.api.";
@@ -29,6 +29,13 @@ function parse(bodyText) {
     return null;
   }
 }
+
+const LIMITED = {
+  start_sign_in: "Too many sign-in attempts. Wait a few minutes and try again.",
+  finish_sign_in: "TBO Support is limiting this sign-in's checks. They go on more slowly.",
+  refresh: "TBO Support is limiting this computer's renewals. It tries again in a few minutes.",
+  sign_out: "TBO Support is limiting sign-outs from this computer. Wait a few minutes and try again.",
+};
 
 async function call(request, siteUrl, name, body) {
   let res;
@@ -49,10 +56,12 @@ async function call(request, siteUrl, name, body) {
     const reason = (message && message.reason) || frappeMessage(res.bodyText || "") || "Your TBO sign-in has ended.";
     throw fail("SIGNED_OUT", reason);
   }
-  if (res.status === 404) {
+  // no tbo_desktop on the site: Frappe answers 417 "Failed to get method …" (a 404 from a proxy)
+  if (res.status === 404 || MISSING_METHOD.test(res.bodyText || "")) {
     throw fail("NOT_AVAILABLE", "This TBO Support site does not offer Microsoft sign-in yet. Use an API key, or ask TBO.");
   }
-  if (res.status === 429) throw fail("RATE_LIMITED", "Too many sign-in attempts. Wait a few minutes and try again.");
+  // TBO Support says which limit (Phase 23: per computer); an older one says nothing, so name the call
+  if (res.status === 429) throw fail("RATE_LIMITED", frappeMessage(res.bodyText || "") || LIMITED[name] || LIMITED.start_sign_in);
   if (res.status < 200 || res.status >= 300 || !message) {
     throw fail("HELPDESK_ERROR", `TBO Support could not handle the sign-in (HTTP ${res.status}).`);
   }
@@ -84,20 +93,47 @@ async function start({ request, siteUrl, os, appVersion }) {
   return started;
 }
 
-// Waits until the person allows or denies, the code expires, or `isCancelled()`.
-async function poll({ request, siteUrl, started, sleep, now = Date.now, isCancelled = () => false }) {
+// A check that failed for a moment (offline, rate limited, a server error): the next one may work.
+const PASSING = new Set(["NETWORK", "RATE_LIMITED", "HELPDESK_ERROR"]);
+const MAX_WAIT_MS = 30000;
+
+// Waits until the person allows or denies, the code expires, or `isCancelled()`. A check that
+// fails for a moment never ends the wait: it goes on until the code expires (Phase 23). While it
+// waits, `onWaiting({ reason, problem })` hears TBO Support's reason why the person cannot allow
+// it yet (the Allow page's, e.g. not on Allowed People) and the last failed check, if any.
+async function poll({ request, siteUrl, started, sleep, now = Date.now, isCancelled = () => false, onWaiting = () => {} }) {
   const intervalMs = Math.max(Number(started.interval) || 3, 1) * 1000;
   const until = now() + Math.max(Number(started.expires_in) || 600, 60) * 1000;
+  let waitMs = intervalMs;
+  let problem = null;
   while (now() < until) {
     if (isCancelled()) throw fail("CANCELLED", "Sign-in cancelled.");
-    await sleep(intervalMs);
+    await sleep(waitMs);
     if (isCancelled()) throw fail("CANCELLED", "Sign-in cancelled.");
-    const got = await call(request, siteUrl, "finish_sign_in", { device_code: started.device_code });
+    let got;
+    try {
+      got = await call(request, siteUrl, "finish_sign_in", { device_code: started.device_code });
+    } catch (e) {
+      if (!PASSING.has(e.code)) throw e; // ended by TBO Support (with its reason), or no sign-in here
+      problem = e;
+      // a rate limit asks for fewer checks: wait longer, up to half a minute
+      waitMs = e.code === "RATE_LIMITED" ? Math.min(waitMs * 2, MAX_WAIT_MS) : intervalMs;
+      onWaiting({ reason: "", problem: e.message });
+      continue;
+    }
+    problem = null;
+    waitMs = intervalMs;
     if (got.status === "approved") return session(got, now);
-    if (got.status === "denied") throw fail("DENIED", "The sign-in was denied in the browser.");
+    if (got.status === "denied") {
+      throw fail("DENIED", got.reason ? `The sign-in was denied: ${got.reason}` : "The sign-in was denied in the browser.");
+    }
     if (got.status === "expired") throw fail("EXPIRED", "The sign-in code expired. Start again.");
+    onWaiting({ reason: typeof got.reason === "string" ? got.reason : "", problem: "" });
   }
-  throw fail("EXPIRED", "The sign-in code expired. Start again.");
+  throw fail(
+    "EXPIRED",
+    problem ? `The sign-in code expired. The last check failed: ${problem.message} Start again.` : "The sign-in code expired. Start again.",
+  );
 }
 
 // What the plugin keeps (in the Keychain or with DPAPI): never the AI key.

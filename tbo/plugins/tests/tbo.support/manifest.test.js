@@ -71,5 +71,13 @@ test("TBO AI is declared without an address: the sign-in sets it", () => {
   assert.equal(provider.id, "tbo-ai");
   assert.equal(provider.baseUrl, undefined);
   assert.equal(provider.authKind, "api_key");
-  assert.deepEqual(provider.models.map((m) => m.id), ["tbo-default"]);
+  assert.deepEqual(provider.models.map((m) => m.id), ["tbo-default", "tbo-deepseek"]);
+});
+
+test("TBO AI offers the gateway's two models; DeepSeek reads text only (Phase 23, C17)", () => {
+  const [provider] = manifest.contributes.providers;
+  const deepseek = provider.models.find((m) => m.id === "tbo-deepseek");
+  assert.ok(deepseek, "tbo-deepseek is listed next to tbo-default");
+  assert.match(deepseek.name, /DeepSeek/);
+  assert.equal(deepseek.supportsImages, false);
 });

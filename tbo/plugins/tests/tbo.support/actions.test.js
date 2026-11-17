@@ -329,6 +329,100 @@ test("a Press action only asks for an approval, and never one Copilot does not o
   assert.equal(posts.length, 1);
 });
 
+// --- Phase 23, C5: a backup answers "started" at once, and a retry never starts a second one ---
+
+// TBO Support's Press: its jobs for a site, and a backup call that may answer late (it watches Press's job)
+function pressHub({ jobs = [], backup } = {}) {
+  const posts = [];
+  const reads = [];
+  return {
+    posts,
+    reads,
+    jobs,
+    async method(path, params) {
+      reads.push([path, params]);
+      if (path === "helpdesk.api.copilot_press.jobs") return this.jobs;
+      throw new Error(`unexpected ${path}`);
+    },
+    async post(path, params, opts) {
+      posts.push([path, params, opts]);
+      return backup.call(this, params);
+    },
+  };
+}
+
+const RUNNING = { name: "JOB-0042", job_type: "Backup Site", status: "Running", creation: "2026-11-17 10:00:00", site: "acme.tbo365.cloud" };
+
+test("a backup already running is not started again", async () => {
+  const hub = pressHub({ jobs: [{ ...RUNNING, job_type: "Update Site", name: "JOB-0041" }, RUNNING], backup: () => ({}) });
+  const got = await runAction(hub, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL);
+  assert.equal(got.status, "already running");
+  assert.equal(got.job, "JOB-0042");
+  assert.match(got.next, /press_jobs/);
+  assert.deepEqual(hub.posts, []);
+  assert.deepEqual(hub.reads[0], ["helpdesk.api.copilot_press.jobs", { site: "acme.tbo365.cloud", limit: 10 }]);
+});
+
+test("a backup TBO Support is still watching answers started, and a retry starts no second one", async () => {
+  const hub = pressHub({
+    backup() {
+      // TBO Support asked Press and is still watching the job when the app stops waiting
+      this.jobs = [RUNNING];
+      throw Object.assign(new Error("Could not reach TBO Support (The operation was aborted)."), { code: "NETWORK" });
+    },
+  });
+  const got = await runAction(hub, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL);
+  assert.equal(got.status, "started");
+  assert.equal(got.job, "JOB-0042");
+  assert.match(got.next, /press_jobs/);
+  // the plugin stops waiting well before the 30 s of other calls
+  assert.ok(hub.posts[0][2] && hub.posts[0][2].timeoutMs <= 20000, JSON.stringify(hub.posts[0]));
+  const retry = await runAction(hub, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL);
+  assert.equal(retry.status, "already running");
+  assert.equal(hub.posts.length, 1);
+});
+
+test("when Press's jobs cannot be read, no backup is started", async () => {
+  // CodeRabbit on #28: "never started again" holds even when the first read fails
+  const hub = pressHub({ backup: () => ({}) });
+  hub.method = async (path, params) => {
+    hub.reads.push([path, params]);
+    throw Object.assign(new Error("Could not reach TBO Support (ECONNRESET)."), { code: "NETWORK" });
+  };
+  const got = await runAction(hub, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL);
+  assert.equal(got.status, "not confirmed");
+  assert.match(got.next, /no backup was started/);
+  assert.deepEqual(hub.posts, []);
+});
+
+test("a backup that cannot be confirmed says so and how to check, never to ask again", async () => {
+  const hub = pressHub({
+    backup() {
+      throw Object.assign(new Error("Could not reach TBO Support (ENOTFOUND)."), { code: "NETWORK" });
+    },
+  });
+  const got = await runAction(hub, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL);
+  assert.equal(got.status, "not confirmed");
+  assert.match(got.next, /press_jobs/);
+  assert.match(got.next, /not ask for another backup/);
+  // a refusal is still an error
+  const refused = pressHub({
+    backup() {
+      throw Object.assign(new Error("Your TBO Support account may not read this."), { code: "FORBIDDEN" });
+    },
+  });
+  await assert.rejects(runAction(refused, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL), { code: "FORBIDDEN" });
+});
+
+test("a backup TBO Support answers in time gives its job and how to ask for its status", async () => {
+  const hub = pressHub({ backup: () => ({ text: "backup on acme.tbo365.cloud: job JOB-0050 success (0:02:10)", job: { name: "JOB-0050", status: "Success" } }) });
+  const got = await runAction(hub, { action: "press_backup", site: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL);
+  assert.equal(got.status, "done");
+  assert.equal(got.job, "JOB-0050");
+  assert.match(got.text, /success/);
+  assert.deepEqual(hub.posts[0].slice(0, 2), ["helpdesk.api.copilot_press.backup", { site: "acme.tbo365.cloud" }]);
+});
+
 // --- tasks (Phase 20) -----------------------------------------------------------------------
 
 const TASK_ROW = {
@@ -401,6 +495,10 @@ test("report_problem sends the person's words to TBO Support's feedback, from th
       posted.push([path, params]);
       return { task: "TASK-2026-00099", url: "https://teams.teambackoffice.com/helpdesk/my-work?task=TASK-2026-00099" };
     },
+    // the reporter may read the task here
+    async method(path, params) {
+      return path === "helpdesk.api.mobile.get_task" ? { data: { name: params.task } } : {};
+    },
   };
   const r = await runAction(client, { action: "report_problem", text: " The fix card showed the wrong ticket " }, ENV, CHANGE_TOOL);
   assert.deepEqual(posted, [["helpdesk.api.copilot_feedback.report_problem", { text: "The fix card showed the wrong ticket", where: "Desktop" }]]);
@@ -409,6 +507,69 @@ test("report_problem sends the person's words to TBO Support's feedback, from th
   await assert.rejects(runAction(client, { action: "report_problem" }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT", message: /needs "text"/ });
   await assert.rejects(runAction(client, { action: "report_problem", text: "x".repeat(4001) }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT" });
   assert.equal(posted.length, 1);
+});
+
+// --- Phase 23, C6: hours per day, as TBO Support's own Complete dialog ---
+
+test("completing with hours on several days sends each day's hours, as the Complete dialog does", async () => {
+  const posts = [];
+  const client = {
+    async post(path, params) {
+      posts.push([path, params]);
+      return { name: params.task, status: "Completed", hours_logged: 14, timesheet_status: "Submitted" };
+    },
+  };
+  const days = [
+    { date: "2026-11-16", hours: 8 },
+    { date: "2026-11-17", hours: 6 },
+  ];
+  const done = await runAction(client, { action: "complete_task", task: "TASK-2026-00021", days, notes: "Fixed the report" }, ENV, CHANGE_TOOL);
+  assert.deepEqual(posts[0], ["helpdesk.tasky.api.complete_task", { task: "TASK-2026-00021", days, notes: "Fixed the report" }]);
+  assert.equal(done.status, "Completed");
+  assert.equal(done.hours_logged, 14);
+  const { WRITE_METHODS, READ_METHODS } = require("../../tbo.support/lib/helpdesk");
+  assert.ok(WRITE_METHODS.has("helpdesk.tasky.api.complete_task"));
+  assert.ok(READ_METHODS.has("helpdesk.tasky.api.get_completion_days"));
+  for (const bad of [
+    [],
+    [{ date: "16 Nov", hours: 2 }],
+    [{ date: "2026-11-16", hours: 0 }],
+    [{ date: "2026-11-16", hours: 25 }],
+    [{ date: "2026-11-16", hours: 2 }, { date: "2026-11-16", hours: 3 }],
+    "8 hours",
+  ]) {
+    await assert.rejects(runAction(client, { action: "complete_task", task: "TASK-2026-00021", days: bad, notes: "x" }, ENV, CHANGE_TOOL), {
+      code: "INVALID_ARGUMENT",
+    }, JSON.stringify(bad));
+  }
+  // one or the other, never both
+  await assert.rejects(runAction(client, { action: "complete_task", task: "TASK-2026-00021", days, hours_worked: 14, notes: "x" }, ENV, CHANGE_TOOL), {
+    code: "INVALID_ARGUMENT",
+    message: /either/,
+  });
+  assert.equal(posts.length, 1);
+  // the rule is stated where the model reads it
+  assert.match(CHANGE_TOOL.description, /days/);
+  assert.match(CHANGE_TOOL.description, /working day/);
+  assert.equal(CHANGE_TOOL.schema.properties.hours_worked.maximum, 24);
+});
+
+test("completion_days reads the days the task's timer ran and the hours left on each", async () => {
+  const client = fakeClient({
+    "helpdesk.tasky.api.get_completion_days": {
+      today: "2026-11-17",
+      yesterday: "2026-11-16",
+      oldest: "2026-11-07",
+      days: [{ date: "2026-11-16", hours: 5.5, from_time: "2026-11-16 09:30:00" }],
+      left: { "2026-11-16": 2.5, "2026-11-17": 8 },
+    },
+  });
+  const got = await runAction(client, { action: "completion_days", task: "TASK-2026-00021" }, ENV);
+  assert.deepEqual(client.calls[0], { path: "helpdesk.tasky.api.get_completion_days", params: { task: "TASK-2026-00021" } });
+  assert.deepEqual(got.timer_days, [{ date: "2026-11-16", hours: 5.5 }]);
+  assert.deepEqual(got.hours_left, { "2026-11-16": 2.5, "2026-11-17": 8 });
+  assert.equal(got.earliest_by_hand, "2026-11-07");
+  assert.match(got.rule, /working day/);
 });
 
 // --- Phase 22: completing a task from the desktop app, and going live ---
@@ -511,4 +672,55 @@ test("a go-live note is at most what TBO Support keeps", async () => {
   await runAction(client, { action: "ask_go_live", task: "TASK-2026-00021", when: "tonight", notes: "x".repeat(500) }, ENV, CHANGE_TOOL);
   await assert.rejects(runAction(client, { action: "ask_go_live", task: "TASK-2026-00021", when: "tonight", notes: "x".repeat(501) }, ENV, CHANGE_TOOL), { code: "INVALID_ARGUMENT" });
   assert.match(CHANGE_TOOL.schema.properties.notes.description, /ask_go_live: .*500/);
+});
+
+// --- Phase 23, C8: Press restore and new site need details the plugin cannot send: not offered ---
+
+test("restore and new_site are not offered until the plugin can send what they need", async () => {
+  const { PRESS_ACTIONS } = require("../../tbo.support/lib/actions");
+  const posts = [];
+  const client = {
+    async post(path, params) {
+      posts.push([path, params]);
+      return { name: "TBO-ACT-2026-00010" };
+    },
+  };
+  for (const action of ["restore", "new_site"]) {
+    assert.ok(!PRESS_ACTIONS.includes(action), action);
+    assert.ok(!CHANGE_TOOL.schema.properties.press_action.enum.includes(action), action);
+    assert.doesNotMatch(CHANGE_TOOL.description, new RegExp(`\\b${action}\\b`), action);
+    await assert.rejects(runAction(client, { action: "press_action", press_action: action, target: "acme.tbo365.cloud" }, ENV, CHANGE_TOOL), {
+      code: "INVALID_ARGUMENT",
+    });
+  }
+  assert.deepEqual(posts, []);
+  assert.deepEqual(PRESS_ACTIONS, ["restart_bench", "update_site", "migrate_site", "change_plan", "deploy"]);
+});
+
+// --- Phase 23, C12: a task from a ticket names its ticket ---
+
+test("get_task gives the task's ticket when TBO Support has one", async () => {
+  const client = fakeClient({ "helpdesk.api.mobile.get_task": { data: { ...TASK_ROW, hd_ticket: "0042" } } });
+  const got = await runAction(client, { action: "get_task", task: "TASK-2026-00021" }, ENV);
+  assert.equal(got.ticket, "0042");
+  const none = fakeClient({ "helpdesk.api.mobile.get_task": { data: { ...TASK_ROW } } });
+  assert.equal((await runAction(none, { action: "get_task", task: "TASK-2026-00021" }, ENV)).ticket, null);
+});
+
+// --- Phase 23, C13: a report's link is offered only to a reporter who can open it ---
+
+test("a report the reporter cannot open comes without a link, and says so", async () => {
+  const client = {
+    async post() {
+      return { task: "TASK-2026-00099", url: "https://teams.teambackoffice.com/helpdesk/my-work?task=TASK-2026-00099" };
+    },
+    async method(path) {
+      assert.equal(path, "helpdesk.api.mobile.get_task");
+      throw Object.assign(new Error("Your TBO Support account may not read this."), { code: "FORBIDDEN" });
+    },
+  };
+  const r = await runAction(client, { action: "report_problem", text: "The card showed the wrong ticket" }, ENV, CHANGE_TOOL);
+  assert.equal(r.task, "TASK-2026-00099");
+  assert.equal(r.url, null);
+  assert.match(r.next, /cannot open/);
 });

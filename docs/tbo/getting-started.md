@@ -12,7 +12,11 @@ It always acts **as you**, with your own TBO Support permissions. It asks before
 
 ## 1. Install the desktop app
 
-1. Open the latest release on [GitHub](https://github.com/tbocloud/tbo-copilot/releases) and download:
+1. Open TBO Support's download page, **`/copilot-desktop`** on your TBO Support site (for example
+   `https://teams.teambackoffice.com/copilot-desktop`, or `https://demo-tbo.tbocloud.in/copilot-desktop` on the demo
+   hub), and log in with Microsoft. It offers the installer for your system, or says why you may not use the app yet,
+   and lists **Your computers** (each one you signed in, with **Sign out**). The same files are on the
+   [GitHub releases](https://github.com/tbocloud/tbo-copilot/releases):
    - **macOS** (Apple silicon): `TBO-Copilot-<version>-arm64.dmg`. Open it and drag TBO Copilot to Applications.
    - **Windows:** `TBO-Copilot-Setup-<version>.exe`, and run it.
 2. **Until the installers are signed**, your computer warns you the first time:
@@ -27,13 +31,20 @@ It always acts **as you**, with your own TBO Support permissions. It asks before
 2. Your browser opens TBO Support. Sign in with your Microsoft work account if asked.
 3. Check that the code in the browser matches the one in the app, and press **Allow**.
 
+If the browser says you may not sign in yet (not on Allowed People, never logged in with Microsoft…), the app shows the
+same reason under the code and keeps waiting until the code expires: log in with Microsoft from the page's button, or
+ask a System Manager, then press **Allow**.
+
 The app is then ready, with nothing to type:
-- **TBO AI** is the model.
+- pick **TBO AI** as the model (the panel says when it is ready). **TBO AI · DeepSeek** (DeepSeek V3.2, run in TBO's
+  own AWS account) is the second choice; it reads text only, and works once TBO Support's settings list `tbo-deepseek`
+  for your key;
 - TBO Support is connected as you.
 
-**Signing in again:** the sign-in lasts 30 days. If it ends, the app asks you again.
+**Signing in again:** the sign-in lasts 30 days. If it ends, a notice says why, the TBO Support panel keeps the reason,
+and the panel opens by itself at the next start: sign in again there (**TBO Support: Sign in**).
 
-**Signing out:** command menu → **TBO Support: Sign out**. A System Manager can also end a computer's sign-in in TBO Support (**TBO Desktop Sign-in**).
+**Signing out:** command palette → **TBO Support: Sign out**. A System Manager can also end a computer's sign-in in TBO Support (**TBO Desktop Sign-in**).
 
 ## 3. Keep the app asking
 
@@ -62,17 +73,25 @@ The approver gets a card in Teams.
 
 **Hosted sites (Press):**
 - *"Status of acme.tbo365.cloud"*, or *"failed jobs of the last 24 hours"*.
-- *"Take a backup of demo.tbo365.cloud"* runs once you allow it.
-- A restart, update, migrate, plan change, deploy or restore goes to an approver first.
+- *"Take a backup of demo.tbo365.cloud"* runs once you allow it. It says **started** with Press's job; ask *"Is the
+  backup of demo.tbo365.cloud done?"* for its status. Asking again while one runs starts no second backup.
+- A restart, update, migrate, plan change or deploy goes to an approver first. A restore or a new site is not
+  offered from the app yet: ask in TBO Support.
 
 **AWS** (DevOps):
-- *"Which EC2 instances are running in me-central-1?"* uses your own AWS login (`aws sso login`).
+- *"Which EC2 instances are running in ap-south-1?"* uses your own AWS login (`aws sso login`). The plugin's **AWS
+  region** setting (ap-south-1 by default) is used when you name none.
 - Changes are off until you turn on **Allow AWS changes** in the plugin's settings. Each change then needs an approver.
 
 **Frappe development** (the Frappe Dev plugin):
-- Open the app's repository as the workspace, then type `/start-task TASK-2026-00123`.
+- Open the app's repository as the workspace (from a task: make it the project's first folder), then type
+  `/tbo.frappe-dev/start-task TASK-2026-00123`.
 - Copilot creates the branch and builds the change with you. It runs the repository's linters and the tests the change touches.
-- `/open-pr` opens the pull request with the task in it. TBO Support then moves the task to Pending Review.
+- `/tbo.frappe-dev/open-pr` opens the pull request with the task in it. TBO Support then moves the task to Pending
+  Review, and the merge completes it.
+
+**Projects and tasks:** open a task in its project's folders from the TBO Support panel; see
+[projects-and-tasks.md](projects-and-tasks.md).
 
 ## 5. In Teams
 
@@ -83,7 +102,7 @@ Find **TBO Copilot** in Teams' Apps, or in your chats if it is already installed
 Write **report a problem:** and then what you asked and what happened:
 - in Teams;
 - in the TBO Copilot panel in TBO Support;
-- or with **TBO Support: Report a problem** in the desktop app's command menu.
+- or with **TBO Support: Report a problem** in the desktop app's command palette.
 
 It becomes a task for the TBO Copilot team. See [report-a-problem.md](report-a-problem.md).
 

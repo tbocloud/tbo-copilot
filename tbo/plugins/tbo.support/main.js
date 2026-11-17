@@ -48,6 +48,7 @@ const COMMANDS = {
 let store = null;
 let projectStore = null; // each TBO Support project's folders and each task's chat, on this computer
 let openRequest = null; // a task link waiting for the person's Open in the panel: { task, site }
+let neededProject = null; // the project an opened task needs folders for: { site, project, name } (Phase 23)
 let aws = null;
 // "TBO Support: Report a problem" opens the panel on its report form (read once by the panel)
 let reportAsked = false;
@@ -62,6 +63,9 @@ let aiApplied = null; // what the TBO AI provider row holds now: { site, baseUrl
 let aiState = { ready: false };
 let aiRetryAt = 0; // when to fetch the TBO AI key again after the app refused it (0: not needed)
 let epoch = 0;
+let knownSettings = null; // { site, aws } as last seen: a settings change acts on what moved
+// why TBO Support ended this computer's sign-in: { site, reason }, shown until the next sign-in (Phase 23)
+let endedSignIn = null;
 let chain = Promise.resolve();
 let version = null;
 
@@ -212,7 +216,15 @@ async function endLocally(site, computerToken, reason) {
     await store.removeSession(key).catch(() => {});
     return true;
   });
-  if (ended && reason) await pi.ui.showToast(`Your TBO sign-in ended: ${reason}`, "error").catch(() => {});
+  if (ended && reason) {
+    endedSignIn = { site, reason: `Your TBO sign-in ended: ${reason}` };
+    await pi.ui.showToast(endedSignIn.reason, "error").catch(() => {});
+  }
+}
+
+// The reason the last sign-in on `site` ended, for the panel ({} when there is none).
+function endedReason(site) {
+  return endedSignIn && endedSignIn.site === site ? { error: endedSignIn.reason } : {};
 }
 
 // A TBO Support token with at least an hour left; renewed (and the AI key
@@ -238,6 +250,8 @@ async function renew(site, session, { force = false } = {}) {
       throw e;
     }
     if (aiDue) aiRetryAt = Date.now() + AI_RETRY_MS; // not on every call while TBO Support is down
+    // no TBO AI key in the row yet: the panel says TBO Support could not be reached, not "not set up"
+    if (!aiApplied && TRANSIENT.has(e.code)) aiState = { ready: false, error: e.message };
     // TBO Support could not answer: the saved token still works until it runs out
     if (!force && TRANSIENT.has(e.code) && session.accessExpiresAt > Date.now()) return session;
     throw e;
@@ -280,6 +294,7 @@ async function runSignedIn(args, tool = TOOL) {
 async function startMicrosoft() {
   const gen = epoch; // before the first wait: a sign-out or API-key sign-in meanwhile ends this attempt
   const site = await currentSite();
+  endedSignIn = null; // a new attempt: the last one's end is history
   if (pending) pending.cancelled = true;
   pending = null;
   const started = await desktop.start({ request, siteUrl: site, os, appVersion: await appVersion() });
@@ -291,6 +306,8 @@ async function startMicrosoft() {
     expiresAt: Date.now() + Number(started.expires_in || 600) * 1000,
     cancelled: false,
     error: "",
+    reason: "", // TBO Support's reason why the person cannot allow it yet (the Allow page's)
+    problem: "", // the last check that failed for a moment; checking goes on until the code expires
   };
   pending = mine;
   try {
@@ -303,7 +320,18 @@ async function startMicrosoft() {
   }
   const over = () => mine.cancelled || gen !== epoch;
   desktop
-    .poll({ request, siteUrl: site, started, sleep, isCancelled: over })
+    .poll({
+      request,
+      siteUrl: site,
+      started,
+      sleep,
+      isCancelled: over,
+      onWaiting: ({ reason, problem }) => {
+        if (over()) return;
+        mine.reason = reason || "";
+        mine.problem = problem || "";
+      },
+    })
     .then((session) =>
       exclusive(async () => {
         if (over()) return;
@@ -334,7 +362,9 @@ async function startMicrosoft() {
 }
 
 function pendingView(p) {
-  return p ? { code: p.code, verifyUrl: p.verifyUrl, expiresAt: p.expiresAt, error: p.error } : null;
+  return p
+    ? { code: p.code, verifyUrl: p.verifyUrl, expiresAt: p.expiresAt, error: p.error, reason: p.reason || "", problem: p.problem || "" }
+    : null;
 }
 
 // --- the panel -----------------------------------------------------------------
@@ -348,8 +378,9 @@ async function panelState(retried = false) {
   }
   await reconcileAi(site);
   const local = isLoopback(hostOf(site));
+  // a failed attempt keeps its reason until the next sign-in starts, is cancelled or signs out,
+  // so the panel still says why after the person comes back to it
   const waiting = pending && pending.site === site ? pendingView(pending) : null;
-  if (pending && pending.error) pending = null; // shown once
   const session = await store.loadSession(keyOf(site));
   if (session) {
     try {
@@ -366,7 +397,7 @@ async function panelState(retried = false) {
   }
   await clearAiUnlessSignedIn(site);
   const credentials = await store.load(keyOf(site));
-  if (!credentials) return { site, local, signedIn: false, pending: waiting };
+  if (!credentials) return { site, local, signedIn: false, pending: waiting, ...endedReason(site) };
   try {
     const me = await runAction(await clientFor(site, credentials), { action: "who_am_i" }, { siteUrl: site });
     return { site, local, signedIn: true, method: "key", user: me.user, ai: aiState };
@@ -503,12 +534,13 @@ const plainText = (value, max) =>
 // folders kept for each here. The panel shows text only (never HTML).
 async function projectsView() {
   return withClient(async (client, site) => {
-    const [projectPage, tasks] = await Promise.all([
-      client.method("helpdesk.api.mobile.get_projects", { status: "Open", limit: 50 }),
+    const [projectList, tasks] = await Promise.all([
+      allProjects(client), // every page of the person's open projects (Phase 23)
       allTasks(client), // every page of My Work
     ]);
+    const projectRows = projectList.rows;
     const kept = projectStore.projects(site);
-    const rows = (Array.isArray(projectPage && projectPage.data) ? projectPage.data : []).map((p) => ({
+    const rows = projectRows.map((p) => ({
       project: p.name,
       name: plainText(p.project_name || p.name, 140),
       customer: plainText(p.customer, 140) || null,
@@ -549,10 +581,56 @@ async function projectsView() {
         });
       }
     }
-    // the projects with the person's own open tasks first
-    rows.sort((a, b) => b.tasks.length - a.tasks.length || a.name.localeCompare(b.name));
-    return { site, projects: rows, request: openRequest && openRequest.site === site ? openRequest : null };
+    // the project a task the person opened needs folders for, though it is not in their lists (a
+    // task link for a project they only help on): its own card, first, so the folders can be added
+    const needed = neededProject && neededProject.site === site ? neededProject : null;
+    if (needed && !rows.some((r) => r.project === needed.project)) {
+      rows.push({
+        project: needed.project,
+        name: plainText(needed.name || needed.project, 140),
+        customer: null,
+        role: null,
+        folders: ((kept[needed.project] && kept[needed.project].folders) || []).map((f) => ({ path: f, here: projects.isFolder(f) })),
+        tasks: [],
+      });
+    }
+    for (const row of rows) if (needed && row.project === needed.project) row.needed = true;
+    // the project a task needs first, then those with the person's own open tasks
+    rows.sort((a, b) => Number(Boolean(b.needed)) - Number(Boolean(a.needed)) || b.tasks.length - a.tasks.length || a.name.localeCompare(b.name));
+    // tasks without a project cannot open here (a task opens in its project's folders): listed, with why
+    const unassigned = tasks
+      .filter((t) => !t.project)
+      .map((t) => ({ task: t.name, subject: plainText(t.subject, 200), status: t.status, deadline: t.exp_end_date || null, overdue: Boolean(t.is_overdue) }));
+    return {
+      site,
+      projects: rows,
+      unassigned,
+      // the list was cut (a very long one, or a hub that did not move on): the panel says so
+      projects_cut: projectList.cut,
+      request: openRequest && openRequest.site === site ? openRequest : null,
+    };
   });
+}
+
+// The person's open projects, every page, until TBO Support says there are no more. A cursor
+// seen before ends the reading (a hub that does not move on); a list cut by the safety cap
+// (MAX_PROJECT_PAGES of 50) says so in the panel, never silently.
+const MAX_PROJECT_PAGES = 200;
+
+async function allProjects(client) {
+  const rows = [];
+  const seen = new Set();
+  let cursor;
+  for (let page = 0; page < MAX_PROJECT_PAGES; page += 1) {
+    const got = await client.method("helpdesk.api.mobile.get_projects", { status: "Open", limit: 50, cursor });
+    rows.push(...(Array.isArray(got && got.data) ? got.data : []));
+    if (!got || !got.has_more || got.next_cursor == null) return { rows, cut: false };
+    const next = String(got.next_cursor);
+    if (seen.has(next)) return { rows, cut: true };
+    seen.add(next);
+    cursor = got.next_cursor;
+  }
+  return { rows, cut: true };
 }
 
 // the panel's own site must still be the current one: a settings change meanwhile acts on nothing
@@ -590,6 +668,9 @@ async function openTaskFromPanel(payload) {
       stillCurrent: () => generation === epoch,
     });
   });
+  // a project the person must add folders for keeps a card in the list until they have
+  if (result.needFolders && generation === epoch) neededProject = { site, project: result.project, name: result.projectName };
+  else if (result.opened && neededProject && neededProject.project === result.project) neededProject = null;
   // the link's request is done only when this open is still the current one: an open started before a
   // settings change must not clear a newer request for the same task number on the new site
   if (result.opened && generation === epoch && openRequest && openRequest.task === result.task && sameOrigin(openRequest.site, site)) {
@@ -631,7 +712,7 @@ async function onPanelInvoke(channel, payload) {
     }
     if (channel === "tbo-support.microsoft") return { ok: true, pending: await startMicrosoft() };
     if (channel === "tbo-support.open-again") {
-      if (pending) await pi.shell.openExternal(pending.verifyUrl);
+      if (pending && !pending.error) await pi.shell.openExternal(pending.verifyUrl);
       return { ok: true, pending: pendingView(pending) };
     }
     if (channel === "tbo-support.cancel") {
@@ -719,15 +800,35 @@ async function check() {
   }
 }
 
-// The site may have changed: work still running for the old one drops its
-// answer (it cannot put that site's key back), then the new site is synced.
-function onSettingsChanged() {
-  openRequest = null; // a task link asked for under the old settings opens nothing now
+// What a settings change is compared with: the site (as normalised, null when the address is not
+// usable) and the AWS tool's settings.
+async function settingsNow() {
+  const settings = (await pi.plugin.getSettings().catch(() => null)) || {};
+  let site = null;
+  try {
+    site = normalizeSite(settings.siteUrl || DEFAULT_SITE, siteHosts());
+  } catch {
+    site = null;
+  }
+  const awsSettings = JSON.stringify(Object.keys(settings).filter((k) => k.startsWith("aws")).sort().map((k) => [k, settings[k]]));
+  return { site, aws: awsSettings };
+}
+
+// Only a change of the site is a site change (Phase 23): work still running for the old one drops
+// its answer (it cannot put that site's key back), a waiting sign-in and a task link end, and the
+// new site is synced. Any other setting (the AWS ones) leaves the sign-in and an opening task alone.
+async function onSettingsChanged() {
+  const now = await settingsNow();
+  const before = knownSettings;
+  knownSettings = now;
+  if (aws && (!before || before.aws !== now.aws)) aws.stop(); // a new AWS profile or region starts a new AWS server
+  if (before && before.site === now.site) return;
+  openRequest = null; // a task link asked for under the old site opens nothing now
+  neededProject = null;
   lastReport = null; // a report's link belongs to the site it was sent to
   epoch += 1;
   if (pending) pending.cancelled = true;
   pending = null;
-  if (aws) aws.stop(); // a new AWS profile or region starts a new AWS server
   syncSite().catch(() => {});
 }
 
@@ -736,6 +837,7 @@ function startup() {
 }
 
 async function onLoad() {
+  knownSettings = await settingsNow();
   store = createStore({ dataDir: await pi.plugin.getDataPath() });
   projectStore = projects.createProjectStore({ dataDir: await pi.plugin.getDataPath() });
 
@@ -866,6 +968,7 @@ async function onUnload() {
   store = null;
   projectStore = null;
   openRequest = null;
+  neededProject = null;
 }
 
 // `startup` and `check` are what the plugin's two timers run; exported for the tests.
