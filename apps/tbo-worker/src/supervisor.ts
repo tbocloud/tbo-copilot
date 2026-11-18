@@ -1,3 +1,5 @@
+import { mkdir } from "node:fs/promises";
+
 import type { LocalToolResult } from "@pi-desktop/host-runtime";
 
 import type { ModelConfig, WorkerConfig } from "./config.js";
@@ -5,7 +7,9 @@ import { preview, type Engine, type TurnObserver, type TurnResult } from "./engi
 import { EventOutbox } from "./events.js";
 import { runFixJob } from "./fix.js";
 import { runFixTool, type FixToolState } from "./fix-tools.js";
-import { HubError, isReleaseCheck, type HubClient, type Job, type ReleaseCheckJob } from "./hub.js";
+import { HubError, isInfraJob, isReleaseCheck, type HubClient, type InfraJob, type Job, type ReleaseCheckJob } from "./hub.js";
+import { INFRA_NUDGE, infraFinalPrompt, infraTurnPrompt } from "./infra-prompt.js";
+import { runInfraTool, type InfraTools } from "./infra-tools.js";
 import type { Logger } from "./log.js";
 import { StageModels, noModelReason, stageModels, type StageModel } from "./models.js";
 import { RunBudget, smallestCap } from "./policy.js";
@@ -41,6 +45,9 @@ export type RunReport = {
   problems: string[];
 };
 
+/** The engine profile an infrastructure run's sessions use (cli.ts registers it). */
+export const INFRA_PROFILE_NAME = "infra";
+
 type RunState = {
   stage: string;
   submitted: boolean;
@@ -54,17 +61,49 @@ type RunState = {
   denied: number;
 };
 
+function newRunState(stage: string): RunState {
+  return { stage, submitted: false, submission: "", cancelled: false, leaseLost: false, budgetReason: "", finalTurn: false, finalToolCalls: 0, denied: 0 };
+}
+
+/** The run and its lease: what the worker API's calls need. */
+type Lease = Pick<Job, "run" | "lease_token">;
+type Reporter = (outcome: RunOutcome, reason?: string) => RunReport;
+
+/** The run's report so far: the outcome with the spend measured by its budget. */
+function reporter(run: string, ticket: string, budget: RunBudget, state: RunState, problems: () => string[]): Reporter {
+  return (outcome, reason) => ({
+    run,
+    ticket,
+    outcome,
+    ...(reason ? { reason } : {}),
+    ...(state.submission ? { submission: state.submission } : {}),
+    toolCalls: budget.spend.toolCalls,
+    denied: state.denied,
+    tokensIn: budget.spend.tokensIn,
+    tokensCached: budget.spend.tokensCached,
+    tokensOut: budget.spend.tokensOut,
+    costUsd: Number(budget.cost().usd ?? 0),
+    model: String(budget.cost().model ?? ""),
+    minutes: Math.round(budget.minutes() * 10) / 10,
+    problems: problems(),
+  });
+}
+
 /** Routes the engine's local tool calls to the run that owns the session. */
 export class RunToolRouter {
   readonly sessions = new Map<string, RunTools>();
   /** A fix job's fix and review sessions. */
   readonly fixSessions = new Map<string, FixToolState>();
+  /** An infrastructure alert's sessions (Phase 25): Press reads and the infra report, nothing else. */
+  readonly infraSessions = new Map<string, InfraTools>();
 
   constructor(private readonly hub: HubClient) {}
 
   readonly run = async (sessionId: string, name: string, args: unknown): Promise<LocalToolResult> => {
     const fix = this.fixSessions.get(sessionId);
     if (fix) return runFixTool(fix, name, args);
+    const infra = this.infraSessions.get(sessionId);
+    if (infra) return runInfraTool(this.hub, infra, name, args);
     const tools = this.sessions.get(sessionId);
     if (!tools) return { ok: false, isError: true, content: "This session has no active Copilot run." };
     return runTool(this.hub, tools, name, args);
@@ -105,9 +144,12 @@ export class Worker {
     private readonly sandbox?: Sandbox,
   ) {}
 
-  /** What the worker tells the hub it can do when claiming; with the sandbox, fixes and releases' checks too. */
+  /**
+   * What the worker tells the hub it can do when claiming: investigations and infrastructure
+   * alerts (which need no sandbox); with the sandbox, fixes and releases' checks too.
+   */
   capabilities(): string {
-    return this.sandbox ? "investigate,fix,release_check" : "investigate";
+    return this.sandbox ? "investigate,fix,release_check,infra" : "investigate,infra";
   }
 
   workspaceOptions(): WorkspaceOptions {
@@ -136,7 +178,7 @@ export class Worker {
       ...(this.cfg.model ? { model: this.cfg.model.modelId } : {}),
     });
     while (!signal.aborted && !this.stopping) {
-      let job: Job | ReleaseCheckJob | null = null;
+      let job: Job | InfraJob | ReleaseCheckJob | null = null;
       try {
         job = await this.hub.claimJob(this.cfg.workerId, undefined, this.capabilities());
       } catch (error) {
@@ -194,7 +236,8 @@ export class Worker {
     return known;
   }
 
-  async process(job: Job): Promise<RunReport> {
+  async process(job: Job | InfraJob): Promise<RunReport> {
+    if (isInfraJob(job)) return this.processInfra(job);
     if (job.context.kind === "fix") return this.processFix(job);
     const ticket = job.context.ticket.name;
     const models = new StageModels("investigate", stageModels(this.cfg, "investigate", job.context));
@@ -202,37 +245,12 @@ export class Worker {
     const maxUsd = smallestCap(this.cfg.limits.maxUsd, job.context.limits?.max_usd);
     const budget = new RunBudget({ ...this.cfg.limits, maxUsd }, Date.now, models.current);
     const outbox = new EventOutbox((events) => this.hub.postEvents(job.run, job.lease_token, events), { log: this.log });
-    const state: RunState = {
-      stage: "workspace",
-      submitted: false,
-      submission: "",
-      cancelled: false,
-      leaseLost: false,
-      budgetReason: "",
-      finalTurn: false,
-      finalToolCalls: 0,
-      denied: 0,
-    };
+    const state = newRunState("workspace");
     let sessionId: string | undefined;
     const sessions: string[] = [];
     let workspace: Workspace | undefined;
     let watchdog: NodeJS.Timeout | undefined;
-    const report = (outcome: RunOutcome, reason?: string): RunReport => ({
-      run: job.run,
-      ticket,
-      outcome,
-      ...(reason ? { reason } : {}),
-      ...(state.submission ? { submission: state.submission } : {}),
-      toolCalls: budget.spend.toolCalls,
-      denied: state.denied,
-      tokensIn: budget.spend.tokensIn,
-      tokensCached: budget.spend.tokensCached,
-      tokensOut: budget.spend.tokensOut,
-      costUsd: Number(budget.cost().usd ?? 0),
-      model: String(budget.cost().model ?? ""),
-      minutes: Math.round(budget.minutes() * 10) / 10,
-      problems: workspace?.problems ?? [],
-    });
+    const report = reporter(job.run, ticket, budget, state, () => workspace?.problems ?? []);
     this.log("info", "run claimed", { run: job.run, ticket });
     const heartbeat = setInterval(() => void this.beat(job, state, () => sessionId), this.cfg.limits.heartbeatIntervalMs);
 
@@ -258,15 +276,7 @@ export class Worker {
         homeDir: this.cfg.homeDir,
         cost: () => budget.cost(),
         beforeSubmit: () => outbox.flush(),
-        submitted: (text) => {
-          state.submitted = true;
-          state.submission = text.slice(0, 500);
-          outbox.close(); // the lease ended with the report: the hub accepts nothing more
-          // nothing more is needed from the model: a closing reply only costs tokens, and a
-          // provider failing at that point would be retried for minutes (as in the evaluation)
-          const id = sessionId;
-          if (id) setImmediate(() => void this.engine.abort(id));
-        },
+        submitted: this.onSubmitted(state, outbox, () => sessionId),
         isSubmitted: () => state.submitted,
         prepareCorrection: job.context.prepare_correction === true,
       };
@@ -287,56 +297,14 @@ export class Worker {
       watchdog = setInterval(() => {
         if (!state.finalTurn) observer.check();
       }, 15_000);
-      const mayGoOn = () => !state.submitted && !state.cancelled && !state.leaseLost && !this.stopping;
-      // the investigation: one turn, a reminder if it ended without a report, and after a limit one short turn to report
-      const investigate = async (id: string): Promise<TurnResult> => {
-        // a cancel, a lost lease or a stop can arrive while the clones and the session are prepared
-        let turn: TurnResult = { reason: "aborted", text: "" };
-        if (mayGoOn()) turn = await this.engine.runTurn(id, turnPrompt(job.context, workspace!), observer);
-        if (mayGoOn() && !state.budgetReason && turn.reason === "completed") {
-          outbox.push("reminder", { note: "the turn ended without a report" });
-          turn = await this.engine.runTurn(id, NUDGE, observer);
-        }
-        if (mayGoOn() && state.budgetReason) {
-          // a limit stopped the work: one short turn to report what was found, rather than nothing
-          outbox.push("final_turn", { reason: state.budgetReason });
-          state.finalTurn = true;
-          const timer = setTimeout(() => void this.engine.abort(id), FINAL_TURN_MS);
-          try {
-            turn = await this.engine.runTurn(id, finalPrompt(state.budgetReason), observer);
-          } finally {
-            clearTimeout(timer);
-          }
-        }
-        return turn;
-      };
-      let turn = await investigate(sessionId!);
-      // the provider failed: the investigation starts again once, in a fresh session on the fallback model
-      const fallback = mayGoOn() && !state.budgetReason ? models.next(turn) : undefined;
-      if (fallback) {
-        outbox.push("fallback", { job: "investigate", model: fallback.modelId, section: fallback.section, after: turn.errorCode });
-        this.log("warn", "investigation moves to the fallback model", { run: job.run, model: fallback.modelId, error: turn.errorCode });
-        turn = await investigate(await openOn(fallback));
-      }
-      if (state.submitted) return report("submitted");
-      if (state.cancelled) return report("cancelled", "the run was cancelled on TBO Support");
-      if (state.leaseLost) return report("lease_lost", "the lease ended before a report");
-      if (this.stopping) return report("stopped", "the worker was stopped; the lease will expire and the run goes back to the queue");
-      const reason =
-        (state.budgetReason && `${state.budgetReason}, and no report came after a last request to submit`) ||
-        (turn.reason === "error"
-          ? `the model failed (${turn.errorCode ?? "unknown error"})${turn.text ? `: ${turn.text.slice(0, 300)}` : ""}`
-          : "the model ended without a diagnosis");
-      await this.fail(job, outbox, reason);
-      return report("failed", reason);
+      const turn = await this.investigationTurns(
+        job.run,
+        { first: turnPrompt(job.context, workspace), nudge: NUDGE, final: finalPrompt },
+        { session: sessionId!, openOn, models, state, outbox, observer },
+      );
+      return await this.ending(job, outbox, state, turn, report);
     } catch (error) {
-      if (state.submitted) return report("submitted");
-      if (error instanceof HubError && error.leaseGone) return report("lease_lost", error.message);
-      if (this.stopping) return report("stopped", "the worker was stopped");
-      const reason = `the worker failed: ${String((error as Error)?.message ?? error).slice(0, 500)}`;
-      this.log("error", "run failed", { run: job.run, error: String(error) });
-      await this.fail(job, outbox, reason);
-      return report("failed", reason);
+      return await this.crashed(job, outbox, state, error, report);
     } finally {
       clearInterval(heartbeat);
       if (watchdog) clearInterval(watchdog);
@@ -348,6 +316,188 @@ export class Worker {
       this.currentSession = undefined;
       if (!this.cfg.keepRuns) await removeWorkspace(workspaceRoot(this.cfg.runsDir, job.run)).catch(() => undefined);
     }
+  }
+
+  /**
+   * An infrastructure alert (Phase 25): no clone, no sandbox and no customer site. The model gets
+   * the alert, Press's facts and the earlier repairs in its first message, may read Press again
+   * through TBO Support, and reports with submit_infra_investigation, proposing at most one action
+   * from the run's list. TBO Support checks the proposal and asks a person before anything runs.
+   */
+  async processInfra(job: InfraJob): Promise<RunReport> {
+    const context = job.context;
+    const ticket = String(context.alert?.ticket ?? "");
+    // the same models as an investigation (TBO Support's `investigate` job)
+    const models = new StageModels("investigate", stageModels(this.cfg, "investigate", context));
+    // the worker's own dollar limit, or TBO Support's cap per infra diagnosis when it is lower
+    const maxUsd = smallestCap(this.cfg.limits.maxUsd, context.dollar_cap);
+    const budget = new RunBudget({ ...this.cfg.limits, maxUsd }, Date.now, models.current);
+    const outbox = new EventOutbox((events) => this.hub.postEvents(job.run, job.lease_token, events), { log: this.log });
+    const state = newRunState("investigate");
+    let sessionId: string | undefined;
+    const sessions: string[] = [];
+    let watchdog: NodeJS.Timeout | undefined;
+    // a session needs a folder: an empty one, since an alert has no code or files to read
+    const root = workspaceRoot(this.cfg.runsDir, job.run);
+    const report = reporter(job.run, ticket, budget, state, () => []);
+    this.log("info", "infra run claimed", { run: job.run, ticket });
+    const heartbeat = setInterval(() => void this.beat(job, state, () => sessionId), this.cfg.limits.heartbeatIntervalMs);
+
+    try {
+      if (!models.current) {
+        const reason = noModelReason("investigate");
+        await this.fail(job, outbox, reason);
+        return report("failed", reason);
+      }
+      if (!this.engine.hasProfile(INFRA_PROFILE_NAME)) {
+        // without its own profile the session would get the ticket investigation's tools and rules
+        const reason = "this worker's engine has no infra profile";
+        await this.fail(job, outbox, reason);
+        return report("failed", reason);
+      }
+      await removeWorkspace(root);
+      await mkdir(root, { recursive: true, mode: 0o700 });
+      const actions = (context.actions ?? []).map((action) => String(action?.name ?? "")).filter(Boolean);
+      const mayTarget = (context.may_target ?? []).map(String).filter(Boolean);
+      outbox.push("workspace", { kind: "infra", target: context.target ?? null, actions, may_target: mayTarget });
+      // text in the alert or the facts that tries to instruct the AI: recorded for the team, as a ticket's files are
+      const watch = new SuspiciousWatch();
+      for (const line of watch.check(JSON.stringify([context.alert, context.press, context.hub_health, context.repairs]))) {
+        outbox.push("suspicious_instruction", { tool: "alert", text: line });
+      }
+      const tools: InfraTools = {
+        runToken: `${job.run}:${job.lease_token}`,
+        actions,
+        mayTarget,
+        cost: () => budget.cost(),
+        note: (text) => outbox.push("note", { text }),
+        beforeSubmit: () => outbox.flush(),
+        submitted: this.onSubmitted(state, outbox, () => sessionId),
+        isSubmitted: () => state.submitted,
+      };
+      const openOn = async (plan: StageModel): Promise<string> => {
+        budget.use(plan);
+        const id = await this.engine.openSession(root, `Copilot ${job.run}, alert ${ticket}`, await this.engineModel(plan), { profile: INFRA_PROFILE_NAME });
+        sessions.push(id);
+        sessionId = id;
+        this.currentSession = id;
+        this.router.infraSessions.set(id, tools);
+        return id;
+      };
+      await openOn(models.current);
+      const observer = this.observer(outbox, budget, state, () => sessionId);
+      watchdog = setInterval(() => {
+        if (!state.finalTurn) observer.check();
+      }, 15_000);
+      const turn = await this.investigationTurns(
+        job.run,
+        { first: infraTurnPrompt(context), nudge: INFRA_NUDGE, final: infraFinalPrompt },
+        { session: sessionId!, openOn, models, state, outbox, observer },
+      );
+      return await this.ending(job, outbox, state, turn, report);
+    } catch (error) {
+      return await this.crashed(job, outbox, state, error, report);
+    } finally {
+      clearInterval(heartbeat);
+      if (watchdog) clearInterval(watchdog);
+      outbox.close();
+      for (const id of sessions) {
+        this.router.infraSessions.delete(id);
+        await this.engine.closeSession(id, root).catch(() => undefined);
+      }
+      this.currentSession = undefined;
+      if (!this.cfg.keepRuns) await removeWorkspace(root).catch(() => undefined);
+    }
+  }
+
+  /** The hub took the report: the run is done, and the model is stopped. */
+  private onSubmitted(state: RunState, outbox: EventOutbox, session: () => string | undefined): (text: string) => void {
+    return (text) => {
+      state.submitted = true;
+      state.submission = text.slice(0, 500);
+      outbox.close(); // the lease ended with the report: the hub accepts nothing more
+      // nothing more is needed from the model: a closing reply only costs tokens, and a
+      // provider failing at that point would be retried for minutes (as in the evaluation)
+      const id = session();
+      if (id) setImmediate(() => void this.engine.abort(id));
+    };
+  }
+
+  /**
+   * An investigation's turns, a ticket's or an alert's: one turn, a reminder if it ended without
+   * a report, and after a limit one short turn to report. When the provider failed, the same
+   * again once, in a fresh session on the fallback model.
+   */
+  private async investigationTurns(
+    run: string,
+    prompts: { first: string; nudge: string; final: (reason: string) => string },
+    on: {
+      session: string;
+      openOn: (plan: StageModel) => Promise<string>;
+      models: StageModels;
+      state: RunState;
+      outbox: EventOutbox;
+      observer: TurnObserver;
+    },
+  ): Promise<TurnResult> {
+    const { state, outbox, observer } = on;
+    const mayGoOn = () => !state.submitted && !state.cancelled && !state.leaseLost && !this.stopping;
+    const investigate = async (id: string): Promise<TurnResult> => {
+      // a cancel, a lost lease or a stop can arrive while the clones and the session are prepared
+      let turn: TurnResult = { reason: "aborted", text: "" };
+      if (mayGoOn()) turn = await this.engine.runTurn(id, prompts.first, observer);
+      if (mayGoOn() && !state.budgetReason && turn.reason === "completed") {
+        outbox.push("reminder", { note: "the turn ended without a report" });
+        turn = await this.engine.runTurn(id, prompts.nudge, observer);
+      }
+      if (mayGoOn() && state.budgetReason) {
+        // a limit stopped the work: one short turn to report what was found, rather than nothing
+        outbox.push("final_turn", { reason: state.budgetReason });
+        state.finalTurn = true;
+        const timer = setTimeout(() => void this.engine.abort(id), FINAL_TURN_MS);
+        try {
+          turn = await this.engine.runTurn(id, prompts.final(state.budgetReason), observer);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      return turn;
+    };
+    let turn = await investigate(on.session);
+    // the provider failed: the investigation starts again once, in a fresh session on the fallback model
+    const fallback = mayGoOn() && !state.budgetReason ? on.models.next(turn) : undefined;
+    if (fallback) {
+      outbox.push("fallback", { job: on.models.job, model: fallback.modelId, section: fallback.section, after: turn.errorCode });
+      this.log("warn", "investigation moves to the fallback model", { run, model: fallback.modelId, error: turn.errorCode });
+      turn = await investigate(await on.openOn(fallback));
+    }
+    return turn;
+  }
+
+  /** How a run ended after its turns: the report the hub took, or the failure reported to it. */
+  private async ending(job: Lease, outbox: EventOutbox, state: RunState, turn: TurnResult, report: Reporter): Promise<RunReport> {
+    if (state.submitted) return report("submitted");
+    if (state.cancelled) return report("cancelled", "the run was cancelled on TBO Support");
+    if (state.leaseLost) return report("lease_lost", "the lease ended before a report");
+    if (this.stopping) return report("stopped", "the worker was stopped; the lease will expire and the run goes back to the queue");
+    const reason =
+      (state.budgetReason && `${state.budgetReason}, and no report came after a last request to submit`) ||
+      (turn.reason === "error"
+        ? `the model failed (${turn.errorCode ?? "unknown error"})${turn.text ? `: ${turn.text.slice(0, 300)}` : ""}`
+        : "the model ended without a diagnosis");
+    await this.fail(job, outbox, reason);
+    return report("failed", reason);
+  }
+
+  /** The worker itself failed during a run; a report the hub already took still stands. */
+  private async crashed(job: Lease, outbox: EventOutbox, state: RunState, error: unknown, report: Reporter): Promise<RunReport> {
+    if (state.submitted) return report("submitted");
+    if (error instanceof HubError && error.leaseGone) return report("lease_lost", error.message);
+    if (this.stopping) return report("stopped", "the worker was stopped");
+    const reason = `the worker failed: ${String((error as Error)?.message ?? error).slice(0, 500)}`;
+    this.log("error", "run failed", { run: job.run, error: String(error) });
+    await this.fail(job, outbox, reason);
+    return report("failed", reason);
   }
 
   /** A fix job (Phase 1c-2): see fix.ts. */
@@ -424,7 +574,7 @@ export class Worker {
     };
   }
 
-  private async beat(job: Job, state: RunState, session: () => string | undefined): Promise<void> {
+  private async beat(job: Lease, state: RunState, session: () => string | undefined): Promise<void> {
     if (state.submitted) return;
     try {
       const answer = await this.hub.heartbeat(job.run, job.lease_token, state.stage);
@@ -438,7 +588,7 @@ export class Worker {
     if ((state.cancelled || state.leaseLost) && id) await this.engine.abort(id);
   }
 
-  private async fail(job: Job, outbox: EventOutbox, reason: string): Promise<void> {
+  private async fail(job: Lease, outbox: EventOutbox, reason: string): Promise<void> {
     await outbox.flush().catch(() => undefined);
     try {
       await this.hub.submitFailure(job.run, job.lease_token, reason);

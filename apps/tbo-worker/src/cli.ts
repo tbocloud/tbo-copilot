@@ -10,10 +10,11 @@ import { loadCases, reportMarkdown, runEvaluation } from "./evaluate.js";
 import { BUILD_PERSONA, BUILD_RULES, FIX_PERSONA, FIX_RULES, REVIEW_PERSONA, REVIEW_RULES } from "./fix-prompt.js";
 import { FIX_TOOL_DEFINITIONS, REVIEW_TOOL_DEFINITIONS } from "./fix-tools.js";
 import { HubClient } from "./hub.js";
+import { INFRA_PROFILE } from "./infra-prompt.js";
 import { createLogger, type Logger, type LogLevel } from "./log.js";
 import { PERSONA, RULES } from "./prompt.js";
 import { SocketSandbox } from "./sandbox.js";
-import { RunToolRouter, Worker } from "./supervisor.js";
+import { INFRA_PROFILE_NAME, RunToolRouter, Worker } from "./supervisor.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 
 const USAGE = `tbo-worker <command>
@@ -49,6 +50,8 @@ async function startEngine(cfg: WorkerConfig, router: RunToolRouter, log: Logger
       // a build of an approved customization: the fix's tools, its own rules
       build: { tools: FIX_TOOL_DEFINITIONS, persona: BUILD_PERSONA, rules: BUILD_RULES },
       review: { tools: REVIEW_TOOL_DEFINITIONS, persona: REVIEW_PERSONA, rules: REVIEW_RULES },
+      // an infrastructure alert (Phase 25): Press reads and the infra report only
+      [INFRA_PROFILE_NAME]: INFRA_PROFILE,
     },
   });
 }
@@ -61,7 +64,7 @@ async function check(cfg: WorkerConfig, hub: HubClient, log: Logger): Promise<nu
   for (const provider of cfg.providers) say(`provider    ${provider.section} at ${provider.baseUrl} (${provider.apiStyle}); its models come from TBO Support`);
   if (cfg.model) say(`model       ${cfg.model.modelId} at ${cfg.model.baseUrl}${cfg.providers.length ? " (when TBO Support names no model for a provider above)" : ""}`);
   say(`github      ${cfg.githubToken ? "token found" : "no token (set GITHUB_TOKEN or log in with gh): only public repositories can be read"}`);
-  say(`sandbox     ${cfg.sandboxSocket ? `runner at ${cfg.sandboxSocket}: investigations and fixes` : "none (TBO_SANDBOX_SOCKET not set): investigations only"}`);
+  say(`sandbox     ${cfg.sandboxSocket ? `runner at ${cfg.sandboxSocket}: investigations, infrastructure alerts and fixes` : "none (TBO_SANDBOX_SOCKET not set): investigations and infrastructure alerts only"}`);
   const engine = await startEngine(cfg, new RunToolRouter(hub), log);
   try {
     // a session opens on the older single model, or on the first provider (its models come from TBO Support)

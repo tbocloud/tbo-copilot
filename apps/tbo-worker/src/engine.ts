@@ -220,6 +220,11 @@ export class Engine {
     return { providerId: saved.provider.id, modelId: model.modelId };
   }
 
+  /** Whether sessions can be opened with this profile; an unknown one gets the investigation's tools and prompt. */
+  hasProfile(name: string): boolean {
+    return Boolean(this.options.profiles?.[name]);
+  }
+
   /** A session in agent mode, permission mode `ask`, rooted at the run's folder. */
   async openSession(projectPath: string, title: string, model: { providerId: string; modelId: string }, options: SessionOptions = {}): Promise<string> {
     await this.host.call("projects.create", { path: projectPath });
