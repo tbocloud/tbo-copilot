@@ -121,12 +121,14 @@ function oneLine(value: unknown): string {
 
 /**
  * The files the session changed, added or removed in the clone, relative to it, each as its real
- * path: NUL-separated, so git never quotes a name (café.py) and no name is trimmed.
+ * path: NUL-separated, so git never quotes a name (café.py) and no name is trimmed. Compared with
+ * the commit the clone is at, not the index: `add --all` stages a removal, which a diff against the
+ * index would then leave out (a fix that only deletes, or a deleted CI file).
  */
 export async function changedPaths(dir: string, homeDir: string): Promise<string[]> {
   const env = gitEnv(homeDir);
   await runGit(dir, ["add", "--intent-to-add", "--all"], env);
-  const names = await runGit(dir, ["diff", "--no-ext-diff", "--name-only", "--no-renames", "-z"], env);
+  const names = await runGit(dir, ["diff", "--no-ext-diff", "--name-only", "--no-renames", "-z", "HEAD", "--"], env);
   return names.split("\0").filter((name) => name !== "");
 }
 

@@ -115,8 +115,37 @@ function moved(branch: string, now: string | undefined, expected: string): strin
   return `the branch moved: ${branch} is ${now ? `at ${now.slice(0, 12)}` : "gone"}, not at ${expected.slice(0, 12)}; nothing was pushed`;
 }
 
-/** git's words for a push the remote refused: it certainly did not land. */
-const REFUSED = /rejected|non-fast-forward|fetch first|cannot lock ref/i;
+/**
+ * git's own status line refusing the push of our ref, such as ` ! [rejected]        HEAD -> fix-12 (fetch
+ * first)` or ` ! [remote rejected] HEAD -> fix-12 (pre-receive hook declined)`; undefined when there is
+ * none. Nothing else counts: what the server's hooks print reaches the pusher as `remote:` lines,
+ * and no wording anywhere else is proof that the push did not land.
+ */
+export function refusalLine(stderr: string, branch: string): string | undefined {
+  for (const line of stderr.split(/\r?\n/)) {
+    if (/^\s*remote:/i.test(line)) continue;
+    const match = /^\s*!\s+\[(?:rejected|remote rejected)\]\s+HEAD\s+->\s+(\S+)(?:\s+\(.*\))?\s*$/.exec(line);
+    if (match && (match[1] === branch || match[1] === `refs/heads/${branch}`)) return line.trim();
+  }
+  return undefined;
+}
+
+/** A failed push, with all that git wrote to stderr: its per-ref status lines decide a refusal. */
+class PushError extends Error {
+  constructor(readonly stderr: string) {
+    super(stderr.slice(0, 2000));
+  }
+}
+
+/** git push, keeping the whole stderr on failure (runGit keeps only its start, where hooks' lines may fill it). */
+function gitPush(dir: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile("git", args, { cwd: dir, env, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, encoding: "utf8" }, (error, _stdout, stderr) => {
+      if (error) reject(new PushError(String(stderr || error.message).trim()));
+      else resolve();
+    });
+  });
+}
 
 /** Whether `commit` is in `head`'s history: git's own ancestry; undefined when git cannot say. */
 function isAncestor(dir: string, commit: string, head: string, homeDir: string): Promise<boolean | undefined> {
@@ -147,9 +176,10 @@ export async function afterPushError(input: {
   commit: string;
   homeDir: string;
   token: string;
-  error: string;
+  /** All that the failed push wrote to stderr. */
+  stderr: string;
 }): Promise<PushOutcome> {
-  const { dir, root, repository, branch, base, commit, homeDir, token, error } = input;
+  const { dir, root, repository, branch, base, commit, homeDir, token, stderr } = input;
   const after = await remoteHead(root, repository, branch, homeDir, token).then(
     (head) => head ?? "",
     () => null,
@@ -163,9 +193,10 @@ export async function afterPushError(input: {
     holds = fetched ? await isAncestor(dir, commit, fetched, homeDir) : undefined;
     if (holds && fetched) return { kind: "landed", head: fetched };
   }
-  if (REFUSED.test(error)) {
-    if (after === base) return { kind: "not_landed", reason: `the push failed: the remote refused it (${error}); nothing was pushed` };
-    return { kind: "not_landed", reason: after === null ? `the branch moved: the remote refused the push (${error}); nothing was pushed` : moved(branch, after || undefined, base) };
+  const refusal = refusalLine(stderr, branch);
+  if (refusal) {
+    if (after === base) return { kind: "not_landed", reason: `the push failed: the remote refused it (${refusal}); nothing was pushed` };
+    return { kind: "not_landed", reason: after === null ? `the branch moved: the remote refused the push (${refusal}); nothing was pushed` : moved(branch, after || undefined, base) };
   }
   if (after === base) return { kind: "unknown", why: "the branch is at the pull request's head again, without Copilot's commit" };
   if (after === null) return { kind: "unknown", why: "the branch could not be read afterwards" };
@@ -254,7 +285,8 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
   // the pull request's own code for the baseline, outside the session's folder
   const baseRoot = workspaceRoot(cfg.runsDir, `pr-${pr}-base`);
   let tests: PrTests | undefined;
-  let sandboxId: string | undefined;
+  /** The change's sandbox copies still running: one per round, all stopped at the end. */
+  const candidates = new Set<string>();
   const report = (outcome: PrFixOutcome, reason?: string): PrFixReport => ({
     pull_request: pr,
     outcome,
@@ -378,12 +410,15 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
 
     // a site with the customer's apps, this app at the working tree, when the runner can start one
     const siteApps = (context.apps ?? []).map((app) => ({ app: app.app, repository: app.repository ?? null, branch: app.branch ?? null, commit: app.commit ?? null }));
+    const candidateSpec = { run: pr, customer: null, site: null, apps: siteApps, mount: { app: context.app, dir } };
     let testedOn: string | undefined;
+    let sandboxId: string | undefined;
     let noSandbox: string | undefined = deps.sandbox ? undefined : "this worker has no sandbox runner";
     if (deps.sandbox) {
       try {
-        const started = await deps.sandbox.start({ run: pr, customer: null, site: null, apps: siteApps, mount: { app: context.app, dir } });
+        const started = await deps.sandbox.start(candidateSpec);
         sandboxId = started.id;
+        candidates.add(started.id);
         testedOn = started.tested_on || "a sandbox site";
       } catch (error) {
         noSandbox = `the sandbox could not start: ${String((error as Error).message ?? error).slice(0, 200)}`;
@@ -444,7 +479,26 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
     let problems: PrCheckProblem[] = [];
     // pr_fix_done fills state.done from a tool call, out of TypeScript's sight
     const answer = () => state.done as PrFixDone | undefined;
+    // a round after the first gets a fresh copy: the last one keeps what the change's migrations did to its
+    // database, even once the model took them out; without one, the round goes untested rather than reuse it
+    const freshCopy = async (round: number) => {
+      const sandbox = state.sandbox!;
+      const replaced = state.sandboxId!;
+      try {
+        const started = await sandbox.start(candidateSpec);
+        candidates.add(started.id);
+        state.sandboxId = started.id;
+      } catch (error) {
+        state.sandbox = undefined;
+        state.sandboxId = undefined;
+        state.noSandbox = `a fresh sandbox copy for round ${round} could not start: ${String((error as Error).message ?? error).slice(0, 200)}`;
+        log("warn", "pull request fix: no fresh sandbox copy", { pull_request: pr, round, error: String(error) });
+      }
+      candidates.delete(replaced);
+      await sandbox.stop(replaced).catch(() => undefined);
+    };
     for (let round = 1; ; round += 1) {
+      if (round > 1 && state.sandbox && state.sandboxId) await freshCopy(round);
       state.done = undefined;
       const prompt = round === 1 ? first : prFixAgainPrompt(problems);
       let turn = await turns(session, prompt);
@@ -511,11 +565,12 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
       if (!mayGoOn()) return ended();
       try {
         // a plain refspec, never `+` or --force: the remote takes it only as a fast-forward of the branch
-        await runGit(dir, ["-c", "core.hooksPath=/dev/null", "push", "--quiet", "--end-of-options", repository, `HEAD:refs/heads/${branch}`], pushEnv(cfg.homeDir, repository, key.token), 300_000);
+        await gitPush(dir, ["-c", "core.hooksPath=/dev/null", "push", "--quiet", "--end-of-options", repository, `HEAD:refs/heads/${branch}`], pushEnv(cfg.homeDir, repository, key.token), 300_000);
       } catch (error) {
         // whatever git said (a timeout, a dropped connection, a refusal), the branch says what happened
-        const text = String((error as Error).message ?? error).slice(0, 300);
-        const outcome = await afterPushError({ dir, root, repository, branch, base, commit, homeDir: cfg.homeDir, token: key.token, error: text });
+        const stderr = error instanceof PushError ? error.stderr : String((error as Error).message ?? error);
+        const text = stderr.slice(0, 300);
+        const outcome = await afterPushError({ dir, root, repository, branch, base, commit, homeDir: cfg.homeDir, token: key.token, stderr });
         if (outcome.kind === "not_landed") return await fail(outcome.reason);
         if (outcome.kind === "unknown") {
           // it may be on the branch or not: any result could be wrong, so none is sent; the lease lapses
@@ -563,7 +618,7 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
   } finally {
     clearInterval(heartbeat);
     clearInterval(watchdog);
-    if (sandboxId && deps.sandbox) await deps.sandbox.stop(sandboxId).catch(() => undefined);
+    for (const id of candidates) await deps.sandbox?.stop(id).catch(() => undefined);
     for (const id of sessions) {
       router.prFixSessions.delete(id);
       await engine.closeSession(id, root).catch(() => undefined);

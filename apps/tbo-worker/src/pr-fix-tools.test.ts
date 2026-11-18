@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import type { PrFinding, PrFixContext } from "./hub.js";
 import { isCiPath, pullRequestEdits } from "./policy.js";
-import { checkPrContext, commitMessage, usableBranch } from "./pr-fix.js";
+import { checkPrContext, commitMessage, refusalLine, usableBranch } from "./pr-fix.js";
 import { MAX_FINDINGS, prFixAgainPrompt, prFixPrompt } from "./pr-fix-prompt.js";
 import { PR_FIX_TOOL_DEFINITIONS, PR_FIX_TOOL_NAMES, changedPaths, checkPrFixDone, runPrFixTool, type PrFixToolState } from "./pr-fix-tools.js";
 
@@ -130,6 +130,51 @@ describe("the files a session changed", () => {
   });
 });
 
+// CodeRabbit on #31 (review 2): `add --all` stages a removal, which a diff against the index leaves out
+describe("a removal in the session's change", () => {
+  it("is a changed file, so a fix that only deletes can be answered as fixed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tbo-prfix-removed-"));
+    const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Dev", "-c", "user.email=dev@example.com", ...args], { cwd: dir });
+    git("init", "--quiet");
+    mkdirSync(join(dir, "demo_app"));
+    writeFileSync(join(dir, "demo_app", "unused.py"), "x = 1\n");
+    writeFileSync(join(dir, "demo_app", "invoice.py"), "y = 1\n");
+    git("add", "--all");
+    git("commit", "--quiet", "-m", "app");
+    rmSync(join(dir, "demo_app", "unused.py"));
+
+    expect(await changedPaths(dir, dir)).toEqual(["demo_app/unused.py"]);
+    const fixed = [{ id: "CR-1", note: "Remove the unused module." }];
+    expect(checkPrFixDone({ fixed, not_fixed: [] }, ["CR-1"], (await changedPaths(dir, dir)).length > 0)).toEqual({ fixed, not_fixed: [] });
+  });
+});
+
+// CodeRabbit on #31 (review 2): only git's own status line refusing our ref proves the push did not land
+describe("a refusal of the push", () => {
+  const branch = "feature/margin";
+
+  it("is git's own status line for this branch", () => {
+    const ours = " ! [remote rejected] HEAD -> feature/margin (pre-receive hook declined)";
+    expect(refusalLine(`To /srv/demo_app\n${ours}\nerror: failed to push some refs to '/srv/demo_app'`, branch)).toBe(ours.trim());
+    expect(refusalLine(" ! [rejected]        HEAD -> feature/margin (fetch first)", branch)).toBe("! [rejected]        HEAD -> feature/margin (fetch first)");
+    expect(refusalLine(" ! [rejected]        HEAD -> refs/heads/feature/margin (non-fast-forward)", branch)).toBeDefined();
+  });
+
+  it("is never a hook's words, another branch's refusal or any other text", () => {
+    for (const text of [
+      "remote:  ! [remote rejected] HEAD -> feature/margin (policy check)",
+      "remote: Deployment rejected: non-fast-forward",
+      "error: failed to push some refs to '/srv/demo_app'",
+      "fatal: the push was rejected by the proxy",
+      " ! [remote rejected] HEAD -> main (pre-receive hook declined)",
+      " ! [rejected]        HEAD -> feature/margin-2 (fetch first)",
+      " ! [rejected]        other -> feature/margin (fetch first)",
+    ]) {
+      expect(refusalLine(text, branch), text).toBeUndefined();
+    }
+  });
+});
+
 describe("pr_fix_done", () => {
   const ids = ["CR-1", "CI-1"];
   const fixed = [{ id: "CR-1", note: "Divide by the selling price." }];
@@ -160,6 +205,8 @@ describe("pr_fix_done", () => {
     const dir = mkdtempSync(join(tmpdir(), "tbo-prfix-tool-"));
     execFileSync("git", ["init", "--quiet", dir]);
     writeFileSync(join(dir, "a.py"), "x = 1\n");
+    // a job's clone is always at the pull request's head commit
+    execFileSync("git", ["-c", "user.name=Dev", "-c", "user.email=dev@example.com", "commit", "--quiet", "--allow-empty", "-m", "head"], { cwd: dir });
     const state: PrFixToolState = { app: "demo_app", dir, homeDir: dir, noSandbox: "the runner is down", checks: [], findingIds: ids };
     for (const name of ["fix_done", "review_done", "hub_submit_investigation"]) {
       expect((await runPrFixTool(state, name, {})).content).toBe(`${name} is not a tool of this stage`);
