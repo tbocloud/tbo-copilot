@@ -81,10 +81,17 @@ function commitOnBranch(repo: FixtureRepo, files: Record<string, string>): strin
   return head;
 }
 
-/** The remote's post-receive hook: it runs after the remote took the push, before the pusher hears the end. */
-function postReceive(repo: FixtureRepo, script: string): void {
-  writeFileSync(join(repo.dir, ".git", "hooks", "post-receive"), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+/**
+ * One of the remote's hooks: pre-receive runs before the remote takes the push (it may refuse it),
+ * post-receive after it took it, before the pusher hears the end.
+ */
+function remoteHook(repo: FixtureRepo, name: "pre-receive" | "post-receive", script: string): void {
+  writeFileSync(join(repo.dir, ".git", "hooks", name), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
 }
+
+/** In a hook: the developer's commit on top of `parent` ($new: the pushed commit, $old: the head before). */
+const DEVELOPER_COMMIT = (parent: string) =>
+  `next=$(GIT_AUTHOR_NAME=Dev GIT_AUTHOR_EMAIL=dev@example.com GIT_COMMITTER_NAME=Dev GIT_COMMITTER_EMAIL=dev@example.com git commit-tree "${parent}^{tree}" -p "${parent}" -m "the developer's push")`;
 
 const PASSED: SandboxResult = { ok: true, exit_code: 0, output: "Ran 4 tests\nOK", ms: 200 };
 const FAILED: SandboxResult = { ok: false, exit_code: 1, output: "AssertionError: 1.25 != 0.2\nFAILED (failures=1)", ms: 200, failure: "assertion" };
@@ -547,7 +554,7 @@ describe("a developer's pull request, fixed live", () => {
   // CodeRabbit on #31: after a push error, the branch says what happened
   it("reports the fix as pushed when the push errs after the remote took the commit", async () => {
     const repo = prRepo();
-    postReceive(repo, "kill -9 $PPID"); // the remote takes the commit, then the connection dies before the pusher hears so
+    remoteHook(repo, "post-receive", "kill -9 $PPID"); // the remote takes the commit, then the connection dies before the pusher hears so
     const { report, results } = await runWith([[{ write: "apps/demo_app/demo_app/invoice.py", content: FIXED }, { tool: "pr_fix_done", args: DONE }]], { repo });
 
     const head = git(repo, "rev-parse", BRANCH);
@@ -556,9 +563,54 @@ describe("a developer's pull request, fixed live", () => {
     expect(results()).toEqual([expect.objectContaining({ kind: "done", head_sha: head, fixed: [{ id: "CR-1", commit: head, note: DONE.fixed[0]!.note }] })]);
   });
 
+  // CodeRabbit on #31 (again): another head does not prove the push failed; the branch's history decides
+  it("reports the fix as pushed when the developer pushed on top of it before the worker looked", async () => {
+    const repo = prRepo();
+    // the remote takes Copilot's commit, the developer's next commit lands on top, and the connection dies
+    remoteHook(repo, "post-receive", ["read old new ref", DEVELOPER_COMMIT("$new"), 'git update-ref "$ref" "$next" "$new"', "kill -9 $PPID"].join("\n"));
+    const { report, results } = await runWith([[{ write: "apps/demo_app/demo_app/invoice.py", content: FIXED }, { tool: "pr_fix_done", args: DONE }]], { repo });
+
+    const copilot = git(repo, "rev-parse", `${BRANCH}^`);
+    expect(git(repo, "log", "-1", "--format=%ae", BRANCH)).toBe("dev@example.com");
+    expect(git(repo, "log", "-1", "--format=%ae", copilot)).toBe("copilot@example.com");
+    expect(git(repo, "rev-parse", `${copilot}^`)).toBe(repo.commits[1]);
+    expect(report).toMatchObject({ outcome: "done", pushed: copilot });
+    expect(results()).toEqual([expect.objectContaining({ kind: "done", head_sha: copilot, fixed: [{ id: "CR-1", commit: copilot, note: DONE.fixed[0]!.note }] })]);
+  });
+
+  it("reports nothing when the push errs and the branch is then at a commit without Copilot's", async () => {
+    const repo = prRepo();
+    // the remote takes Copilot's commit, the developer replaces the branch with one of theirs, and the connection dies
+    remoteHook(repo, "post-receive", ["read old new ref", DEVELOPER_COMMIT("$old"), 'git update-ref "$ref" "$next" "$new"', "kill -9 $PPID"].join("\n"));
+    const { report, mine } = await runWith([[{ write: "apps/demo_app/demo_app/invoice.py", content: FIXED }, { tool: "pr_fix_done", args: DONE }]], { repo });
+
+    const developer = git(repo, "rev-parse", BRANCH);
+    expect(git(repo, "rev-parse", `${BRANCH}^`)).toBe(repo.commits[1]);
+    expect(report.outcome).toBe("not_reported");
+    expect(report.reason).toMatch(/^push outcome unknown: the push of [0-9a-f]{12} failed \(.*\) and the branch is at [0-9a-f]{12}, which does not hold it; nothing was reported$/s);
+    expect(report.reason).toContain(developer.slice(0, 12));
+    expect(mine("pr_result")).toHaveLength(0);
+  });
+
+  it("still fails as a moved branch when the remote refuses the push", async () => {
+    const repo = prRepo();
+    const developer = git(repo, "commit-tree", `${repo.commits[1]}^{tree}`, "-p", repo.commits[1]!, "-m", "the developer's push");
+    // the developer's commit lands first, and the remote refuses Copilot's
+    remoteHook(repo, "pre-receive", `printf '%s\\n' ${developer} > refs/heads/${BRANCH}\nexit 1`);
+    const { report, results } = await runWith([[{ write: "apps/demo_app/demo_app/invoice.py", content: FIXED }, { tool: "pr_fix_done", args: DONE }]], { repo });
+
+    expect(report).toMatchObject({
+      outcome: "failed",
+      reason: `the branch moved: ${BRANCH} is at ${developer.slice(0, 12)}, not at ${repo.commits[1]!.slice(0, 12)}; nothing was pushed`,
+    });
+    expect(report.pushed).toBeUndefined();
+    expect(results()).toEqual([{ kind: "failure", reason: report.reason }]);
+    expect(git(repo, "rev-parse", BRANCH)).toBe(developer);
+  });
+
   it("reports nothing when the push errs and the branch cannot be read afterwards", async () => {
     const repo = prRepo();
-    postReceive(repo, 'mv "$(pwd)" "$(pwd).gone"\nkill -9 $PPID'); // and the repository is gone from where it was
+    remoteHook(repo, "post-receive", 'mv "$(pwd)" "$(pwd).gone"\nkill -9 $PPID'); // and the repository is gone from where it was
     const { report, mine } = await runWith([[{ write: "apps/demo_app/demo_app/invoice.py", content: FIXED }, { tool: "pr_fix_done", args: DONE }]], { repo });
 
     expect(report.outcome).toBe("not_reported");

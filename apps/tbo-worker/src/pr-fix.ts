@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -112,6 +113,64 @@ export async function remoteHead(cwd: string, repository: string, branch: string
 
 function moved(branch: string, now: string | undefined, expected: string): string {
   return `the branch moved: ${branch} is ${now ? `at ${now.slice(0, 12)}` : "gone"}, not at ${expected.slice(0, 12)}; nothing was pushed`;
+}
+
+/** git's words for a push the remote refused: it certainly did not land. */
+const REFUSED = /rejected|non-fast-forward|fetch first|cannot lock ref/i;
+
+/** Whether `commit` is in `head`'s history: git's own ancestry; undefined when git cannot say. */
+function isAncestor(dir: string, commit: string, head: string, homeDir: string): Promise<boolean | undefined> {
+  return new Promise((resolve) => {
+    execFile("git", ["merge-base", "--is-ancestor", commit, head], { cwd: dir, env: gitEnv(homeDir), timeout: 60_000 }, (error) => {
+      if (!error) resolve(true);
+      else resolve((error as { code?: unknown }).code === 1 ? false : undefined);
+    });
+  });
+}
+
+/** What a push that git reported as failed really did: landed, certainly not, or unknown (with why). */
+export type PushOutcome = { kind: "landed"; head: string } | { kind: "not_landed"; reason: string } | { kind: "unknown"; why: string };
+
+/**
+ * The branch decides, not git's error: it holds `commit` (at it, or a later commit on top, which is
+ * fetched with the key to ask git's ancestry), it is still at `base`, or the remote said it refused
+ * the push. Anything else (another commit, the branch gone, nothing readable) leaves it unknown.
+ */
+export async function afterPushError(input: {
+  dir: string;
+  root: string;
+  repository: string;
+  branch: string;
+  base: string;
+  commit: string;
+  homeDir: string;
+  token: string;
+  error: string;
+}): Promise<PushOutcome> {
+  const { dir, root, repository, branch, base, commit, homeDir, token, error } = input;
+  const after = await remoteHead(root, repository, branch, homeDir, token).then(
+    (head) => head ?? "",
+    () => null,
+  );
+  if (after === commit) return { kind: "landed", head: after };
+  let holds: boolean | undefined = false;
+  if (after && after !== base) {
+    const fetched = await runGit(dir, ["fetch", "--quiet", "--no-tags", "--end-of-options", repository, `+refs/heads/${branch}:refs/copilot/after`], pushEnv(homeDir, repository, token), 120_000)
+      .then(() => runGit(dir, ["rev-parse", "--verify", "--end-of-options", "refs/copilot/after^{commit}"], gitEnv(homeDir)))
+      .then((head) => head.trim().toLowerCase(), () => undefined);
+    holds = fetched ? await isAncestor(dir, commit, fetched, homeDir) : undefined;
+    if (holds && fetched) return { kind: "landed", head: fetched };
+  }
+  if (after === base) return { kind: "not_landed", reason: `the push failed: ${error}; nothing was pushed` };
+  if (REFUSED.test(error)) {
+    return { kind: "not_landed", reason: after === null ? `the branch moved: the remote refused the push (${error}); nothing was pushed` : moved(branch, after || undefined, base) };
+  }
+  if (after === null) return { kind: "unknown", why: "the branch could not be read afterwards" };
+  if (after === "") return { kind: "unknown", why: "the branch is gone" };
+  return {
+    kind: "unknown",
+    why: holds === false ? `the branch is at ${after.slice(0, 12)}, which does not hold it` : `the branch is at ${after.slice(0, 12)}, and whether that holds it could not be checked`,
+  };
 }
 
 function tail(output: string, count = 6, limit = 500): string {
@@ -453,20 +512,22 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
       } catch (error) {
         // whatever git said (a timeout, a dropped connection, a refusal), the branch says what happened
         const text = String((error as Error).message ?? error).slice(0, 300);
-        const after = await remoteHead(root, repository, branch, cfg.homeDir, key.token).then(
-          (head) => head ?? "",
-          () => null,
-        );
-        if (after === null) {
+        const outcome = await afterPushError({ dir, root, repository, branch, base, commit, homeDir: cfg.homeDir, token: key.token, error: text });
+        if (outcome.kind === "not_landed") return await fail(outcome.reason);
+        if (outcome.kind === "unknown") {
           // it may be on the branch or not: any result could be wrong, so none is sent; the lease lapses
           // and TBO Support takes a fresh look at the pull request
           flags.finished = true;
-          log("error", "pull request fix: push outcome unknown", { pull_request: pr, commit, error: text });
-          return report("not_reported", `push outcome unknown: the push of ${commit.slice(0, 12)} failed (${text}) and the branch could not be read afterwards; nothing was reported`);
+          log("error", "pull request fix: push outcome unknown", { pull_request: pr, commit, error: text, why: outcome.why });
+          return report("not_reported", `push outcome unknown: the push of ${commit.slice(0, 12)} failed (${text}) and ${outcome.why}; nothing was reported`);
         }
-        if (after === base) return await fail(`the push failed: ${text}; nothing was pushed`);
-        if (after !== commit) return await fail(moved(branch, after || undefined, base));
-        log("warn", "pull request fix: the push reported an error, but the branch is at Copilot's commit", { pull_request: pr, commit, error: text });
+        const onTop = outcome.head !== commit;
+        log("warn", `pull request fix: the push reported an error, but the branch holds Copilot's commit${onTop ? " and the developer pushed on top" : ""}`, {
+          pull_request: pr,
+          commit,
+          head: outcome.head,
+          error: text,
+        });
       }
       pushedHead = commit;
       flags.pushed = commit;
