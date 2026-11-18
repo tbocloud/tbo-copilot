@@ -35,8 +35,62 @@ export type ReleaseCheckJob = {
 /** One line of a release check's evidence, as the hub takes it. */
 export type CheckRow = { check: string; result: "pass" | "fail" | "not_run"; detail?: string };
 
-export function isReleaseCheck(job: Job | ReleaseCheckJob): job is ReleaseCheckJob {
+export function isReleaseCheck(job: Job | InfraJob | ReleaseCheckJob): job is ReleaseCheckJob {
   return (job as ReleaseCheckJob).kind === "release_check";
+}
+
+/** One action Copilot may propose on an infrastructure alert (helpdesk.copilot.infra.ACTIONS). */
+export type InfraAction = { name: string; what?: string | null; target?: string | null; risk?: string | null };
+
+/**
+ * An infrastructure alert's run (Phase 25, helpdesk.copilot.infra.context): the alert, what Press
+ * and TBO Support's own health say, earlier repairs, and the actions Copilot may propose. TBO
+ * Support took the secrets out of every text before sending it.
+ */
+export type InfraContext = {
+  run: string;
+  kind: "infra";
+  shadow?: boolean;
+  /** The models, as for an investigation; an infra run uses the `investigate` job's. */
+  models?: RunContext["models"];
+  /** USD for this diagnosis (Copilot on Infrastructure, Dollar cap per infra diagnosis). */
+  dollar_cap?: number | null;
+  alert: {
+    ticket: string;
+    key?: string | null;
+    subject?: string | null;
+    priority?: string | null;
+    status?: string | null;
+    opened?: string | null;
+    description?: string | null;
+    updates?: Array<{ at?: string | null; text?: string | null }>;
+  };
+  /** The site, bench or server the alert is about. */
+  target?: string | null;
+  /** What Press says: `available`, the site's status, its jobs, failed jobs; or `{error}`. */
+  press?: Record<string, unknown> | null;
+  hub_health?: unknown;
+  repairs?: Array<Record<string, unknown>>;
+  /** The only actions Copilot may propose. */
+  actions: InfraAction[];
+  /** The names a proposal's target must come from. */
+  may_target: string[];
+  /** Where an approved action may run; elsewhere TBO Support asks a person to run it. */
+  may_change?: string[];
+  /** TBO Support's short rules for the run. */
+  rules?: string[];
+};
+
+/** What `claim_job` hands a worker for an infrastructure alert (`context.kind` "infra"). */
+export type InfraJob = {
+  run: string;
+  lease_token: string;
+  lease_expires?: string;
+  context: InfraContext;
+};
+
+export function isInfraJob(job: Job | InfraJob | ReleaseCheckJob): job is InfraJob {
+  return !isReleaseCheck(job) && job.context?.kind === "infra";
 }
 
 export type SiteApp = {
@@ -236,14 +290,17 @@ export class HubClient {
     return this.method<string>("frappe.auth.get_logged_user", {}, this.worker);
   }
 
-  /** The next run for this worker: an investigation, or a fix job when it can fix (`capabilities` "investigate,fix"). */
-  async claimJob(workerId: string, run?: string, capabilities = "investigate"): Promise<Job | ReleaseCheckJob | null> {
-    const job = await this.method<Job | ReleaseCheckJob | Record<string, never>>(
+  /**
+   * The next run for this worker: an investigation, a fix job when it can fix (`capabilities`
+   * "investigate,fix"), an infrastructure alert when it says `infra`, or a release's check.
+   */
+  async claimJob(workerId: string, run?: string, capabilities = "investigate"): Promise<Job | InfraJob | ReleaseCheckJob | null> {
+    const job = await this.method<Job | InfraJob | ReleaseCheckJob | Record<string, never>>(
       "helpdesk.api.copilot_worker.claim_job",
       { worker_id: workerId, free_slots: 1, capabilities, ...(run ? { run } : {}) },
       this.worker,
     );
-    if (job && "run" in job) return job as Job;
+    if (job && "run" in job) return job as Job | InfraJob;
     if (job && (job as ReleaseCheckJob).kind === "release_check") return job as ReleaseCheckJob;
     return null;
   }

@@ -138,7 +138,7 @@ describe("a release's sandbox check", () => {
   it("only a worker with the sandbox offers releases' checks", () => {
     const make = (sandbox?: FakeSandbox) =>
       new Worker({} as never, {} as never, {} as never, {} as never, quiet, sandbox);
-    expect(make(new FakeSandbox()).capabilities()).toBe("investigate,fix,release_check");
-    expect(make().capabilities()).toBe("investigate");
+    expect(make(new FakeSandbox()).capabilities()).toBe("investigate,fix,release_check,infra");
+    expect(make().capabilities()).toBe("investigate,infra");
   });
 });

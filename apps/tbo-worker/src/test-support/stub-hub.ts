@@ -1,19 +1,23 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import type { Job } from "../hub.js";
+import type { InfraContext, InfraJob, Job } from "../hub.js";
 
 export type HubCall = { path: string; headers: IncomingMessage["headers"]; body: Record<string, unknown> };
 
 /**
  * TBO Support as far as the worker sees it: the worker API (REST) and the
  * MCP endpoint with the run token. It hands out `jobs` one by one and records
- * every call; `submit_investigation` ends the lease like the real hub.
+ * every call; `submit_investigation` ends the lease like the real hub. An
+ * infrastructure run (Phase 25) reads Press and reports with
+ * `submit_infra_investigation`; it is refused the investigation's report, as there.
  */
 export class StubHub {
   readonly calls: HubCall[] = [];
-  readonly jobs: Job[] = [];
+  readonly jobs: Array<Job | InfraJob> = [];
   readonly erpReplies: Record<string, string> = {};
+  /** Press's answers to `press_read`, by `what`. */
+  readonly pressReplies: Record<string, string> = {};
   /** The ticket's files the worker may download (`copilot_worker.ticket_file`), by file URL. */
   readonly ticketFiles: Record<string, Buffer> = {};
   heartbeatAction = "continue";
@@ -88,6 +92,11 @@ export class StubHub {
     }
     if (path.endsWith("copilot_worker.submit_result")) {
       if (!this.leaseOk(String(body.run), String(body.lease_token))) return refused();
+      const infraRun = this.jobs.find((job) => job.run === body.run)?.context.kind === "infra";
+      if (infraRun && (body.result as { kind?: string } | undefined)?.kind !== "failure") {
+        const message = "An infrastructure run reports with submit_infra_investigation.";
+        return this.send(res, 417, { exc_type: "ValidationError", _server_messages: JSON.stringify([JSON.stringify({ message })]) });
+      }
       this.ended.add(String(body.run));
       return this.send(res, 200, { message: { run: body.run, state: "Failed" } });
     }
@@ -102,7 +111,26 @@ export class StubHub {
       if (!run || !token || !this.leaseOk(run, token)) return this.send(res, 401, { jsonrpc: "2.0", id, error: { code: -32001, message: "The run token is not valid" } });
       const params = body.params as { name: string; arguments: Record<string, unknown> };
       const text = (value: string, isError = false) => this.send(res, 200, { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: value }], isError } });
-      if (params.name === "get_run_context") return text(JSON.stringify(this.jobs.find((job) => job.run === run)?.context ?? {}));
+      const job = this.jobs.find((candidate) => candidate.run === run);
+      const infra = job?.context.kind === "infra";
+      if (params.name === "get_run_context") return text(JSON.stringify(job?.context ?? {}));
+      if (params.name === "post_event") return text(JSON.stringify({ seq: params.arguments.seq, stored: true }));
+      if (params.name === "press_read") {
+        if (!infra) return text("Press reads are for infrastructure runs.", true);
+        const what = String(params.arguments.what);
+        return this.pressReplies[what] ? text(this.pressReplies[what]!) : text(`Press refused ${what}`, true);
+      }
+      if (params.name === "submit_infra_investigation") {
+        if (!infra) return text("Only an infrastructure run reports this way; use submit_investigation.", true);
+        this.ended.add(run);
+        // helpdesk.copilot.infra.check_proposal, in short: in Copilot May Change it asks, elsewhere a person runs it
+        const proposal = (params.arguments.proposal ?? {}) as { action?: string; target?: string };
+        const mayChange = (job.context as InfraContext).may_change ?? [];
+        const decision = !proposal.action ? "none" : mayChange.includes(String(proposal.target).toLowerCase()) ? "ask" : "person";
+        const whyNot = decision === "person" ? `${proposal.target} is not on the list of places Copilot may change.` : null;
+        return text(JSON.stringify({ run, state: decision === "ask" ? "Awaiting Approval" : "Handed Over", decision, why_not: whyNot }));
+      }
+      if (params.name === "submit_investigation" && infra) return text("This is an infrastructure run; report with submit_infra_investigation.", true);
       if (params.name === "customer_erp_read") {
         const tool = String(params.arguments.tool);
         return this.erpReplies[tool] ? text(this.erpReplies[tool]!) : text(`The customer site refused ${tool}`, true);

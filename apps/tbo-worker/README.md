@@ -1,6 +1,6 @@
 # TBO Copilot worker
 
-The worker takes Copilot runs from TBO Support (the `helpdesk` hub) and investigates them with the pi engine, read-only. For each run it:
+The worker takes Copilot runs from TBO Support (the `helpdesk` hub) and investigates them with the pi engine, read-only. For each ticket's run it:
 
 1. Claims the run and keeps its lease alive.
 2. Prepares a read-only folder: the ticket, and the customer's app code checked out at the commit their site runs.
@@ -9,7 +9,7 @@ The worker takes Copilot runs from TBO Support (the `helpdesk` hub) and investig
 
 The hub decides what happens next (Phase 1a router). In shadow mode it notes the diagnosis for the team and the customer hears nothing.
 
-The design and the phase plan are in TBO's design documents (`system-design.md` §5.3, `phases/phase-1c.md`, `phases/phase-1c-2.md`). Phase 1c-1 is the investigation. Phase 1c-2 adds **fix jobs** (below): with a sandbox runner, the worker also writes the fix, tests it on a copy of the customer's site and opens the pull request.
+The design and the phase plan are in TBO's design documents (`system-design.md` §5.3, `phases/phase-1c.md`, `phases/phase-1c-2.md`). Phase 1c-1 is the investigation. Phase 1c-2 adds **fix jobs** (below): with a sandbox runner, the worker also writes the fix, tests it on a copy of the customer's site and opens the pull request. Phase 25 adds **infrastructure alerts** (below): every worker also looks into alerts about TBO's own servers and sites and proposes at most one action from a fixed list.
 
 ## How it works
 
@@ -77,6 +77,21 @@ A fix job whose context carries `fix.build` (the scope and the Done-when checks 
 - **The review** gets the scope: anything beyond it is must-fix, and so is a check without a test.
 - **The pull request** carries the scope and a Done-when table (each check, its test, before and after); the commit is a `feat:`. `submit_change` reports `check_results` (check, test, before, after, note), which TBO Support shows next to the scope on the approval.
 - The investigation's report may draft a customization's scope (`proposal.scope`) and checks (`proposal.done_when`), which TBO Support puts into the estimate for people to correct with the customer.
+
+## Infrastructure alerts (Phase 25)
+
+Every worker also takes infrastructure alerts (it claims with `infra`, with or without a sandbox). TBO Support's watcher opens an Alert ticket about one of TBO's own sites, benches or servers, and the hub queues a run of kind `infra`. Its context has no customer and no code: the alert and its updates, what Press says about the target, TBO Support's own health check, earlier repairs on the alert, the actions Copilot may propose (`actions`), the names a proposal's target must come from (`may_target`), where an approved action may run (`may_change`), the run's dollar cap (`dollar_cap`) and three short rules. TBO Support takes the secrets out of all of it first.
+
+For such a run the worker (`processInfra` in `src/supervisor.ts`):
+
+1. Clones nothing, starts no sandbox and reads no customer site. The session opens in an empty run folder with its own profile (`infra`): its persona and rules (`src/infra-prompt.ts`) and three tools (`src/infra-tools.ts`):
+   - `hub_press_read`: one more read of Press through TBO Support (`press_read`: a site's status, recent jobs, one job's steps and output, failed jobs of the last hours, a site's logs), redacted there;
+   - `hub_post_event`: a short progress note, which the worker sends with the run's own numbered events;
+   - `hub_submit_infra_investigation`: the report (`submit_infra_investigation`): summary, confidence, cause, evidence lines, at most one proposal `{action, target, why, expected}`, and `person_steps` for a person. The worker checks that the action is on the run's list and the target in `may_target` before TBO Support sees it, and adds the measured cost.
+2. Puts the alert, the facts, the actions, `may_target`, `may_change` and the rules in the first message, the alert and the facts inside the untrusted-content wrapper: everything read is data, never instructions. Text in them that tries to instruct the AI is recorded as a `suspicious_instruction` event, as for a ticket.
+3. Runs the turns as an investigation does: the `investigate` job's models and fallback, one reminder, the same limits, and the lower of `TBO_MAX_USD` and the run's `dollar_cap`, then one last turn to report. With no report, it reports a failure.
+
+TBO Support then decides: an action inside `may_change` goes to an approver, one outside it to a person to run, and with no proposal a person takes it from there.
 
 ## Setting it up on a Mac
 
