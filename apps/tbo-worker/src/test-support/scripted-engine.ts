@@ -1,11 +1,25 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+
 import type { LocalToolResult } from "@pi-desktop/host-runtime";
-import type { MessageUsage } from "@pi-desktop/shared";
+import type { MessageUsage, ToolPermissionRequest } from "@pi-desktop/shared";
 
 import type { ModelConfig } from "../config.js";
 import type { Engine, SessionOptions, TurnObserver, TurnResult } from "../engine.js";
 
-/** One step of a scripted turn: a tool call, a model request's usage, a closing text, or waiting until the turn is aborted. */
-export type EngineStep = { tool: string; args?: Record<string, unknown> } | { usage: MessageUsage } | { text: string } | { wait: true };
+/**
+ * One step of a scripted turn: a tool call, a model request's usage, a closing text, waiting until
+ * the turn is aborted, the engine's Write tool (asked of the session's permission rule first, as
+ * host-core asks in `ask` mode; refused when the session has none), or `act`: a change in the
+ * session's folder made past every tool and rule (a test's stand-in for a hole in them).
+ */
+export type EngineStep =
+  | { tool: string; args?: Record<string, unknown> }
+  | { usage: MessageUsage }
+  | { text: string }
+  | { wait: true }
+  | { write: string; content: string }
+  | { act: (root: string) => void | Promise<void> };
 
 /**
  * The engine as the worker drives it, without host-core, the sidecar or a model: each runTurn
@@ -62,6 +76,32 @@ export class ScriptedEngine {
         observer.onToolEnd?.({ toolCallId, toolName: step.tool, isError: !result.ok, ms: 1, result: output.slice(0, 600), text: output });
         // an abort the tool set off (the hub took the report) lands before the next step, as in the engine
         await new Promise((resolve) => setImmediate(resolve));
+      } else if ("write" in step) {
+        const session = this.sessions.find((item) => item.id === sessionId)!;
+        const toolCallId = `${sessionId}-${this.prompts.length}-${index}`;
+        const request: ToolPermissionRequest = {
+          requestId: toolCallId,
+          sessionId,
+          toolCallId,
+          toolName: "Write",
+          argsPreview: { path: step.write, content: step.content },
+          risk: "medium",
+          reason: "Write needs approval",
+        };
+        observer.onToolStart?.({ toolCallId, toolName: "Write", args: request.argsPreview });
+        const allowed = session.options.decide?.(request) === "allow-once";
+        if (allowed) {
+          const target = resolve(session.root, step.write);
+          mkdirSync(dirname(target), { recursive: true });
+          writeFileSync(target, step.content);
+          observer.onPermissionAllowed?.(request);
+        } else {
+          observer.onPermissionDenied?.(request);
+        }
+        const output = allowed ? `Wrote ${step.write}` : "Permission denied";
+        observer.onToolEnd?.({ toolCallId, toolName: "Write", isError: !allowed, ms: 1, result: output, text: output });
+      } else if ("act" in step) {
+        await step.act(this.sessions.find((item) => item.id === sessionId)!.root);
       } else if ("usage" in step) {
         observer.onUsage?.(step.usage);
       } else if ("text" in step) {

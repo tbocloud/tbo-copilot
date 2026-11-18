@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import type { InfraContext, InfraJob, Job } from "../hub.js";
+import type { InfraContext, InfraJob, Job, PrFixJob } from "../hub.js";
 
 export type HubCall = { path: string; headers: IncomingMessage["headers"]; body: Record<string, unknown> };
 
@@ -10,7 +10,9 @@ export type HubCall = { path: string; headers: IncomingMessage["headers"]; body:
  * MCP endpoint with the run token. It hands out `jobs` one by one and records
  * every call; `submit_investigation` ends the lease like the real hub. An
  * infrastructure run (Phase 25) reads Press and reports with
- * `submit_infra_investigation`; it is refused the investigation's report, as there.
+ * `submit_infra_investigation`; it is refused the investigation's report, as there. A pull
+ * request to fix (Phase 26) goes out to a worker that claims with `pr_fix` when no run is left,
+ * and is answered through `pr_heartbeat`, `pr_push_key` and `pr_result`.
  */
 export class StubHub {
   readonly calls: HubCall[] = [];
@@ -21,6 +23,13 @@ export class StubHub {
   /** The ticket's files the worker may download (`copilot_worker.ticket_file`), by file URL. */
   readonly ticketFiles: Record<string, Buffer> = {};
   heartbeatAction = "continue";
+  /** Pull requests to fix, handed out when no run is left. */
+  readonly prJobs: PrFixJob[] = [];
+  prHeartbeatAction = "continue";
+  /** The branch the push key is for; the pull request's head branch when unset. */
+  prPushBranch: string | undefined;
+  /** Runs before the push key is handed out (a cancel arriving while the worker gets ready to push). */
+  prPushKeyHook: (() => Promise<void>) | undefined;
   /** Makes the MCP endpoint answer 200 with this raw body (a broken proxy, an HTML page). */
   rawMcpReply: string | undefined;
   private server: Server | undefined;
@@ -67,6 +76,12 @@ export class StubHub {
     if (path.endsWith("frappe.auth.get_logged_user")) return this.send(res, 200, { message: "worker@example.com" });
     if (path.endsWith("copilot_worker.claim_job")) {
       const job = this.jobs.find((candidate) => !this.leases.has(candidate.run) && (!body.run || body.run === candidate.run));
+      const prFix = String(body.capabilities ?? "").split(",").includes("pr_fix");
+      const pr = !job && !body.run && prFix ? this.prJobs.find((candidate) => !this.leases.has(candidate.pull_request)) : undefined;
+      if (pr) {
+        this.leases.set(pr.pull_request, pr.lease_token);
+        return this.send(res, 200, { message: pr });
+      }
       if (!job) return this.send(res, 200, { message: {} });
       this.leases.set(job.run, job.lease_token);
       return this.send(res, 200, { message: job });
@@ -81,6 +96,23 @@ export class StubHub {
     if (path.endsWith("copilot_worker.repo_token")) {
       if (!this.leaseOk(String(body.run), String(body.lease_token))) return refused();
       return this.send(res, 200, { message: { token: "push-key", expires_at: "2026-10-13T03:00:00Z", repository: body.repository } });
+    }
+    if (path.endsWith("copilot_worker.pr_heartbeat")) {
+      if (!this.leaseOk(String(body.pull_request), String(body.lease_token))) return refused();
+      return this.send(res, 200, { message: { action: this.prHeartbeatAction } });
+    }
+    if (path.endsWith("copilot_worker.pr_push_key")) {
+      if (!this.leaseOk(String(body.pull_request), String(body.lease_token))) return refused();
+      const pr = this.prJobs.find((candidate) => candidate.pull_request === body.pull_request)!;
+      await this.prPushKeyHook?.();
+      return this.send(res, 200, {
+        message: { token: "pr-push-key", expires_at: "2026-11-18T10:00:00Z", repository: pr.context.repo, branch: this.prPushBranch ?? pr.context.head_branch },
+      });
+    }
+    if (path.endsWith("copilot_worker.pr_result")) {
+      if (!this.leaseOk(String(body.pull_request), String(body.lease_token))) return refused();
+      this.ended.add(String(body.pull_request));
+      return this.send(res, 200, { message: { pull_request: body.pull_request, ok: true } });
     }
     if (path.endsWith("copilot_worker.heartbeat")) {
       if (!this.leaseOk(String(body.run), String(body.lease_token))) return refused();

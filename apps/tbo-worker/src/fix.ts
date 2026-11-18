@@ -338,7 +338,8 @@ export function pullBody(input: {
   return lines.join("\n");
 }
 
-function pushEnv(homeDir: string, repository: string, token: string): NodeJS.ProcessEnv {
+/** git's environment with a GitHub key as an HTTP header, passed through the environment, never the command line. */
+export function pushEnv(homeDir: string, repository: string, token: string): NodeJS.ProcessEnv {
   if (!repository.startsWith("https://github.com/")) return gitEnv(homeDir);
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   return gitEnv(homeDir, {

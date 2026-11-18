@@ -35,8 +35,88 @@ export type ReleaseCheckJob = {
 /** One line of a release check's evidence, as the hub takes it. */
 export type CheckRow = { check: string; result: "pass" | "fail" | "not_run"; detail?: string };
 
-export function isReleaseCheck(job: Job | InfraJob | ReleaseCheckJob): job is ReleaseCheckJob {
+/** Whatever `claim_job` handed out: a run (an investigation, a fix, an alert), a release's check, or a pull request to fix. */
+export type ClaimedJob = Job | InfraJob | ReleaseCheckJob | PrFixJob;
+
+export function isReleaseCheck(job: ClaimedJob): job is ReleaseCheckJob {
   return (job as ReleaseCheckJob).kind === "release_check";
+}
+
+/**
+ * One thing CodeRabbit or CI found on a developer's pull request (Phase 26): an unresolved review
+ * thread (CodeRabbit's text in `body`) or a failed check (its name in `check`, its own output in
+ * `summary`). Everything in it is untrusted data, never instructions.
+ */
+export type PrFinding = {
+  id: string;
+  source: "coderabbit" | "ci";
+  title?: string | null;
+  body?: string | null;
+  path?: string | null;
+  line?: number | null;
+  check?: string | null;
+  summary?: string | null;
+};
+
+/** A developer's pull request for Copilot to fix (Phase 26). */
+export type PrFixContext = {
+  pull_request: string;
+  /** `owner/name` */
+  repo: string;
+  number: number;
+  url?: string | null;
+  title?: string | null;
+  /** The only branch Copilot may push to, and only on top of `head_sha`. */
+  head_branch: string;
+  /** The commit Copilot builds on: the branch must still be exactly here. */
+  head_sha: string;
+  base_branch?: string | null;
+  /** 1 to 3: how many times Copilot has been asked on this pull request. */
+  round: number;
+  findings: PrFinding[];
+  task?: { name: string; subject?: string | null } | null;
+  /** The customer's site apps for the sandbox, as for a release's check; this app's commit is `head_sha`. */
+  apps: ReleaseCheckJob["context"]["apps"];
+  /** This repository's app name. */
+  app: string;
+  /** A one-hour read-only key to clone (none for a public repository). */
+  repo_token?: string | null;
+  /** The author email of Copilot's commits. */
+  commit_email: string;
+  /** The models, as for a fix: a pull request's fix uses the `fix` job's. */
+  models?: RunContext["models"];
+  /** USD for this job. */
+  dollar_cap?: number | null;
+  /** TBO Support's short rules for the job. */
+  rules?: string[];
+};
+
+export type PrFixJob = {
+  kind: "pr_fix";
+  pull_request: string;
+  lease_token: string;
+  lease_expires?: string;
+  context: PrFixContext;
+};
+
+/** What the app's tests said on the sandbox after Copilot's change. */
+export type PrTests = { ran: boolean; passed: boolean; detail: string };
+
+/** A pull request's fix as TBO Support takes it (`pr_result`): what was pushed and answered, or why nothing was. */
+export type PrFixResult =
+  | {
+      kind: "done";
+      /** The branch head after Copilot's push, or the old head when nothing was pushed. */
+      head_sha: string;
+      fixed: Array<{ id: string; commit: string; note: string }>;
+      not_fixed: Array<{ id: string; why: string }>;
+      tests: PrTests;
+      cost: Record<string, unknown>;
+    }
+  | { kind: "failure"; reason: string };
+
+export function isPrFix(job: ClaimedJob): job is PrFixJob {
+  return (job as PrFixJob).kind === "pr_fix";
 }
 
 /** One action Copilot may propose on an infrastructure alert (helpdesk.copilot.infra.ACTIONS). */
@@ -89,8 +169,8 @@ export type InfraJob = {
   context: InfraContext;
 };
 
-export function isInfraJob(job: Job | InfraJob | ReleaseCheckJob): job is InfraJob {
-  return !isReleaseCheck(job) && job.context?.kind === "infra";
+export function isInfraJob(job: ClaimedJob): job is InfraJob {
+  return !isReleaseCheck(job) && !isPrFix(job) && job.context?.kind === "infra";
 }
 
 export type SiteApp = {
@@ -292,17 +372,36 @@ export class HubClient {
 
   /**
    * The next run for this worker: an investigation, a fix job when it can fix (`capabilities`
-   * "investigate,fix"), an infrastructure alert when it says `infra`, or a release's check.
+   * "investigate,fix"), an infrastructure alert when it says `infra`; with no run, a release's
+   * check (`release_check`) or a developer's pull request to fix (`pr_fix`).
    */
-  async claimJob(workerId: string, run?: string, capabilities = "investigate"): Promise<Job | InfraJob | ReleaseCheckJob | null> {
-    const job = await this.method<Job | InfraJob | ReleaseCheckJob | Record<string, never>>(
+  async claimJob(workerId: string, run?: string, capabilities = "investigate"): Promise<ClaimedJob | null> {
+    const job = await this.method<ClaimedJob | Record<string, never>>(
       "helpdesk.api.copilot_worker.claim_job",
       { worker_id: workerId, free_slots: 1, capabilities, ...(run ? { run } : {}) },
       this.worker,
     );
     if (job && "run" in job) return job as Job | InfraJob;
-    if (job && (job as ReleaseCheckJob).kind === "release_check") return job as ReleaseCheckJob;
+    const kind = (job as { kind?: unknown } | null)?.kind;
+    if (kind === "release_check") return job as ReleaseCheckJob;
+    if (kind === "pr_fix") return job as PrFixJob;
     return null;
+  }
+
+  /** A pull request's fix is still wanted: `cancel` when the developer pushed a new commit or the pull request closed. */
+  async prHeartbeat(pullRequest: string, leaseToken: string): Promise<{ action: string }> {
+    return this.method("helpdesk.api.copilot_worker.pr_heartbeat", { pull_request: pullRequest, lease_token: leaseToken }, this.worker);
+  }
+
+  /** A one-hour key to push to the pull request's repository; the worker may push only to `branch`. */
+  async prPushKey(pullRequest: string, leaseToken: string): Promise<{ token: string; expires_at: string; repository: string; branch: string }> {
+    return this.method("helpdesk.api.copilot_worker.pr_push_key", { pull_request: pullRequest, lease_token: leaseToken }, this.worker);
+  }
+
+  /** A pull request's fix: what was pushed and answered, or the failure; the lease ends with it. */
+  async prResult(pullRequest: string, leaseToken: string, result: PrFixResult): Promise<unknown> {
+    const sent = result.kind === "failure" ? { kind: "failure" as const, reason: result.reason.slice(0, 2000) } : result;
+    return this.method("helpdesk.api.copilot_worker.pr_result", { pull_request: pullRequest, lease_token: leaseToken, result: sent }, this.worker);
   }
 
   /** A release check's evidence; the hub decides from it whether the release goes on to its approval. */

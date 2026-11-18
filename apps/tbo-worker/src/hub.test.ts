@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { HubClient, HubError, frappeError } from "./hub.js";
+import { HubClient, HubError, frappeError, isPrFix } from "./hub.js";
 import { StubHub } from "./test-support/stub-hub.js";
 
 const context = { run: "CPR-1", kind: "investigate", ticket: { name: "0209" } };
@@ -47,6 +47,39 @@ describe("HubClient against a stub hub", () => {
     const error = await hub.callTool("CPR-1:wrong", "get_run_context", {}).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(HubError);
     expect((error as HubError).leaseGone).toBe(true);
+  });
+
+  it("hands out a developer's pull request, and speaks its three calls with the lease", async () => {
+    const pr = {
+      kind: "pr_fix" as const,
+      pull_request: "TBO-PR-2026-00001",
+      lease_token: "pr-tok",
+      lease_expires: "",
+      context: {
+        pull_request: "TBO-PR-2026-00001",
+        repo: "acme/demo_app",
+        number: 12,
+        head_branch: "feature/margin",
+        head_sha: "a".repeat(40),
+        round: 1,
+        findings: [],
+        apps: [],
+        app: "demo_app",
+        commit_email: "copilot@example.com",
+      },
+    };
+    stub.prJobs.push(pr);
+    expect(await hub.claimJob("w1", undefined, "investigate")).toBeNull(); // only to a worker that says pr_fix
+    const job = await hub.claimJob("w1", undefined, "investigate,pr_fix");
+    expect(job && isPrFix(job) ? job.context.head_branch : null).toBe("feature/margin");
+
+    expect(await hub.prHeartbeat(pr.pull_request, "pr-tok")).toEqual({ action: "continue" });
+    expect(await hub.prPushKey(pr.pull_request, "pr-tok")).toMatchObject({ token: "pr-push-key", repository: "acme/demo_app", branch: "feature/margin" });
+    await hub.prResult(pr.pull_request, "pr-tok", { kind: "failure", reason: "x".repeat(3000) });
+    const sent = stub.callsTo("pr_result")[0]!;
+    expect(sent.headers.authorization).toBe("token key:secret");
+    expect(sent.body).toEqual({ pull_request: pr.pull_request, lease_token: "pr-tok", result: { kind: "failure", reason: "x".repeat(2000) } });
+    await expect(hub.prHeartbeat(pr.pull_request, "pr-tok")).rejects.toMatchObject({ leaseGone: true }); // the result ended the lease
   });
 
   it("needs an agent's key for the evaluation calls", async () => {
