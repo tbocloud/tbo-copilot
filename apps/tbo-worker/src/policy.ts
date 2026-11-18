@@ -48,6 +48,43 @@ export function editsInside(root: string, writableDir: string): PermissionDecide
   };
 }
 
+/** Folders and files that run or configure CI, review or git itself; compared at any depth, in any case. */
+const CI_FOLDERS = new Set([".git", ".github", ".gitlab", ".circleci", ".buildkite", ".woodpecker"]);
+const CI_FILES = new Set([
+  ".gitlab-ci.yml",
+  ".travis.yml",
+  "azure-pipelines.yml",
+  "bitbucket-pipelines.yml",
+  "jenkinsfile",
+  ".drone.yml",
+  ".pre-commit-config.yaml",
+  ".coderabbit.yaml",
+  ".coderabbit.yml",
+  "codecov.yml",
+  ".codecov.yml",
+  ".gitmodules",
+]);
+
+/** A path inside a repository that a pull request's fix never changes: CI, review settings, git itself. */
+export function isCiPath(path: string): boolean {
+  const parts = path.split(/[\\/]+/).filter(Boolean).map((part) => part.toLowerCase());
+  return parts.some((part) => CI_FOLDERS.has(part)) || CI_FILES.has(parts.at(-1) ?? "");
+}
+
+/**
+ * A pull request's fix (Phase 26): the fix stage's rule, and never a CI file (`.github/`, a
+ * pipeline, CodeRabbit's settings): green checks must come from fixing the code, not the checks.
+ */
+export function pullRequestEdits(root: string, writableDir: string): PermissionDecider {
+  const inside = editsInside(root, writableDir);
+  return (request) => {
+    if (inside(request) === "deny") return "deny";
+    const args = (request.argsPreview ?? {}) as Record<string, unknown>;
+    const raw = typeof args.path === "string" ? args.path : String(args.file_path);
+    return isCiPath(relative(writableDir, resolve(root, raw))) ? "deny" : "allow-once";
+  };
+}
+
 export const INPUT_ANSWER =
   "No person is available during this investigation. Take the safest assumption, say so in your evidence, and continue.";
 

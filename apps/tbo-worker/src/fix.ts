@@ -86,7 +86,7 @@ function row(check: string, run: SandboxResult, expectOk = true): EvidenceRow {
 }
 
 /** Puts the code as the site runs it back for the changed source files (tests stay), and returns how to undo that. */
-async function codeAsTheSiteRunsIt(dir: string, base: string, sources: string[], homeDir: string): Promise<() => Promise<void>> {
+export async function codeAsTheSiteRunsIt(dir: string, base: string, sources: string[], homeDir: string): Promise<() => Promise<void>> {
   const env = gitEnv(homeDir);
   const saved = new Map<string, string | null>();
   for (const path of sources) {
@@ -338,7 +338,8 @@ export function pullBody(input: {
   return lines.join("\n");
 }
 
-function pushEnv(homeDir: string, repository: string, token: string): NodeJS.ProcessEnv {
+/** git's environment with a GitHub key as an HTTP header, passed through the environment, never the command line. */
+export function pushEnv(homeDir: string, repository: string, token: string): NodeJS.ProcessEnv {
   if (!repository.startsWith("https://github.com/")) return gitEnv(homeDir);
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   return gitEnv(homeDir, {

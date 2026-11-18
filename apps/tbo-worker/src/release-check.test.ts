@@ -135,10 +135,10 @@ describe("a release's sandbox check", () => {
     expect(sandbox.stopped).toEqual(["sbx-1"]);
   });
 
-  it("only a worker with the sandbox offers releases' checks", () => {
+  it("only a worker with the sandbox offers releases' checks and developers' pull requests", () => {
     const make = (sandbox?: FakeSandbox) =>
       new Worker({} as never, {} as never, {} as never, {} as never, quiet, sandbox);
-    expect(make(new FakeSandbox()).capabilities()).toBe("investigate,fix,release_check,infra");
+    expect(make(new FakeSandbox()).capabilities()).toBe("investigate,fix,release_check,infra,pr_fix");
     expect(make().capabilities()).toBe("investigate,infra");
   });
 });

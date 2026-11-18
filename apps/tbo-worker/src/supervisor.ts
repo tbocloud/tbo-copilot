@@ -7,12 +7,14 @@ import { preview, type Engine, type TurnObserver, type TurnResult } from "./engi
 import { EventOutbox } from "./events.js";
 import { runFixJob } from "./fix.js";
 import { runFixTool, type FixToolState } from "./fix-tools.js";
-import { HubError, isInfraJob, isReleaseCheck, type HubClient, type InfraJob, type Job, type ReleaseCheckJob } from "./hub.js";
+import { HubError, isInfraJob, isPrFix, isReleaseCheck, type ClaimedJob, type HubClient, type InfraJob, type Job, type PrFixJob, type ReleaseCheckJob } from "./hub.js";
 import { INFRA_NUDGE, infraFinalPrompt, infraTurnPrompt } from "./infra-prompt.js";
 import { runInfraTool, type InfraTools } from "./infra-tools.js";
 import type { Logger } from "./log.js";
 import { StageModels, noModelReason, stageModels, type StageModel } from "./models.js";
 import { RunBudget, smallestCap } from "./policy.js";
+import { runPrFixJob, type PrFixReport } from "./pr-fix.js";
+import { runPrFixTool, type PrFixToolState } from "./pr-fix-tools.js";
 import { runReleaseCheck, type ReleaseCheckReport } from "./release-check.js";
 import { NUDGE, finalPrompt, turnPrompt } from "./prompt.js";
 import type { Sandbox } from "./sandbox.js";
@@ -96,12 +98,16 @@ export class RunToolRouter {
   readonly fixSessions = new Map<string, FixToolState>();
   /** An infrastructure alert's sessions (Phase 25): Press reads and the infra report, nothing else. */
   readonly infraSessions = new Map<string, InfraTools>();
+  /** A developer's pull request's fix sessions (Phase 26). */
+  readonly prFixSessions = new Map<string, PrFixToolState>();
 
   constructor(private readonly hub: HubClient) {}
 
   readonly run = async (sessionId: string, name: string, args: unknown): Promise<LocalToolResult> => {
     const fix = this.fixSessions.get(sessionId);
     if (fix) return runFixTool(fix, name, args);
+    const pr = this.prFixSessions.get(sessionId);
+    if (pr) return runPrFixTool(pr, name, args);
     const infra = this.infraSessions.get(sessionId);
     if (infra) return runInfraTool(this.hub, infra, name, args);
     const tools = this.sessions.get(sessionId);
@@ -146,10 +152,11 @@ export class Worker {
 
   /**
    * What the worker tells the hub it can do when claiming: investigations and infrastructure
-   * alerts (which need no sandbox); with the sandbox, fixes and releases' checks too.
+   * alerts (which need no sandbox); with the sandbox, fixes, releases' checks and developers'
+   * pull requests too.
    */
   capabilities(): string {
-    return this.sandbox ? "investigate,fix,release_check,infra" : "investigate,infra";
+    return this.sandbox ? "investigate,fix,release_check,infra,pr_fix" : "investigate,infra";
   }
 
   workspaceOptions(): WorkspaceOptions {
@@ -178,7 +185,7 @@ export class Worker {
       ...(this.cfg.model ? { model: this.cfg.model.modelId } : {}),
     });
     while (!signal.aborted && !this.stopping) {
-      let job: Job | InfraJob | ReleaseCheckJob | null = null;
+      let job: ClaimedJob | null = null;
       try {
         job = await this.hub.claimJob(this.cfg.workerId, undefined, this.capabilities());
       } catch (error) {
@@ -187,6 +194,11 @@ export class Worker {
       if (job && isReleaseCheck(job)) {
         const report = await this.processReleaseCheck(job);
         this.log("info", "release check finished", report as unknown as Record<string, unknown>);
+        continue;
+      }
+      if (job && isPrFix(job)) {
+        const report = await this.processPrFix(job);
+        this.log("info", "pull request fix finished", report as unknown as Record<string, unknown>);
         continue;
       }
       if (job) {
@@ -201,11 +213,16 @@ export class Worker {
 
   /** Claims one run (the named one, when given and queued) and investigates it; null when there is none. */
   async runOnce(run?: string): Promise<RunReport | null> {
-    // runs only: releases' checks are taken by the worker's loop (`start`)
-    const job = await this.hub.claimJob(this.cfg.workerId, run, this.capabilities().replace(",release_check", ""));
+    // runs only: releases' checks and pull requests are taken by the worker's loop (`start`)
+    const runsOnly = this.capabilities().split(",").filter((capability) => capability !== "release_check" && capability !== "pr_fix");
+    const job = await this.hub.claimJob(this.cfg.workerId, run, runsOnly.join(","));
     if (!job) return null;
     if (isReleaseCheck(job)) {
       await this.processReleaseCheck(job);
+      return null;
+    }
+    if (isPrFix(job)) {
+      await this.processPrFix(job);
       return null;
     }
     return this.process(job);
@@ -222,6 +239,24 @@ export class Worker {
       sandbox: this.sandbox,
       workspaceOptions: () => this.workspaceOptions(),
       log: this.log,
+    });
+  }
+
+  /**
+   * A developer's pull request (Phase 26): fix what CodeRabbit and CI found and push it to the pull
+   * request's own branch. See pr-fix.ts.
+   */
+  async processPrFix(job: PrFixJob): Promise<PrFixReport> {
+    return runPrFixJob(job, {
+      cfg: this.cfg,
+      hub: this.hub,
+      engine: this.engine,
+      router: this.router,
+      ...(this.sandbox ? { sandbox: this.sandbox } : {}),
+      log: this.log,
+      engineModel: (model) => this.engineModel(model),
+      stopping: () => this.stopping,
+      workspaceOptions: () => this.workspaceOptions(),
     });
   }
 
