@@ -592,6 +592,29 @@ describe("a developer's pull request, fixed live", () => {
     expect(mine("pr_result")).toHaveLength(0);
   });
 
+  // CodeRabbit on #31 (a third look): the branch back at its head does not prove the push failed either
+  it("reports nothing when the remote took the push and the branch was reset to the head before the answer came", async () => {
+    const repo = prRepo();
+    remoteHook(repo, "post-receive", ["read old new ref", 'git update-ref "$ref" "$old" "$new"', "kill -9 $PPID"].join("\n"));
+    const { report, mine } = await runWith([[{ write: "apps/demo_app/demo_app/invoice.py", content: FIXED }, { tool: "pr_fix_done", args: DONE }]], { repo });
+
+    expect(git(repo, "rev-parse", BRANCH)).toBe(repo.commits[1]);
+    expect(report.outcome).toBe("not_reported");
+    expect(report.reason).toMatch(/^push outcome unknown: the push of [0-9a-f]{12} failed \(.*\) and the branch is at the pull request's head again, without Copilot's commit; nothing was reported$/s);
+    expect(mine("pr_result")).toHaveLength(0);
+  });
+
+  it("fails when the remote refuses the push and the branch stays at the head", async () => {
+    const repo = prRepo();
+    remoteHook(repo, "pre-receive", "exit 1");
+    const { report, results } = await runWith([[{ write: "apps/demo_app/demo_app/invoice.py", content: FIXED }, { tool: "pr_fix_done", args: DONE }]], { repo });
+
+    expect(report.outcome).toBe("failed");
+    expect(report.reason).toMatch(/^the push failed: the remote refused it \(.*pre-receive hook declined.*\); nothing was pushed$/s);
+    expect(results()).toEqual([{ kind: "failure", reason: report.reason }]);
+    expect(git(repo, "rev-parse", BRANCH)).toBe(repo.commits[1]);
+  });
+
   it("still fails as a moved branch when the remote refuses the push", async () => {
     const repo = prRepo();
     const developer = git(repo, "commit-tree", `${repo.commits[1]}^{tree}`, "-p", repo.commits[1]!, "-m", "the developer's push");

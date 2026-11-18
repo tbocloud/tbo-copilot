@@ -132,9 +132,11 @@ function isAncestor(dir: string, commit: string, head: string, homeDir: string):
 export type PushOutcome = { kind: "landed"; head: string } | { kind: "not_landed"; reason: string } | { kind: "unknown"; why: string };
 
 /**
- * The branch decides, not git's error: it holds `commit` (at it, or a later commit on top, which is
- * fetched with the key to ask git's ancestry), it is still at `base`, or the remote said it refused
- * the push. Anything else (another commit, the branch gone, nothing readable) leaves it unknown.
+ * The branch decides, with git's error only as proof of a refusal: the push landed when the branch
+ * holds `commit` (at it, or a later commit on top, which is fetched with the key to ask git's
+ * ancestry), and certainly did not when the remote said it refused it. Anything else leaves it
+ * unknown, the branch back at `base` included: the remote may have taken the commit and the branch
+ * been reset before the answer came back.
  */
 export async function afterPushError(input: {
   dir: string;
@@ -161,10 +163,11 @@ export async function afterPushError(input: {
     holds = fetched ? await isAncestor(dir, commit, fetched, homeDir) : undefined;
     if (holds && fetched) return { kind: "landed", head: fetched };
   }
-  if (after === base) return { kind: "not_landed", reason: `the push failed: ${error}; nothing was pushed` };
   if (REFUSED.test(error)) {
+    if (after === base) return { kind: "not_landed", reason: `the push failed: the remote refused it (${error}); nothing was pushed` };
     return { kind: "not_landed", reason: after === null ? `the branch moved: the remote refused the push (${error}); nothing was pushed` : moved(branch, after || undefined, base) };
   }
+  if (after === base) return { kind: "unknown", why: "the branch is at the pull request's head again, without Copilot's commit" };
   if (after === null) return { kind: "unknown", why: "the branch could not be read afterwards" };
   if (after === "") return { kind: "unknown", why: "the branch is gone" };
   return {
