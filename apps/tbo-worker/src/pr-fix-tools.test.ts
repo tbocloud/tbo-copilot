@@ -10,7 +10,7 @@ import type { PrFinding, PrFixContext } from "./hub.js";
 import { isCiPath, pullRequestEdits } from "./policy.js";
 import { checkPrContext, commitMessage, usableBranch } from "./pr-fix.js";
 import { MAX_FINDINGS, prFixAgainPrompt, prFixPrompt } from "./pr-fix-prompt.js";
-import { PR_FIX_TOOL_DEFINITIONS, PR_FIX_TOOL_NAMES, checkPrFixDone, runPrFixTool, type PrFixToolState } from "./pr-fix-tools.js";
+import { PR_FIX_TOOL_DEFINITIONS, PR_FIX_TOOL_NAMES, changedPaths, checkPrFixDone, runPrFixTool, type PrFixToolState } from "./pr-fix-tools.js";
 
 function request(toolName: string, path: string, agentName?: string): ToolPermissionRequest {
   return { requestId: "r", sessionId: "s", toolCallId: "t", toolName, argsPreview: { path }, risk: "medium", reason: "", ...(agentName ? { agentName } : {}) };
@@ -80,11 +80,53 @@ describe("a pull request's edit rule", () => {
     expect(decide(request("Bash", "apps/demo_app/demo_app/invoice.py"))).toBe("deny");
   });
 
+  // CodeRabbit on #31: the rule holds for where a write really lands, not only for the path as written
+  it("never lets a committed link lead a write into .git or .github", () => {
+    const base = mkdtempSync(join(tmpdir(), "tbo-prfix-links-"));
+    const repo = join(base, "apps", "demo_app");
+    mkdirSync(join(repo, "demo_app"), { recursive: true });
+    execFileSync("git", ["init", "--quiet", repo]);
+    mkdirSync(join(repo, ".github", "workflows"), { recursive: true });
+    writeFileSync(join(repo, ".github", "workflows", "tests.yml"), "on: push\n");
+    symlinkSync(".git", join(repo, "meta")); // meta -> .git
+    symlinkSync(".github", join(repo, "ci")); // ci -> .github
+    symlinkSync("demo_app", join(repo, "lib")); // lib -> demo_app: an ordinary folder of the app
+    symlinkSync("missing", join(repo, "dangling"));
+    const rule = pullRequestEdits(base, repo);
+
+    for (const path of ["meta/config", "meta/hooks/pre-commit", "meta/new/x", "ci/workflows/tests.yml", "ci/workflows/new.yml", "ci/new/x.yml", "dangling/x.py"]) {
+      expect(rule(request("Write", `apps/demo_app/${path}`)), path).toBe("deny");
+    }
+    expect(rule(request("Write", "apps/demo_app/lib/margin.py"))).toBe("allow-once");
+    expect(rule(request("Edit", "apps/demo_app/demo_app/invoice.py"))).toBe("allow-once");
+  });
+
   it("knows a CI path from a source path", () => {
     expect(isCiPath("demo_app/github_sync.py")).toBe(false);
     expect(isCiPath("docs/ci.md")).toBe(false);
     expect(isCiPath(".github/workflows/ci.yml")).toBe(true);
     expect(isCiPath("sub\\.github\\x.yml")).toBe(true);
+  });
+});
+
+// CodeRabbit on #31: git quotes unusual names unless asked for NUL-separated output
+describe("the files a session changed", () => {
+  it("are named by their real paths, so a CI file is still seen as one", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tbo-prfix-names-"));
+    const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Dev", "-c", "user.email=dev@example.com", ...args], { cwd: dir });
+    git("init", "--quiet");
+    mkdirSync(join(dir, "demo_app"));
+    writeFileSync(join(dir, "demo_app", "café.py"), "RATE = 1\n");
+    git("add", "--all");
+    git("commit", "--quiet", "-m", "app");
+    writeFileSync(join(dir, "demo_app", "café.py"), "RATE = 2\n");
+    mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
+    writeFileSync(join(dir, ".github", "workflows", "tëst.yml"), "on: push\n");
+    writeFileSync(join(dir, "demo_app", " spaced.py "), "x = 1\n");
+
+    const changed = await changedPaths(dir, dir);
+    expect([...changed].sort()).toEqual([".github/workflows/tëst.yml", "demo_app/ spaced.py ", "demo_app/café.py"]);
+    expect(changed.filter(isCiPath)).toEqual([".github/workflows/tëst.yml"]);
   });
 });
 

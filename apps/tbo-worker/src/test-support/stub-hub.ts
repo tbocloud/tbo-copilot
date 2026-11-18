@@ -28,6 +28,8 @@ export class StubHub {
   prHeartbeatAction = "continue";
   /** The branch the push key is for; the pull request's head branch when unset. */
   prPushBranch: string | undefined;
+  /** Runs before the push key is handed out (a cancel arriving while the worker gets ready to push). */
+  prPushKeyHook: (() => Promise<void>) | undefined;
   /** Makes the MCP endpoint answer 200 with this raw body (a broken proxy, an HTML page). */
   rawMcpReply: string | undefined;
   private server: Server | undefined;
@@ -102,6 +104,7 @@ export class StubHub {
     if (path.endsWith("copilot_worker.pr_push_key")) {
       if (!this.leaseOk(String(body.pull_request), String(body.lease_token))) return refused();
       const pr = this.prJobs.find((candidate) => candidate.pull_request === body.pull_request)!;
+      await this.prPushKeyHook?.();
       return this.send(res, 200, {
         message: { token: "pr-push-key", expires_at: "2026-11-18T10:00:00Z", repository: pr.context.repo, branch: this.prPushBranch ?? pr.context.head_branch },
       });

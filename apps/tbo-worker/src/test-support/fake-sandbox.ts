@@ -17,34 +17,37 @@ export class FakeSandbox implements Sandbox {
   errorsBefore = false;
   /** A build's judge: a module's result from the mounted app's code (the fix's margin rule when unset). */
   judge?: (module: string, mount: string) => SandboxResult;
-  private mount = "";
+  /** Each copy's mounted app, by copy id: a job may run a second copy (a pull request's baseline). */
+  readonly mounts = new Map<string, string>();
 
   async start(spec: SandboxSpec): Promise<{ id: string; tested_on: string }> {
     this.started.push(spec);
-    this.mount = spec.mount.dir;
-    return { id: `sbx-${this.started.length}`, tested_on: "a fake sandbox site" };
+    const id = `sbx-${this.started.length}`;
+    this.mounts.set(id, spec.mount.dir);
+    return { id, tested_on: "a fake sandbox site" };
   }
 
   private run(ok: boolean, output: string): SandboxResult {
     return { ok, exit_code: ok ? 0 : 1, output, ms: 120 };
   }
 
-  async check(_id: string, _app: string, module: string): Promise<SandboxResult> {
+  async check(id: string, _app: string, module: string): Promise<SandboxResult> {
     this.calls.push(`check ${module}`);
-    if (this.judge) return this.judge(module, this.mount);
-    const code = readFileSync(join(this.mount, "demo_app", "invoice.py"), "utf8");
+    const mount = this.mounts.get(id) ?? "";
+    if (this.judge) return this.judge(module, mount);
+    const code = readFileSync(join(mount, "demo_app", "invoice.py"), "utf8");
     const fixed = this.alwaysPasses || code.includes("(doc.selling - doc.buying) / doc.selling");
     if (fixed) return this.run(true, "Ran 1 test\nOK");
     if (this.errorsBefore) return { ...this.run(false, "ImportError: cannot import name 'margin_rate'\nFAILED (errors=1)"), failure: "error" };
     return { ...this.run(false, "AssertionError: 1.25 != 0.2\nFAILED (failures=1)"), failure: "assertion" };
   }
 
-  async migrate(): Promise<SandboxResult> {
+  async migrate(_id: string): Promise<SandboxResult> {
     this.calls.push("migrate");
     return this.run(true, "Migrating sandbox.localhost\nDone");
   }
 
-  async tests(): Promise<SandboxResult> {
+  async tests(_id: string, _app: string): Promise<SandboxResult> {
     this.calls.push("tests");
     return { ...this.run(true, "the app has no tests"), skipped: true };
   }

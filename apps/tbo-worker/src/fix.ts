@@ -86,7 +86,7 @@ function row(check: string, run: SandboxResult, expectOk = true): EvidenceRow {
 }
 
 /** Puts the code as the site runs it back for the changed source files (tests stay), and returns how to undo that. */
-export async function codeAsTheSiteRunsIt(dir: string, base: string, sources: string[], homeDir: string): Promise<() => Promise<void>> {
+async function codeAsTheSiteRunsIt(dir: string, base: string, sources: string[], homeDir: string): Promise<() => Promise<void>> {
   const env = gitEnv(homeDir);
   const saved = new Map<string, string | null>();
   for (const path of sources) {

@@ -3,16 +3,16 @@ import { join } from "node:path";
 
 import type { ModelConfig, WorkerConfig } from "./config.js";
 import type { Engine, TurnObserver, TurnResult } from "./engine.js";
-import { DEFAULT_FIX_LIMITS, SECRET, codeAsTheSiteRunsIt, pushEnv, repoName } from "./fix.js";
+import { DEFAULT_FIX_LIMITS, SECRET, pushEnv, repoName } from "./fix.js";
 import { restartPrompt } from "./fix-prompt.js";
 import { HubError, type HubClient, type PrFinding, type PrFixContext, type PrFixJob, type PrFixResult, type PrTests } from "./hub.js";
 import type { Logger } from "./log.js";
 import { StageModels, noModelReason, stageModels, type StageModel } from "./models.js";
 import { RunBudget, isCiPath, pullRequestEdits, smallestCap } from "./policy.js";
 import { MAX_FINDINGS, PR_FIX_NUDGE, prFixAgainPrompt, prFixPrompt, type PrCheckProblem } from "./pr-fix-prompt.js";
-import { changedPaths, type PrFixDone, type PrFixToolState } from "./pr-fix-tools.js";
+import { changedPaths, checkPrFixDone, type PrFixDone, type PrFixToolState } from "./pr-fix-tools.js";
 import { gitEnv, runGit } from "./repo-git.js";
-import { APP, type Sandbox } from "./sandbox.js";
+import { APP, type Sandbox, type SandboxResult } from "./sandbox.js";
 import { SuspiciousWatch } from "./suspicious.js";
 import { checkoutCommit, normalizeRepository, removeWorkspace, workspaceRoot, type WorkspaceOptions } from "./workspace.js";
 
@@ -132,29 +132,25 @@ export function commitMessage(context: PrFixContext, done: PrFixDone, findings: 
   return { title: `fix: ${who} round ${Number(context.round) || 1} (TBO Copilot)`, body: body.join("\n") };
 }
 
+/** The pull request's own code on a fresh copy of the site: migrate, then the app's tests when it migrated. */
+export type Baseline = { migrate: SandboxResult; tests?: SandboxResult };
+
 /**
  * The worker's own checks of the change, from the runner's results, never from the model's words:
  * nothing secret-shaped added, the copy still migrates, the app's tests pass. A failure is only the
- * change's when the same step passes on the pull request's code without it.
+ * change's when the same step passes on the pull request's code without it: `baseline`, run on a
+ * fresh copy of its own, since the change's copy already holds the change's migrations.
  */
-async function ownChecks(state: PrFixToolState, base: string, changed: string[]): Promise<{ tests: PrTests; problems: PrCheckProblem[] }> {
+async function ownChecks(state: PrFixToolState, baseline: () => Promise<Baseline>): Promise<{ tests: PrTests; problems: PrCheckProblem[] }> {
   const problems: PrCheckProblem[] = [];
   const diff = await runGit(state.dir, ["diff", "--no-ext-diff", "--no-color", "-U0"], gitEnv(state.homeDir));
   const added = diff.split("\n").filter((row) => row.startsWith("+") && !row.startsWith("+++")).join("\n");
   if (SECRET.test(added)) problems.push({ what: "a secret-shaped value is in your change: take it out (a key or password never goes into code)" });
   const { sandbox, sandboxId } = state;
   if (!sandbox || !sandboxId) return { tests: { ran: false, passed: false, detail: `not run: ${state.noSandbox ?? "no sandbox"}` }, problems };
-  const withoutTheChange = async <T>(step: () => Promise<T>): Promise<T> => {
-    const restore = await codeAsTheSiteRunsIt(state.dir, base, changed, state.homeDir);
-    try {
-      return await step();
-    } finally {
-      await restore();
-    }
-  };
   const migrate = await sandbox.migrate(sandboxId);
   if (!migrate.ok) {
-    if ((await withoutTheChange(() => sandbox.migrate(sandboxId))).ok) {
+    if ((await baseline()).migrate.ok) {
       problems.push({ what: "bench migrate fails with your change and passes without it", output: tail(migrate.output, 40, 4_000) });
       return { tests: { ran: false, passed: false, detail: `not run: bench migrate fails with the change: ${tail(migrate.output, 3)}` }, problems };
     }
@@ -163,7 +159,11 @@ async function ownChecks(state: PrFixToolState, base: string, changed: string[])
   const tests = await sandbox.tests(sandboxId, state.app);
   if (tests.skipped) return { tests: { ran: false, passed: false, detail: "not run: the app has no tests" }, problems };
   if (tests.ok) return { tests: { ran: true, passed: true, detail: tail(tests.output, 3) }, problems };
-  const before = await withoutTheChange(() => sandbox.tests(sandboxId, state.app));
+  const before = (await baseline()).tests;
+  if (!before) {
+    // the change made the pull request's code migrate: there is nothing to compare its tests with
+    return { tests: { ran: true, passed: false, detail: `the app's tests fail with Copilot's change; without it bench migrate failed, so there is nothing to compare: ${tail(tests.output)}` }, problems };
+  }
   if (!before.ok && !before.skipped) {
     return { tests: { ran: true, passed: false, detail: `the app's tests fail with and without Copilot's change: ${tail(tests.output)}` }, problems };
   }
@@ -189,6 +189,8 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
   const sessions: string[] = [];
   const suspicious: string[] = [];
   const root = workspaceRoot(cfg.runsDir, `pr-${pr}`);
+  // the pull request's own code for the baseline, outside the session's folder
+  const baseRoot = workspaceRoot(cfg.runsDir, `pr-${pr}-base`);
   let tests: PrTests | undefined;
   let sandboxId: string | undefined;
   const report = (outcome: PrFixOutcome, reason?: string): PrFixReport => ({
@@ -209,19 +211,22 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
     model: String(budget.cost().model ?? ""),
     minutes: Math.round(budget.minutes() * 10) / 10,
   });
+  const ended = (): PrFixReport => {
+    if (flags.cancelled) return report("cancelled", "TBO Support cancelled the fix (a new commit on the pull request, or it closed)");
+    if (flags.leaseLost) return report("lease_lost", "the lease ended before the result");
+    return report("stopped", "the worker was stopped; the lease will expire and the pull request goes back to the queue");
+  };
   const fail = async (reason: string): Promise<PrFixReport> => {
     flags.finished = true;
+    // TBO Support no longer wants a result once it cancelled or the lease ended: a failure now
+    // (the branch moved because the developer pushed, say) would only be refused or mislead
+    if (flags.cancelled || flags.leaseLost) return ended();
     try {
       await hub.prResult(pr, token, { kind: "failure", reason });
     } catch (error) {
       log("warn", "pull request fix failure not reported", { pull_request: pr, error: String(error) });
     }
     return report("failed", reason);
-  };
-  const ended = (): PrFixReport => {
-    if (flags.cancelled) return report("cancelled", "TBO Support cancelled the fix (a new commit on the pull request, or it closed)");
-    if (flags.leaseLost) return report("lease_lost", "the lease ended before the result");
-    return report("stopped", "the worker was stopped; the lease will expire and the pull request goes back to the queue");
   };
   const stopIfAsked = () => {
     if (!deps.stopping() || flags.stopped) return;
@@ -294,7 +299,8 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
     const head = await remoteHead(root, repository, branch, cfg.homeDir, context.repo_token || options.githubToken);
     if (head !== base) return await fail(moved(branch, head, base));
     const dir = join(root, "apps", context.app);
-    await checkoutCommit(repository, base, dir, context.repo_token ? { ...options, githubToken: context.repo_token } : options);
+    const readOptions = context.repo_token ? { ...options, githubToken: context.repo_token } : options;
+    await checkoutCommit(repository, base, dir, readOptions);
     const env = gitEnv(cfg.homeDir);
     const checkedOut = (await runGit(dir, ["rev-parse", "HEAD"], env)).trim().toLowerCase();
     if (checkedOut !== base) return await fail(moved(branch, checkedOut, base));
@@ -309,17 +315,12 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
     await chmod(join(root, "apps"), 0o555);
 
     // a site with the customer's apps, this app at the working tree, when the runner can start one
+    const siteApps = (context.apps ?? []).map((app) => ({ app: app.app, repository: app.repository ?? null, branch: app.branch ?? null, commit: app.commit ?? null }));
     let testedOn: string | undefined;
     let noSandbox: string | undefined = deps.sandbox ? undefined : "this worker has no sandbox runner";
     if (deps.sandbox) {
       try {
-        const started = await deps.sandbox.start({
-          run: pr,
-          customer: null,
-          site: null,
-          apps: (context.apps ?? []).map((app) => ({ app: app.app, repository: app.repository ?? null, branch: app.branch ?? null, commit: app.commit ?? null })),
-          mount: { app: context.app, dir },
-        });
+        const started = await deps.sandbox.start({ run: pr, customer: null, site: null, apps: siteApps, mount: { app: context.app, dir } });
         sandboxId = started.id;
         testedOn = started.tested_on || "a sandbox site";
       } catch (error) {
@@ -336,6 +337,28 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
       findingIds: shown.map((finding) => finding.id),
     };
     tests = { ran: false, passed: false, detail: `not run: ${noSandbox ?? "nothing was changed"}` };
+    // the pull request's code without the change, for a step the change fails: a fresh copy of its own (the
+    // runner cannot undo the change's migrations on the first one), started once, only when needed
+    let baselineRun: Promise<Baseline> | undefined;
+    const baseline = (): Promise<Baseline> =>
+      (baselineRun ??= (async () => {
+        const sandbox = deps.sandbox!;
+        const baseDir = join(baseRoot, context.app);
+        await removeWorkspace(baseRoot);
+        await checkoutCommit(repository, base, baseDir, readOptions);
+        let copy: { id: string };
+        try {
+          copy = await sandbox.start({ run: `${pr}-base`, customer: null, site: null, apps: siteApps, mount: { app: context.app, dir: baseDir } });
+        } catch (error) {
+          throw new Error(`a step fails with the change, and no second sandbox copy could be started to run it without the change: ${String((error as Error).message ?? error).slice(0, 200)}`);
+        }
+        try {
+          const migrate = await sandbox.migrate(copy.id);
+          return migrate.ok ? { migrate, tests: await sandbox.tests(copy.id, context.app) } : { migrate };
+        } finally {
+          await sandbox.stop(copy.id).catch(() => undefined);
+        }
+      })());
     const openOn = async (model: StageModel): Promise<string> => {
       budget.use(model);
       const id = await engine.openSession(root, `Copilot pull request ${pr}`, await deps.engineModel(model), {
@@ -379,17 +402,24 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
       // the session's rule refuses these; this is the worker's own look before anything is committed
       const ci = changed.filter(isCiPath);
       if (ci.length) return await fail(`the change touches CI or git files, which a fix never changes (${ci.slice(0, 5).join(", ")}); nothing was pushed`);
-      if (!changed.length) {
+      // the answer was checked when pr_fix_done was called; the session may have written (or undone) a file after it
+      const still = checkPrFixDone({ ...answer()! }, state.findingIds, changed.length > 0);
+      let found: PrCheckProblem[];
+      if (typeof still === "string") {
+        found = [{ what: `your pr_fix_done answer no longer matches your change: ${still}` }];
+      } else if (!changed.length) {
         tests = { ran: false, passed: false, detail: "not run: nothing was changed" };
         break;
+      } else {
+        const checked = await ownChecks(state, baseline);
+        tests = checked.tests;
+        found = checked.problems;
       }
-      const checked = await ownChecks(state, base, changed);
-      tests = checked.tests;
-      if (!checked.problems.length) break;
+      if (!found.length) break;
       if (round >= limits.maxRounds) {
-        return await fail(`still not right after ${round} rounds: ${checked.problems.map((problem) => problem.what).join("; ")}; nothing was pushed`);
+        return await fail(`still not right after ${round} round${round === 1 ? "" : "s"}: ${found.map((problem) => problem.what).join("; ")}; nothing was pushed`);
       }
-      problems = checked.problems;
+      problems = found;
     }
     if (!mayGoOn()) return ended();
 
@@ -415,15 +445,28 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
       }
       const now = await remoteHead(root, repository, branch, cfg.homeDir, key.token);
       if (now !== base) return await fail(moved(branch, now, base));
+      // a cancel, a lost lease or a shutdown may have come while the key and the branch were asked for
+      if (!mayGoOn()) return ended();
       try {
         // a plain refspec, never `+` or --force: the remote takes it only as a fast-forward of the branch
         await runGit(dir, ["-c", "core.hooksPath=/dev/null", "push", "--quiet", "--end-of-options", repository, `HEAD:refs/heads/${branch}`], pushEnv(cfg.homeDir, repository, key.token), 300_000);
       } catch (error) {
-        const text = String((error as Error).message ?? error);
-        if (!/rejected|non-fast-forward|fetch first|cannot lock ref/i.test(text)) return await fail(`the push failed: ${text.slice(0, 300)}`);
-        // the remote refused a non-fast-forward: someone pushed between the check and the push
-        const after = await remoteHead(root, repository, branch, cfg.homeDir, key.token).catch(() => undefined);
-        return await fail(moved(branch, after, base));
+        // whatever git said (a timeout, a dropped connection, a refusal), the branch says what happened
+        const text = String((error as Error).message ?? error).slice(0, 300);
+        const after = await remoteHead(root, repository, branch, cfg.homeDir, key.token).then(
+          (head) => head ?? "",
+          () => null,
+        );
+        if (after === null) {
+          // it may be on the branch or not: any result could be wrong, so none is sent; the lease lapses
+          // and TBO Support takes a fresh look at the pull request
+          flags.finished = true;
+          log("error", "pull request fix: push outcome unknown", { pull_request: pr, commit, error: text });
+          return report("not_reported", `push outcome unknown: the push of ${commit.slice(0, 12)} failed (${text}) and the branch could not be read afterwards; nothing was reported`);
+        }
+        if (after === base) return await fail(`the push failed: ${text}; nothing was pushed`);
+        if (after !== commit) return await fail(moved(branch, after || undefined, base));
+        log("warn", "pull request fix: the push reported an error, but the branch is at Copilot's commit", { pull_request: pr, commit, error: text });
       }
       pushedHead = commit;
       flags.pushed = commit;
@@ -461,6 +504,9 @@ export async function runPrFixJob(job: PrFixJob, deps: PrFixDeps): Promise<PrFix
       router.prFixSessions.delete(id);
       await engine.closeSession(id, root).catch(() => undefined);
     }
-    if (!cfg.keepRuns) await removeWorkspace(root).catch(() => undefined);
+    if (!cfg.keepRuns) {
+      await removeWorkspace(root).catch(() => undefined);
+      await removeWorkspace(baseRoot).catch(() => undefined);
+    }
   }
 }

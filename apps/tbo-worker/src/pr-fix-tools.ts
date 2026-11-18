@@ -119,12 +119,15 @@ function oneLine(value: unknown): string {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_REPLY_CHARS);
 }
 
-/** The files the session changed, added or removed in the clone, relative to it. */
+/**
+ * The files the session changed, added or removed in the clone, relative to it, each as its real
+ * path: NUL-separated, so git never quotes a name (café.py) and no name is trimmed.
+ */
 export async function changedPaths(dir: string, homeDir: string): Promise<string[]> {
   const env = gitEnv(homeDir);
   await runGit(dir, ["add", "--intent-to-add", "--all"], env);
-  const names = await runGit(dir, ["diff", "--no-ext-diff", "--name-only", "--no-renames"], env);
-  return names.split("\n").map((line) => line.trim()).filter(Boolean);
+  const names = await runGit(dir, ["diff", "--no-ext-diff", "--name-only", "--no-renames", "-z"], env);
+  return names.split("\0").filter((name) => name !== "");
 }
 
 /**

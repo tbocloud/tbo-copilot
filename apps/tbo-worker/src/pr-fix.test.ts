@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -67,14 +67,35 @@ function developerPushes(repo: FixtureRepo): string {
   return head;
 }
 
-/** The app's tests on the sandbox, judged from the code mounted there. */
-function judgeTests(sandbox: FakeSandbox, passes: (code: string) => boolean): void {
-  sandbox.tests = async (): Promise<SandboxResult> => {
+/** The developer commits files to the pull request's branch; its new head. */
+function commitOnBranch(repo: FixtureRepo, files: Record<string, string>): string {
+  git(repo, "checkout", "--quiet", BRANCH);
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(join(repo.dir, path, ".."), { recursive: true });
+    writeFileSync(join(repo.dir, path), content);
+  }
+  git(repo, "add", "--all");
+  git(repo, "commit", "--quiet", "-m", "feat: the report's rate");
+  const head = git(repo, "rev-parse", "HEAD");
+  git(repo, "checkout", "--quiet", "main");
+  return head;
+}
+
+/** The remote's post-receive hook: it runs after the remote took the push, before the pusher hears the end. */
+function postReceive(repo: FixtureRepo, script: string): void {
+  writeFileSync(join(repo.dir, ".git", "hooks", "post-receive"), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+}
+
+const PASSED: SandboxResult = { ok: true, exit_code: 0, output: "Ran 4 tests\nOK", ms: 200 };
+const FAILED: SandboxResult = { ok: false, exit_code: 1, output: "AssertionError: 1.25 != 0.2\nFAILED (failures=1)", ms: 200, failure: "assertion" };
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The app's tests on a sandbox copy, judged from the code mounted on that copy. */
+function judgeTests(sandbox: FakeSandbox, passes: (code: string) => boolean, file = "demo_app/invoice.py"): void {
+  sandbox.tests = async (id: string): Promise<SandboxResult> => {
     sandbox.calls.push("tests");
-    const code = readFileSync(join(sandbox.started.at(-1)!.mount.dir, "demo_app", "invoice.py"), "utf8");
-    return passes(code)
-      ? { ok: true, exit_code: 0, output: "Ran 4 tests\nOK", ms: 200 }
-      : { ok: false, exit_code: 1, output: "AssertionError: 1.25 != 0.2\nFAILED (failures=1)", ms: 200, failure: "assertion" };
+    const code = readFileSync(join(sandbox.mounts.get(id)!, file), "utf8");
+    return passes(code) ? PASSED : FAILED;
   };
 }
 
@@ -364,6 +385,9 @@ describe("a developer's pull request, fixed live", () => {
 
     expect(report.outcome).toBe("failed");
     expect(report.reason).toBe("still not right after 2 rounds: the app's tests fail with your change and pass without it; nothing was pushed");
+    // the pull request's own code ran once for both rounds, on a second copy, which was stopped
+    expect(sandbox.started.map((spec) => spec.run)).toEqual([report.pull_request, `${report.pull_request}-base`]);
+    expect(sandbox.stopped).toEqual(["sbx-2", "sbx-1"]);
     expect(git(repo, "rev-parse", BRANCH)).toBe(repo.commits[1]);
     expect(mine("pr_push_key")).toHaveLength(0);
   });
@@ -377,6 +401,169 @@ describe("a developer's pull request, fixed live", () => {
     const tests = (results()[0] as Extract<PrFixResult, { kind: "done" }>).tests;
     expect(tests).toMatchObject({ ran: true, passed: false });
     expect(tests.detail).toContain("fail with and without Copilot's change");
+  });
+
+  // CodeRabbit on #31: the baseline must not run on the change's migrated database
+  it("runs the pull request's own code on a fresh copy, never on the copy the change migrated", async () => {
+    // the change adds a patch that damages the data: on its copy the tests fail whatever code is mounted,
+    // since the database keeps what the patch did; the pull request's own code on a fresh copy passes
+    const sandbox = new FakeSandbox();
+    const damaged = new Set<string>();
+    sandbox.migrate = async (id: string): Promise<SandboxResult> => {
+      sandbox.calls.push(`migrate ${id}`);
+      if (existsSync(join(sandbox.mounts.get(id)!, "demo_app", "patches", "drop_margin.py"))) damaged.add(id);
+      return { ok: true, exit_code: 0, output: "Migrating\nDone", ms: 1 };
+    };
+    sandbox.tests = async (id: string): Promise<SandboxResult> => {
+      sandbox.calls.push(`tests ${id}`);
+      return damaged.has(id) ? FAILED : PASSED;
+    };
+    const { report, job, repo, mine } = await runWith(
+      [
+        [
+          { write: "apps/demo_app/demo_app/patches/drop_margin.py", content: "import frappe\n\ndef execute():\n    frappe.db.sql('update `tabSales Invoice` set margin = null')\n" },
+          { write: "apps/demo_app/demo_app/invoice.py", content: FIXED },
+          { tool: "pr_fix_done", args: DONE },
+        ],
+      ],
+      { sandbox, fixLimits: { maxRounds: 1 } },
+    );
+
+    expect(report).toMatchObject({ outcome: "failed", reason: "still not right after 1 round: the app's tests fail with your change and pass without it; nothing was pushed" });
+    expect(git(repo, "rev-parse", BRANCH)).toBe(repo.commits[1]);
+    expect(mine("pr_push_key")).toHaveLength(0);
+    expect(sandbox.started.map((spec) => spec.run)).toEqual([job.pull_request, `${job.pull_request}-base`]);
+    expect(sandbox.started[1]!.apps).toEqual(sandbox.started[0]!.apps);
+    expect(sandbox.calls).toEqual(["migrate sbx-1", "tests sbx-1", "migrate sbx-2", "tests sbx-2"]);
+    expect(sandbox.stopped).toEqual(["sbx-2", "sbx-1"]);
+  });
+
+  // CodeRabbit on #31: a file git would quote (café.py) is still the change's own file
+  it("checks a change to a file with an unusual name against the pull request's own version of it", async () => {
+    const repo = prRepo();
+    const head = commitOnBranch(repo, { "demo_app/café.py": "RATE = 1\n" });
+    const sandbox = new FakeSandbox();
+    const seen: string[] = [];
+    judgeTests(sandbox, (code) => {
+      seen.push(code);
+      return !code.includes("BROKEN");
+    }, "demo_app/café.py");
+    const { report } = await runWith([[{ write: "apps/demo_app/demo_app/café.py", content: "RATE = 1\nBROKEN = True\n" }, { tool: "pr_fix_done", args: DONE }]], {
+      repo,
+      sandbox,
+      context: { head_sha: head },
+      fixLimits: { maxRounds: 1 },
+    });
+
+    expect(report.reason).toBe("still not right after 1 round: the app's tests fail with your change and pass without it; nothing was pushed");
+    expect(seen).toEqual(["RATE = 1\nBROKEN = True\n", "RATE = 1\n"]);
+  });
+
+  // CodeRabbit on #31: no failure once TBO Support cancelled
+  it("reports nothing once TBO Support cancelled, even when the branch moved meanwhile", async () => {
+    const repo = prRepo();
+    const sandbox = new FakeSandbox();
+    // the developer pushes while Copilot checks its change, and TBO Support cancels as the worker gets the push key
+    sandbox.tests = async (): Promise<SandboxResult> => {
+      developerPushes(repo);
+      return PASSED;
+    };
+    stub.prPushKeyHook = async () => {
+      stub.prHeartbeatAction = "cancel";
+      await sleep(150);
+    };
+    try {
+      const { report, mine } = await runWith([[{ write: "apps/demo_app/demo_app/invoice.py", content: FIXED }, { tool: "pr_fix_done", args: DONE }]], {
+        repo,
+        sandbox,
+        limits: { heartbeatIntervalMs: 20 },
+      });
+      expect(report.outcome).toBe("cancelled");
+      expect(mine("pr_result")).toHaveLength(0);
+    } finally {
+      stub.prPushKeyHook = undefined;
+      stub.prHeartbeatAction = "continue";
+    }
+  });
+
+  // CodeRabbit on #31: the last look comes right before the push
+  it("does not push when TBO Support cancels while the worker gets ready to push", async () => {
+    stub.prPushKeyHook = async () => {
+      stub.prHeartbeatAction = "cancel";
+      await sleep(150);
+    };
+    try {
+      const { report, repo, mine } = await runWith([[{ write: "apps/demo_app/demo_app/invoice.py", content: FIXED }, { tool: "pr_fix_done", args: DONE }]], {
+        limits: { heartbeatIntervalMs: 20 },
+      });
+      expect(report.outcome).toBe("cancelled");
+      expect(report.pushed).toBeUndefined();
+      expect(git(repo, "rev-parse", BRANCH)).toBe(repo.commits[1]);
+      expect(mine("pr_result")).toHaveLength(0);
+    } finally {
+      stub.prPushKeyHook = undefined;
+      stub.prHeartbeatAction = "continue";
+    }
+  });
+
+  // CodeRabbit on #31: the answer must match the change as it is at the end of the turn
+  it("sends back an answer that leaves every finding, given before a file was written", async () => {
+    const leaveAll = { fixed: [], not_fixed: [{ id: "CR-1", why: "The formula is right." }, DONE.not_fixed[0]] };
+    const { report, repo, scripted, results } = await runWith(
+      [
+        [{ tool: "pr_fix_done", args: leaveAll }, { write: "apps/demo_app/demo_app/invoice.py", content: FIXED }],
+        [{ tool: "pr_fix_done", args: DONE }],
+      ],
+      { fixLimits: { maxRounds: 2 } },
+    );
+
+    expect(scripted.prompts[1]!.content).toContain(
+      "your pr_fix_done answer no longer matches your change: the app has changes, but no finding is listed as fixed",
+    );
+    expect(report.outcome).toBe("done");
+    const head = git(repo, "rev-parse", BRANCH);
+    expect(results()[0]).toMatchObject({ kind: "done", head_sha: head, fixed: [{ id: "CR-1", commit: head }] });
+  });
+
+  it("refuses an answer that lists a fix whose file was put back afterwards", async () => {
+    const { report, repo, mine, results } = await runWith(
+      [
+        [
+          { write: "apps/demo_app/demo_app/invoice.py", content: FIXED },
+          { tool: "pr_fix_done", args: DONE },
+          { write: "apps/demo_app/demo_app/invoice.py", content: "def validate(doc, method=None):\n    doc.margin = doc.selling / doc.buying\n" },
+        ],
+      ],
+      { fixLimits: { maxRounds: 1 } },
+    );
+
+    expect(report.outcome).toBe("failed");
+    expect(report.reason).toContain("your pr_fix_done answer no longer matches your change: fixed lists findings, but the app has no changes");
+    expect(results()).toEqual([{ kind: "failure", reason: report.reason }]);
+    expect(git(repo, "rev-parse", BRANCH)).toBe(repo.commits[1]);
+    expect(mine("pr_push_key")).toHaveLength(0);
+  });
+
+  // CodeRabbit on #31: after a push error, the branch says what happened
+  it("reports the fix as pushed when the push errs after the remote took the commit", async () => {
+    const repo = prRepo();
+    postReceive(repo, "kill -9 $PPID"); // the remote takes the commit, then the connection dies before the pusher hears so
+    const { report, results } = await runWith([[{ write: "apps/demo_app/demo_app/invoice.py", content: FIXED }, { tool: "pr_fix_done", args: DONE }]], { repo });
+
+    const head = git(repo, "rev-parse", BRANCH);
+    expect(git(repo, "rev-parse", `${BRANCH}^`)).toBe(repo.commits[1]);
+    expect(report).toMatchObject({ outcome: "done", pushed: head });
+    expect(results()).toEqual([expect.objectContaining({ kind: "done", head_sha: head, fixed: [{ id: "CR-1", commit: head, note: DONE.fixed[0]!.note }] })]);
+  });
+
+  it("reports nothing when the push errs and the branch cannot be read afterwards", async () => {
+    const repo = prRepo();
+    postReceive(repo, 'mv "$(pwd)" "$(pwd).gone"\nkill -9 $PPID'); // and the repository is gone from where it was
+    const { report, mine } = await runWith([[{ write: "apps/demo_app/demo_app/invoice.py", content: FIXED }, { tool: "pr_fix_done", args: DONE }]], { repo });
+
+    expect(report.outcome).toBe("not_reported");
+    expect(report.reason).toMatch(/^push outcome unknown: the push of [0-9a-f]{12} failed/);
+    expect(mine("pr_result")).toHaveLength(0);
   });
 
   it("still pushes when the sandbox cannot start a site, and says the tests did not run", async () => {

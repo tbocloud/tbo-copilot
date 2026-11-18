@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { AskToolRequest, MessageUsage, ToolPermissionRequest } from "@pi-desktop/shared";
 
@@ -71,17 +71,46 @@ export function isCiPath(path: string): boolean {
   return parts.some((part) => CI_FOLDERS.has(part)) || CI_FILES.has(parts.at(-1) ?? "");
 }
 
+function lexists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Where a write to `target` really lands: the real path of its nearest existing ancestor (links
+ * followed) with the rest of the path after it. Undefined when that ancestor is a dangling link.
+ */
+export function landsAt(target: string): string | undefined {
+  let existing = target;
+  while (!lexists(existing)) existing = dirname(existing);
+  try {
+    return join(realpathSync(existing), relative(existing, target));
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * A pull request's fix (Phase 26): the fix stage's rule, and never a CI file (`.github/`, a
- * pipeline, CodeRabbit's settings): green checks must come from fixing the code, not the checks.
+ * pipeline, CodeRabbit's settings) or git's own: green checks must come from fixing the code,
+ * not the checks. The rule holds for the path as written and for where it really lands, so a
+ * committed link (`meta -> .git`, `ci -> .github`) leads nowhere it protects.
  */
 export function pullRequestEdits(root: string, writableDir: string): PermissionDecider {
   const inside = editsInside(root, writableDir);
+  const realDir = realpathSync(writableDir);
   return (request) => {
     if (inside(request) === "deny") return "deny";
     const args = (request.argsPreview ?? {}) as Record<string, unknown>;
-    const raw = typeof args.path === "string" ? args.path : String(args.file_path);
-    return isCiPath(relative(writableDir, resolve(root, raw))) ? "deny" : "allow-once";
+    const target = resolve(root, typeof args.path === "string" ? args.path : String(args.file_path));
+    if (isCiPath(relative(writableDir, target))) return "deny";
+    const landed = landsAt(target);
+    if (!landed || !within(realDir, landed)) return "deny";
+    return isCiPath(relative(realDir, landed)) ? "deny" : "allow-once";
   };
 }
 
