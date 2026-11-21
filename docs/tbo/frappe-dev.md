@@ -172,8 +172,10 @@ only written in a skill.
 
 The plugin also never writes to a site's data itself. `run_tests`, though, runs the app's tests on the test site, and
 Frappe's tests write records there; `bench` `migrate` applies the app's schema, patches and fixtures to the site it
-names, and `clear_cache` clears its cache. That site is a dev site you choose. The plugin checks that it is a site of the
-bench, has tests on and has the app installed; it cannot tell a dev site from a live one, so list only dev sites.
+names, and `clear_cache` clears its cache. That site is a dev site you choose. The project's test site (the one
+`run_tests` uses, and `migrate` / `clear_cache` when the call names no site) is checked to be a site of the bench with
+tests on and the app installed. A site named for one `migrate` or `clear_cache` is checked only to be a site of the
+bench. The plugin cannot tell a dev site from a live one, so list and name only dev sites.
 
 ## Check it works
 

@@ -92,7 +92,8 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
     prReady: { code: 0, stdout: "", stderr: "" },
   };
   // holdBench: a promise every bench call waits for, to keep a job running
-  const hooks = { beforeSemgrep: null, beforeAuth: null, beforePreCommit: null, holdBench: null };
+  // holdListApps: a promise list-apps waits for, to keep a test site's check pending
+  const hooks = { beforeSemgrep: null, beforeAuth: null, beforePreCommit: null, holdBench: null, holdListApps: null };
   const runFn = async (cmd, args, opts) => {
     calls.push([cmd === uv ? "uv" : path.basename(cmd), ...args]);
     if (cmd === "git") return run(cmd, args, opts);
@@ -106,6 +107,7 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
     }
     if (cmd === "bench" && args[2] === "list-apps") {
       listApps.push(args[1]);
+      if (hooks.holdListApps) await hooks.holdListApps;
       const apps = installed[args[1]] || ["frappe", "my_app"];
       // as bench prints it: name, version, branch
       return { code: 0, stdout: apps.map((a) => `${a.padEnd(12)} 0.0.1    main`).join("\n") + "\n", stderr: "" };
@@ -165,6 +167,14 @@ async function finished(dev, job, repo) {
     await new Promise((r) => setTimeout(r, 10));
   }
   throw new Error(`${job} never finished`);
+}
+
+async function waitUntil(check) {
+  for (let i = 0; i < 200; i += 1) {
+    if (check()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error("never happened");
 }
 
 const neverForced = (calls) => {
@@ -1081,6 +1091,77 @@ test("the bench's default site is checked like a listed one", async (t) => {
   const ok = await w.dev.runDev({ action: "status" });
   assert.equal(ok.test_site, "dev.localhost");
   assert.equal(ok.test_site_from, "the bench's default site");
+});
+
+// --- CodeRabbit on #32 ---
+
+test("a bench job that starts while the test site is checked stops the tests: nothing runs beside a migrate", async (t) => {
+  const w = world(t);
+  await readyBranch(w);
+  let checked;
+  w.hooks.holdListApps = new Promise((r) => {
+    checked = r;
+  });
+  const tests = w.dev.runDev({ action: "run_tests" });
+  await waitUntil(() => w.listApps.length === 1); // the site's check is under way
+  let migrated;
+  w.hooks.holdBench = new Promise((r) => {
+    migrated = r;
+  });
+  const migrate = await w.dev.runDev({ action: "bench", command: "migrate", site: "dev.localhost" });
+  assert.equal(migrate.state, "running");
+  w.hooks.holdListApps = null;
+  checked();
+  await assert.rejects(tests, { code: "BUSY", message: /migrate/ });
+  assert.ok(!w.benchRuns.some((r) => r.args.includes("run-tests")), "no test ran beside the migrate");
+  w.hooks.holdBench = null;
+  migrated();
+  await finished(w.dev, migrate.job);
+});
+
+test("while a project's tests run, asking again answers with that job and its own site; another site waits", async (t) => {
+  const w = world(t);
+  makeSite(w.bench, "second.localhost");
+  await readyBranch(w);
+  let release;
+  w.hooks.holdBench = new Promise((r) => {
+    release = r;
+  });
+  const first = await w.dev.runDev({ action: "run_tests" });
+  assert.equal(first.test_site, "dev.localhost");
+  await assert.rejects(w.dev.runDev({ action: "run_tests", site: "second.localhost" }), {
+    code: "BUSY",
+    message: /still running this project's tests on dev\.localhost; choose second\.localhost when it has finished/,
+  });
+  const again = await w.dev.runDev({ action: "run_tests" });
+  assert.equal(again.job, first.job);
+  assert.equal(again.test_site, "dev.localhost");
+  assert.equal((await w.dev.runDev({ action: "run_tests", site: "dev.localhost" })).job, first.job);
+  // the refused site was not remembered
+  assert.equal((await w.dev.runDev({ action: "status" })).test_site, "dev.localhost");
+  w.hooks.holdBench = null;
+  release();
+  await finished(w.dev, first.job);
+});
+
+test("two projects choosing their test sites at once both keep their choice", async (t) => {
+  const { createSites } = require("../../tbo.frappe-dev/lib/sites");
+  const top = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tbo-sites-")));
+  t.after(() => fs.rmSync(top, { recursive: true, force: true }));
+  const bench = path.join(top, "bench");
+  for (const app of ["frappe", "app_a", "app_b"]) fs.mkdirSync(path.join(bench, "apps", app), { recursive: true });
+  makeSite(bench, "dev.localhost");
+  const dataDir = path.join(top, "data");
+  const runFn = async () => ({ code: 0, stdout: "frappe\napp_a\napp_b\n", stderr: "" });
+  // a data folder that answers a moment later, as an app's IPC does
+  const getDataPath = () => new Promise((r) => setImmediate(() => r(dataDir)));
+  const sites = createSites({ runFn, env: process.env, getDataPath });
+  const listed = ["dev.localhost"];
+  const [a, b] = await Promise.all(["app_a", "app_b"].map((app) => sites.choose({ root: path.join(bench, "apps", app), bench, listed })));
+  assert.equal(a.site, "dev.localhost");
+  assert.equal(b.site, "dev.localhost");
+  const kept = JSON.parse(fs.readFileSync(path.join(dataDir, "test-sites.json"), "utf8"));
+  assert.deepEqual(Object.keys(kept).sort(), [path.join(bench, "apps", "app_a"), path.join(bench, "apps", "app_b")]);
 });
 
 test("a folder inside a larger repository is not taken for a repository", async (t) => {

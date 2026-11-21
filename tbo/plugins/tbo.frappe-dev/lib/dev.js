@@ -301,7 +301,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     const running = [...jobs.values()].find((j) => j.kind === kind && j.repo === root && j.state === "running");
     if (running) return { ...summaryOf(running), note: "already running; ask job_status for it" };
     counter += 1;
-    const job = { id: `${kind}-${counter}`, kind, repo: root, head, bench: more.bench, command: more.command, state: "running", started: new Date().toISOString() };
+    const job = { id: `${kind}-${counter}`, kind, repo: root, head, bench: more.bench, site: more.site, command: more.command, state: "running", started: new Date().toISOString() };
     jobs.set(job.id, job);
     // the history keeps MAX_JOBS; only finished jobs leave it: a running migrate must keep its bench busy
     while (jobs.size > MAX_JOBS) {
@@ -391,11 +391,25 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     if (!modules.length) throw fail("NO_TESTS", "The branch changes no file that has tests beside it: name the test modules, or add tests.");
     checkModules(modules); // refused now, not later in the background
     // tests share the bench's test site, so one test run at a time on a bench, whichever repository asks;
-    // the same repository asking again gets its running job back from startJob
-    const busy = busyOn(bench, ["bench", "run_tests"]);
-    if (busy && !(busy.kind === "run_tests" && busy.repo === root)) throw busyError(busy);
+    // the same repository asking again gets its running job back, on the site it runs on, before any
+    // site is chosen or remembered (CodeRabbit on #32)
+    const running = () => {
+      const busy = busyOn(bench, ["bench", "run_tests"]);
+      if (!busy) return null;
+      if (!(busy.kind === "run_tests" && busy.repo === root)) throw busyError(busy);
+      const asked = String(args.site || "").trim();
+      if (asked && asked !== busy.site) {
+        throw fail("BUSY", `${busy.id} is still running this project's tests on ${busy.site}; choose ${asked} when it has finished (job_status).`);
+      }
+      return { ...summaryOf(busy), note: "already running; ask job_status for it", test_site: busy.site };
+    };
+    const already = running();
+    if (already) return already;
     const chosen = await testSite(root, bench, conf, args.site);
     const site = chosen.site;
+    // choosing can take a while (bench list-apps): a job may have started on the bench meanwhile
+    const meanwhile = running();
+    if (meanwhile) return meanwhile;
     const tests = createTests({ runFn, env, log });
     const key = `${root}@${info.head}`;
     const started = startJob(
@@ -404,7 +418,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       info.head,
       () => tests.runModules({ bench, site, modules, benchCommand: conf.benchCommand }),
       (result) => testRuns.set(key, result),
-      { bench },
+      { bench, site },
     );
     if (started.state === "running" && !started.note) testRuns.delete(key);
     return { ...started, test_site: site, test_site_from: chosen.from, ...(chosen.note ? { test_site_note: chosen.note } : {}) };

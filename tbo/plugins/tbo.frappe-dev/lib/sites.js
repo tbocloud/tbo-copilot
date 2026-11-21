@@ -60,21 +60,23 @@ function appOf(bench, root) {
 }
 
 function createSites({ runFn, env, getDataPath, log = () => {} }) {
-  let kept = {}; // repository -> { bench, site, from, basis }, as last read from the data folder
+  // One change to the file at a time: each read, change and write runs after the one before it ends,
+  // so two projects choosing at once never write over each other's entry (CodeRabbit on #32).
+  let writes = Promise.resolve();
 
   async function file() {
     return path.join(await getDataPath(), FILE);
   }
 
-  // Read every time: a small file, and the one place the choice lives.
+  // Read every time: a small file, and the one place the choice lives. Repository -> { bench, site,
+  // from, basis }.
   async function load() {
     const saved = readJson(await file());
-    kept = saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
-    return kept;
+    return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
   }
 
   // Written whole, through a new file renamed over the old one, so a crash never leaves half of it.
-  async function save() {
+  async function save(kept) {
     const target = await file();
     try {
       fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -84,6 +86,17 @@ function createSites({ runFn, env, getDataPath, log = () => {} }) {
     } catch (e) {
       log(`tbo_dev: could not keep the test site choice (${e.message})`);
     }
+  }
+
+  // `change` gets the file's entries as they are now and changes them; then they are written.
+  function update(change) {
+    const step = writes.then(async () => {
+      const kept = await load();
+      change(kept);
+      await save(kept);
+    });
+    writes = step.catch(() => {});
+    return step;
   }
 
   // The apps installed on a site, or why they could not be listed.
@@ -116,9 +129,10 @@ function createSites({ runFn, env, getDataPath, log = () => {} }) {
     return "";
   }
 
-  async function remember(root, entry) {
-    (await load())[root] = entry;
-    await save();
+  function remember(root, entry) {
+    return update((kept) => {
+      kept[root] = entry;
+    });
   }
 
   // { site, from, remembered, note }: the test site for the repository `root` on `bench`.
@@ -160,8 +174,9 @@ function createSites({ runFn, env, getDataPath, log = () => {} }) {
       tried.push(`${site}: ${why}`);
     }
     if (before && before.bench === bench) {
-      delete kept[key];
-      await save();
+      await update((kept) => {
+        delete kept[key];
+      });
     }
     const looked = tried.length ? `:\n- ${tried.join("\n- ")}` : ': "Test site" is empty and the bench has no default site.';
     throw fail(
