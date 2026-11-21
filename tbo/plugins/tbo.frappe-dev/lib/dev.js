@@ -340,6 +340,22 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
 
   const busyError = (job) => fail("BUSY", `${job.id} (${job.command || job.kind}) is still running on this bench; wait for it (job_status).`);
 
+  // One run_tests at a time chooses its site and starts on a bench: a second call waits for the first to
+  // start (or fail), then sees its job before it chooses or remembers any site (CodeRabbit on #32).
+  const benchTurns = new Map(); // bench -> the run_tests start under way there
+  function inTurn(bench, work) {
+    const turn = (benchTurns.get(bench) || Promise.resolve()).then(work);
+    const settled = turn.then(
+      () => {},
+      () => {},
+    );
+    benchTurns.set(bench, settled);
+    settled.then(() => {
+      if (benchTurns.get(bench) === settled) benchTurns.delete(bench);
+    });
+    return turn;
+  }
+
   // The committed state of a task branch: lint and test results belong to one commit.
   async function committedBranch(root) {
     const info = await git.info(root);
@@ -390,38 +406,40 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     if (!modules.length) modules = testModules(root, await git.changedFiles(root, await git.mergeBase(root, base, info.remote, info.head), info.head));
     if (!modules.length) throw fail("NO_TESTS", "The branch changes no file that has tests beside it: name the test modules, or add tests.");
     checkModules(modules); // refused now, not later in the background
-    // tests share the bench's test site, so one test run at a time on a bench, whichever repository asks;
-    // the same repository asking again gets its running job back, on the site it runs on, before any
-    // site is chosen or remembered (CodeRabbit on #32)
-    const running = () => {
-      const busy = busyOn(bench, ["bench", "run_tests"]);
-      if (!busy) return null;
-      if (!(busy.kind === "run_tests" && busy.repo === root)) throw busyError(busy);
-      const asked = String(args.site || "").trim();
-      if (asked && asked !== busy.site) {
-        throw fail("BUSY", `${busy.id} is still running this project's tests on ${busy.site}; choose ${asked} when it has finished (job_status).`);
-      }
-      return { ...summaryOf(busy), note: "already running; ask job_status for it", test_site: busy.site };
-    };
-    const already = running();
-    if (already) return already;
-    const chosen = await testSite(root, bench, conf, args.site);
-    const site = chosen.site;
-    // choosing can take a while (bench list-apps): a job may have started on the bench meanwhile
-    const meanwhile = running();
-    if (meanwhile) return meanwhile;
-    const tests = createTests({ runFn, env, log });
-    const key = `${root}@${info.head}`;
-    const started = startJob(
-      "run_tests",
-      root,
-      info.head,
-      () => tests.runModules({ bench, site, modules, benchCommand: conf.benchCommand }),
-      (result) => testRuns.set(key, result),
-      { bench, site },
-    );
-    if (started.state === "running" && !started.note) testRuns.delete(key);
-    return { ...started, test_site: site, test_site_from: chosen.from, ...(chosen.note ? { test_site_note: chosen.note } : {}) };
+    return inTurn(bench, async () => {
+      // tests share the bench's test site, so one test run at a time on a bench, whichever repository asks;
+      // the same repository asking again gets its running job back, on the site it runs on, before any
+      // site is chosen or remembered (CodeRabbit on #32)
+      const running = () => {
+        const busy = busyOn(bench, ["bench", "run_tests"]);
+        if (!busy) return null;
+        if (!(busy.kind === "run_tests" && busy.repo === root)) throw busyError(busy);
+        const asked = String(args.site || "").trim();
+        if (asked && asked !== busy.site) {
+          throw fail("BUSY", `${busy.id} is still running this project's tests on ${busy.site}; choose ${asked} when it has finished (job_status).`);
+        }
+        return { ...summaryOf(busy), note: "already running; ask job_status for it", test_site: busy.site };
+      };
+      const already = running();
+      if (already) return already;
+      const chosen = await testSite(root, bench, conf, args.site);
+      const site = chosen.site;
+      // choosing can take a while (bench list-apps): a job may have started on the bench meanwhile
+      const meanwhile = running();
+      if (meanwhile) return meanwhile;
+      const tests = createTests({ runFn, env, log });
+      const key = `${root}@${info.head}`;
+      const started = startJob(
+        "run_tests",
+        root,
+        info.head,
+        () => tests.runModules({ bench, site, modules, benchCommand: conf.benchCommand }),
+        (result) => testRuns.set(key, result),
+        { bench, site },
+      );
+      if (started.state === "running" && !started.note) testRuns.delete(key);
+      return { ...started, test_site: site, test_site_from: chosen.from, ...(chosen.note ? { test_site_note: chosen.note } : {}) };
+    });
   }
 
   // migrate, build or clear_cache on the bench run_tests uses (lib/bench.js). It runs on the working tree

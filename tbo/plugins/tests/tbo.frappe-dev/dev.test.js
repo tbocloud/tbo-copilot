@@ -92,8 +92,9 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
     prReady: { code: 0, stdout: "", stderr: "" },
   };
   // holdBench: a promise every bench call waits for, to keep a job running
-  // holdListApps: a promise list-apps waits for, to keep a test site's check pending
-  const hooks = { beforeSemgrep: null, beforeAuth: null, beforePreCommit: null, holdBench: null, holdListApps: null };
+  // holdListApps: a promise list-apps waits for, to keep a test site's check pending; holdListAppsFor:
+  // the same for one site only ({ site: promise })
+  const hooks = { beforeSemgrep: null, beforeAuth: null, beforePreCommit: null, holdBench: null, holdListApps: null, holdListAppsFor: {} };
   const runFn = async (cmd, args, opts) => {
     calls.push([cmd === uv ? "uv" : path.basename(cmd), ...args]);
     if (cmd === "git") return run(cmd, args, opts);
@@ -108,6 +109,7 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
     if (cmd === "bench" && args[2] === "list-apps") {
       listApps.push(args[1]);
       if (hooks.holdListApps) await hooks.holdListApps;
+      if (hooks.holdListAppsFor[args[1]]) await hooks.holdListAppsFor[args[1]];
       const apps = installed[args[1]] || ["frappe", "my_app"];
       // as bench prints it: name, version, branch
       return { code: 0, stdout: apps.map((a) => `${a.padEnd(12)} 0.0.1    main`).join("\n") + "\n", stderr: "" };
@@ -1142,6 +1144,38 @@ test("while a project's tests run, asking again answers with that job and its ow
   w.hooks.holdBench = null;
   release();
   await finished(w.dev, first.job);
+});
+
+test("two run_tests at once for one project: the second waits its turn, is refused, and remembers nothing", async (t) => {
+  const w = world(t);
+  makeSite(w.bench, "second.localhost");
+  await readyBranch(w);
+  let checked;
+  w.hooks.holdListAppsFor["dev.localhost"] = new Promise((r) => {
+    checked = r;
+  });
+  let release;
+  w.hooks.holdBench = new Promise((r) => {
+    release = r;
+  });
+  const first = w.dev.runDev({ action: "run_tests" }); // its site's check is held
+  await waitUntil(() => w.listApps.includes("dev.localhost"));
+  const second = w.dev.runDev({ action: "run_tests", site: "second.localhost" });
+  // give the second call time to do its git work: without a turn per bench it reaches its own site check
+  // (and keeps its site) while the first is still checking; with one, it waits for the first to start
+  for (let i = 0; i < 200 && !w.listApps.includes("second.localhost"); i += 1) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(!w.listApps.includes("second.localhost"), "the second call waits for the first to start");
+  delete w.hooks.holdListAppsFor["dev.localhost"];
+  checked();
+  const started = await first;
+  assert.equal(started.test_site, "dev.localhost");
+  await assert.rejects(second, { code: "BUSY", message: /on dev\.localhost; choose second\.localhost when it has finished/ });
+  assert.ok(!w.listApps.includes("second.localhost"), "the refused site was never checked");
+  assert.deepEqual(testRunSite(w).map(([site]) => site), ["dev.localhost"]);
+  assert.equal((await w.dev.runDev({ action: "status" })).test_site, "dev.localhost", "nothing was remembered for the refused call");
+  w.hooks.holdBench = null;
+  release();
+  await finished(w.dev, started.job);
 });
 
 test("two projects choosing their test sites at once both keep their choice", async (t) => {
