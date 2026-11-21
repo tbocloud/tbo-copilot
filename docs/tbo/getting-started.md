@@ -48,7 +48,9 @@ and the panel opens by itself at the next start: sign in again there (the **TBO 
 Sign in**).
 
 **Another TBO Support site** (the demo hub while testing): Settings → Plugins → **TBO Support** → **TBO Support
-address**, then **Save settings**. The panel opens for the new site at once when this computer is not signed in there.
+address**, then **Save settings**. The panel opens for the new site at once when this computer is not signed in there
+(not for a local test site, such as `localhost`, which signs in with an API key: open the panel with the **TBO
+Support** button).
 
 **Signing out:** command palette → **TBO Support: Sign out**. A System Manager can also end a computer's sign-in in TBO Support (**TBO Desktop Sign-in**).
 

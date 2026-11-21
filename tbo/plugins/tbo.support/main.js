@@ -763,6 +763,8 @@ async function onPanelInvoke(channel, payload) {
 // (`clearFirst`): it is cleared, and the renewal sets the current one. A
 // renewal that fails is tried again at the next check, panel read or tool call.
 async function syncSite({ openPanel = false, clearFirst = false } = {}) {
+  // a sync overtaken by a later site change (or sign-in) opens no panel for a site no longer chosen
+  const generation = epoch;
   if (clearFirst) await exclusive(clearAi);
   let site;
   try {
@@ -783,7 +785,7 @@ async function syncSite({ openPanel = false, clearFirst = false } = {}) {
   }
   await clearAiUnlessSignedIn(site, { always: true });
   const credentials = await store.load(keyOf(site));
-  if (openPanel && !credentials && !isLoopback(hostOf(site))) {
+  if (openPanel && generation === epoch && !credentials && !isLoopback(hostOf(site))) {
     await pi.ui.openPanel({ title: "TBO Support" }).catch(() => {});
   }
 }

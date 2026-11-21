@@ -188,7 +188,9 @@ their role allows.
 1. The **TBO Support** button in the app's sidebar footer (testing fixes 9; or **TBO Support: Sign in** in the command
    palette) opens the panel; the person presses **Sign in with Microsoft**. The panel also opens by itself at start
    when nobody is signed in, and when the **TBO Support address** changes to a site this computer is not signed in
-   to. The button shows while this plugin is on; it runs the plugin's own `tbo-support.sign-in` command
+   to (a later change overtakes an earlier one, so the panel opens only for the address chosen last). Neither opens
+   it for a local test site (loopback, `*.localhost`), which signs in with an API key from the panel's key form. The
+   button shows while this plugin is on; it runs the plugin's own `tbo-support.sign-in` command
    (`apps/desktop/src/components/TboSupportButton.tsx`).
 2. The plugin asks TBO Support for a code (`tbo_desktop.api.start_sign_in`, sending the computer's name and
    system) and opens the browser at TBO Support's Allow page. It opens only a page on the same site.
