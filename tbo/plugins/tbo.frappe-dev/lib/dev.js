@@ -344,7 +344,9 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
   // start (or fail), then sees its job before it chooses or remembers any site (CodeRabbit on #32).
   const benchTurns = new Map(); // bench -> the run_tests start under way there
   function inTurn(bench, work) {
-    const turn = (benchTurns.get(bench) || Promise.resolve()).then(work);
+    const before = benchTurns.get(bench);
+    if (before) log(`tbo_dev: run_tests waits for the run_tests starting on ${bench}`);
+    const turn = (before || Promise.resolve()).then(work);
     const settled = turn.then(
       () => {},
       () => {},

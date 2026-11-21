@@ -80,6 +80,7 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
   const calls = [];
   const bodies = [];
   const benchRuns = []; // every bench call but list-apps: its arguments, folder and time limit
+  const logs = []; // what the plugin logged
   const listApps = []; // the sites whose apps were listed (bench --site <site> list-apps)
   const installed = {}; // site -> its apps, for list-apps; default frappe and my_app
   const answers = {
@@ -144,6 +145,7 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
       getWorkspace: async () => ({ path: workspace === "bench" ? bench : repo, name: "my_app" }),
       runFn,
       env,
+      log: (message) => logs.push(message),
     });
   const dev = makeDev();
   const commit = (rel, text, message) => {
@@ -152,7 +154,7 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
     git(repo, "commit", "-q", "-m", message);
     return git(repo, "rev-parse", "HEAD");
   };
-  return { dev, makeDev, repo, origin, bench, top, git, write, commit, calls, bodies, benchRuns, listApps, installed, answers, hooks, env, dataDir };
+  return { dev, makeDev, repo, origin, bench, top, git, write, commit, calls, bodies, benchRuns, listApps, installed, logs, answers, hooks, env, dataDir };
 }
 
 // A site of the bench: its folder with its site_config.json, tests on unless `tests` is false.
@@ -1161,9 +1163,9 @@ test("two run_tests at once for one project: the second waits its turn, is refus
   const first = w.dev.runDev({ action: "run_tests" }); // its site's check is held
   await waitUntil(() => w.listApps.includes("dev.localhost"));
   const second = w.dev.runDev({ action: "run_tests", site: "second.localhost" });
-  // give the second call time to do its git work: without a turn per bench it reaches its own site check
-  // (and keeps its site) while the first is still checking; with one, it waits for the first to start
-  for (let i = 0; i < 200 && !w.listApps.includes("second.localhost"); i += 1) await new Promise((r) => setTimeout(r, 10));
+  // the second call has reached the bench while the first is still checking its site: it waits its turn
+  // (without a turn per bench it would check and keep its own site now, and never log this)
+  await waitUntil(() => w.logs.some((m) => /run_tests waits for the run_tests starting on /.test(m)));
   assert.ok(!w.listApps.includes("second.localhost"), "the second call waits for the first to start");
   delete w.hooks.holdListAppsFor["dev.localhost"];
   checked();
