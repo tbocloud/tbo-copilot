@@ -158,6 +158,8 @@ export const ko = {
     backToScheduledAction: "예약됨으로 돌아가기",
     backToScheduledTask: "예약됨으로 돌아가기 · {{title}}",
     toggleWorkPanel: "사이드 패널 전환",
+    tboSupport: "TBO Support: 로그인, 로그아웃, 프로젝트",
+    tboSupportFailed: "TBO Support를 열 수 없습니다: {{reason}}",
     sessions: "세션",
     collapseSidebar: "사이드바 접기",
     expandSidebar: "사이드바 펼치기",

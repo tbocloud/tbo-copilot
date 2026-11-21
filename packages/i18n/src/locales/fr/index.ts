@@ -149,6 +149,8 @@ export const fr = {
     "backToScheduledAction": "Revenir aux tâches planifiées",
     "backToScheduledTask": "Revenir aux tâches planifiées · {{title}}",
     "toggleWorkPanel": "Basculer le panneau latéral",
+    "tboSupport": "TBO Support : connexion, déconnexion, projets",
+    "tboSupportFailed": "Impossible d’ouvrir TBO Support : {{reason}}",
     "sessions": "Sessions",
     "collapseSidebar": "Réduire la barre latérale",
     "expandSidebar": "Développer la barre latérale",

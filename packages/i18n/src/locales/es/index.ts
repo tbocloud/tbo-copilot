@@ -149,6 +149,8 @@ export const es = {
     "backToScheduledAction": "Volver a lo programado",
     "backToScheduledTask": "Volver a lo programado · {{title}}",
     "toggleWorkPanel": "Alternar panel lateral",
+    "tboSupport": "TBO Support: iniciar sesión, cerrar sesión, proyectos",
+    "tboSupportFailed": "No se pudo abrir TBO Support: {{reason}}",
     "sessions": "Sesiones",
     "collapseSidebar": "Contraer barra lateral",
     "expandSidebar": "Expandir barra lateral",

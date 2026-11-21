@@ -156,6 +156,8 @@ export const en = {
     backToScheduledAction: "Back to Scheduled",
     backToScheduledTask: "Back to Scheduled · {{title}}",
     toggleWorkPanel: "Toggle side panel",
+    tboSupport: "TBO Support: sign in, sign out, projects",
+    tboSupportFailed: "Could not open TBO Support: {{reason}}",
     sessions: "Sessions",
     collapseSidebar: "Collapse sidebar",
     expandSidebar: "Expand sidebar",

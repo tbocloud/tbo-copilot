@@ -62,6 +62,7 @@ import {
 } from "../lib/sidebar-resize";
 import { BrandLogo } from "./BrandLogo";
 import { NotificationCenter } from "./NotificationCenter";
+import { TboSupportButton } from "./TboSupportButton";
 import { ProjectEditDialog } from "./ProjectEditDialog";
 import { useArmedDelete } from "../hooks/use-armed-delete";
 import { ProjectDeleteDialog } from "./ProjectDeleteDialog";
@@ -2552,6 +2553,7 @@ export function Sidebar({
               <IconClock size={14} aria-hidden />
             </TooltipButton>
             <NotificationCenter onBeforeOpen={() => closeMenus(false)} />
+            <TboSupportButton onBeforeOpen={() => closeMenus(false)} />
           </div>
 
           <TooltipButton

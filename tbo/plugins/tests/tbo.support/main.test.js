@@ -18,7 +18,8 @@ const saved = new Map();
 const sessions = new Map();
 const storeCalls = [];
 // Slow or failing store calls, for the tests of overlapping steps.
-const storeHooks = { saveSessionDelayMs: 0, onSaveSession: null, removeSessionFailures: 0, loadSessionFailures: 0 };
+// holdLoad: { host, reached, until } keeps the first read of that host's saved key waiting, once
+const storeHooks = { saveSessionDelayMs: 0, onSaveSession: null, removeSessionFailures: 0, loadSessionFailures: 0, holdLoad: null };
 const credentials = require("../../tbo.support/lib/credentials");
 credentials.createStore = () => ({
   async save(host, creds) {
@@ -26,6 +27,13 @@ credentials.createStore = () => ({
     saved.set(host, creds);
   },
   async load(host) {
+    const hold = storeHooks.holdLoad;
+    if (hold && hold.host === host && !hold.entered) {
+      hold.entered = true;
+      hold.reached();
+      await hold.until;
+      hold.done = true;
+    }
     return saved.get(host) || null;
   },
   async remove(host) {
@@ -891,6 +899,83 @@ test("changing another setting keeps a waiting sign-in and a task link; changing
     await plugin.onPanelInvoke("tbo-support.cancel");
     settings = { siteUrl: SITE };
     await settingsChanged();
+  }
+});
+
+// --- testing fixes 9: a new address takes effect at once ---
+
+test("a new TBO Support address opens the sign-in panel at once when nobody is signed in there", async () => {
+  await plugin.onLoad();
+  settings = { siteUrl: SITE };
+  await settingsChanged();
+  await signedOut();
+  const panels = [];
+  const openPanel = pi.ui.openPanel;
+  pi.ui.openPanel = async (p) => panels.push(p);
+  try {
+    // signed in to the first site, not to the demo hub
+    hub.finishAnswers = ["approved"];
+    await plugin.onPanelInvoke("tbo-support.microsoft");
+    await waitFor(async () => (await plugin.onPanelInvoke("tbo-support.state")).signedIn);
+    panels.length = 0;
+    settings = { siteUrl: "https://demo-tbo.tbocloud.in" };
+    await settingsChanged();
+    assert.deepEqual(panels, [{ title: "TBO Support" }], "the panel opens for the new site, with no restart");
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).site, "https://demo-tbo.tbocloud.in");
+    // another setting on the same site opens nothing
+    settings = { siteUrl: "https://demo-tbo.tbocloud.in", awsRegion: "ap-south-1" };
+    await settingsChanged();
+    assert.equal(panels.length, 1);
+    // back to a site this computer is signed in to: nothing to sign in to, nothing opens
+    settings = { siteUrl: SITE };
+    await settingsChanged();
+    assert.equal(panels.length, 1);
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).signedIn, true);
+  } finally {
+    pi.ui.openPanel = openPanel;
+    hub.finishAnswers = [];
+    settings = { siteUrl: SITE };
+    await signedOut();
+  }
+});
+
+test("a site change overtaken by another opens no panel for the site no longer chosen", async () => {
+  await plugin.onLoad();
+  settings = { siteUrl: SITE };
+  await settingsChanged();
+  await signedOut();
+  const panels = [];
+  const openPanel = pi.ui.openPanel;
+  pi.ui.openPanel = async (p) => panels.push(p);
+  try {
+    hub.finishAnswers = ["approved"];
+    await plugin.onPanelInvoke("tbo-support.microsoft");
+    await waitFor(async () => (await plugin.onPanelInvoke("tbo-support.state")).signedIn);
+    panels.length = 0;
+    // the demo hub's sync starts and waits while it reads that site's saved key
+    let reached;
+    const atLoad = new Promise((r) => {
+      reached = r;
+    });
+    let release;
+    storeHooks.holdLoad = { host: "demo-tbo.tbocloud.in", reached, until: new Promise((r) => (release = r)) };
+    settings = { siteUrl: "https://demo-tbo.tbocloud.in" };
+    eventHandlers.get("plugin:settingsChanged")();
+    await atLoad;
+    // back to the signed-in site before that sync ends
+    settings = { siteUrl: SITE };
+    await settingsChanged();
+    release();
+    await waitFor(async () => storeHooks.holdLoad.done);
+    await new Promise((r) => setImmediate(r)); // the overtaken sync's last step has run
+    assert.deepEqual(panels, [], "no panel for a site that is no longer chosen");
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).signedIn, true);
+  } finally {
+    storeHooks.holdLoad = null;
+    pi.ui.openPanel = openPanel;
+    hub.finishAnswers = [];
+    settings = { siteUrl: SITE };
+    await signedOut();
   }
 });
 

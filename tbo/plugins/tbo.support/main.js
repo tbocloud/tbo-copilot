@@ -763,6 +763,8 @@ async function onPanelInvoke(channel, payload) {
 // (`clearFirst`): it is cleared, and the renewal sets the current one. A
 // renewal that fails is tried again at the next check, panel read or tool call.
 async function syncSite({ openPanel = false, clearFirst = false } = {}) {
+  // a sync overtaken by a later site change (or sign-in) opens no panel for a site no longer chosen
+  const generation = epoch;
   if (clearFirst) await exclusive(clearAi);
   let site;
   try {
@@ -783,7 +785,7 @@ async function syncSite({ openPanel = false, clearFirst = false } = {}) {
   }
   await clearAiUnlessSignedIn(site, { always: true });
   const credentials = await store.load(keyOf(site));
-  if (openPanel && !credentials && !isLoopback(hostOf(site))) {
+  if (openPanel && generation === epoch && !credentials && !isLoopback(hostOf(site))) {
     await pi.ui.openPanel({ title: "TBO Support" }).catch(() => {});
   }
 }
@@ -817,6 +819,8 @@ async function settingsNow() {
 // Only a change of the site is a site change (Phase 23): work still running for the old one drops
 // its answer (it cannot put that site's key back), a waiting sign-in and a task link end, and the
 // new site is synced. Any other setting (the AWS ones) leaves the sign-in and an opening task alone.
+// A new site nobody is signed in to here opens the panel at once, as at start (testing fixes 9):
+// otherwise its sign-in showed only after the app was started again.
 async function onSettingsChanged() {
   const now = await settingsNow();
   const before = knownSettings;
@@ -829,7 +833,7 @@ async function onSettingsChanged() {
   epoch += 1;
   if (pending) pending.cancelled = true;
   pending = null;
-  syncSite().catch(() => {});
+  syncSite({ openPanel: true }).catch(() => {});
 }
 
 function startup() {
