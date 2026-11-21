@@ -817,6 +817,8 @@ async function settingsNow() {
 // Only a change of the site is a site change (Phase 23): work still running for the old one drops
 // its answer (it cannot put that site's key back), a waiting sign-in and a task link end, and the
 // new site is synced. Any other setting (the AWS ones) leaves the sign-in and an opening task alone.
+// A new site nobody is signed in to here opens the panel at once, as at start (testing fixes 9):
+// otherwise its sign-in showed only after the app was started again.
 async function onSettingsChanged() {
   const now = await settingsNow();
   const before = knownSettings;
@@ -829,7 +831,7 @@ async function onSettingsChanged() {
   epoch += 1;
   if (pending) pending.cancelled = true;
   pending = null;
-  syncSite().catch(() => {});
+  syncSite({ openPanel: true }).catch(() => {});
 }
 
 function startup() {

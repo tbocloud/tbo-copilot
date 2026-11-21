@@ -151,6 +151,8 @@ export const zhCN = {
     backToScheduledAction: "返回定时任务",
     backToScheduledTask: "返回定时任务 · {{title}}",
     toggleWorkPanel: "切换侧边面板",
+    tboSupport: "TBO Support：登录、退出、项目",
+    tboSupportFailed: "无法打开 TBO Support：{{reason}}",
     sessions: "会话",
     collapseSidebar: "收起侧边栏",
     expandSidebar: "展开侧边栏",

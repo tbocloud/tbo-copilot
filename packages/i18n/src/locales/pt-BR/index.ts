@@ -148,6 +148,8 @@ export const ptBR = {
     backToScheduledAction: "Voltar para tarefas agendadas",
     backToScheduledTask: "Voltar para tarefas agendadas · {{title}}",
     toggleWorkPanel: "Alternar painel lateral",
+    tboSupport: "TBO Support: entrar, sair, projetos",
+    tboSupportFailed: "Não foi possível abrir o TBO Support: {{reason}}",
     sessions: "Sessões",
     collapseSidebar: "Recolher barra lateral",
     expandSidebar: "Expandir barra lateral",

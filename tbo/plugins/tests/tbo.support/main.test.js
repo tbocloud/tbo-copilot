@@ -894,6 +894,43 @@ test("changing another setting keeps a waiting sign-in and a task link; changing
   }
 });
 
+// --- testing fixes 9: a new address takes effect at once ---
+
+test("a new TBO Support address opens the sign-in panel at once when nobody is signed in there", async () => {
+  await plugin.onLoad();
+  settings = { siteUrl: SITE };
+  await settingsChanged();
+  await signedOut();
+  const panels = [];
+  const openPanel = pi.ui.openPanel;
+  pi.ui.openPanel = async (p) => panels.push(p);
+  try {
+    // signed in to the first site, not to the demo hub
+    hub.finishAnswers = ["approved"];
+    await plugin.onPanelInvoke("tbo-support.microsoft");
+    await waitFor(async () => (await plugin.onPanelInvoke("tbo-support.state")).signedIn);
+    panels.length = 0;
+    settings = { siteUrl: "https://demo-tbo.tbocloud.in" };
+    await settingsChanged();
+    assert.deepEqual(panels, [{ title: "TBO Support" }], "the panel opens for the new site, with no restart");
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).site, "https://demo-tbo.tbocloud.in");
+    // another setting on the same site opens nothing
+    settings = { siteUrl: "https://demo-tbo.tbocloud.in", awsRegion: "ap-south-1" };
+    await settingsChanged();
+    assert.equal(panels.length, 1);
+    // back to a site this computer is signed in to: nothing to sign in to, nothing opens
+    settings = { siteUrl: SITE };
+    await settingsChanged();
+    assert.equal(panels.length, 1);
+    assert.equal((await plugin.onPanelInvoke("tbo-support.state")).signedIn, true);
+  } finally {
+    pi.ui.openPanel = openPanel;
+    hub.finishAnswers = [];
+    settings = { siteUrl: SITE };
+    await signedOut();
+  }
+});
+
 // --- Phase 23, C9: plain reasons in the panel ---
 
 test("the reason TBO Support ended a sign-in stays in the panel until the next sign-in", async () => {

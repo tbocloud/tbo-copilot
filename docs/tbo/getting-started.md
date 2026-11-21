@@ -27,7 +27,9 @@ It always acts **as you**, with your own TBO Support permissions. It asks before
 
 ## 2. Sign in
 
-1. When the app opens, it asks you to sign in to TBO Support. Press **Sign in with Microsoft**.
+1. When the app opens, it asks you to sign in to TBO Support. Press **Sign in with Microsoft**. The TBO Support panel
+   is always one click away: the **TBO Support** button (a person) in the sidebar's bottom row, beside Settings. It
+   shows who is signed in, with **Sign out**.
 2. Your browser opens TBO Support. Sign in with your Microsoft work account if asked.
 3. Check that the code in the browser matches the one in the app, and press **Allow**.
 
@@ -42,7 +44,11 @@ The app is then ready, with nothing to type:
 - TBO Support is connected as you.
 
 **Signing in again:** the sign-in lasts 30 days. If it ends, a notice says why, the TBO Support panel keeps the reason,
-and the panel opens by itself at the next start: sign in again there (**TBO Support: Sign in**).
+and the panel opens by itself at the next start: sign in again there (the **TBO Support** button, or **TBO Support:
+Sign in**).
+
+**Another TBO Support site** (the demo hub while testing): Settings → Plugins → **TBO Support** → **TBO Support
+address**, then **Save settings**. The panel opens for the new site at once when this computer is not signed in there.
 
 **Signing out:** command palette → **TBO Support: Sign out**. A System Manager can also end a computer's sign-in in TBO Support (**TBO Desktop Sign-in**).
 
