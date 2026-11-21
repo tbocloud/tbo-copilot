@@ -1,7 +1,8 @@
 # Frappe development from a task (`tbo.frappe-dev`)
 
 **Status:** built for TBO Copilot Phase 20 (TASK-2026-00021); Phase 22 (C1, plugin **0.2.0**) added eight skills for
-the rest of Frappe work and the `bench` action. A bundled plugin, `tbo/plugins/tbo.frappe-dev/`, with two agent tools
+the rest of Frappe work and the `bench` action; testing fixes 8 (plugin **0.3.0**) chooses the test site per project
+(see "Several projects"). A bundled plugin, `tbo/plugins/tbo.frappe-dev/`, with two agent tools
 and twelve skills. The task itself is read through the `tbo.support` plugin's `tbo_support` tool
 (`my_tasks`, `get_task`), and its timer started with `tbo_support_change` `start_task`, which the app asks the person
 about first; all three come with TBO Support plugin **0.4.0**. With an earlier TBO Support plugin the start-task skill
@@ -47,8 +48,8 @@ code and tests      ──► conventional commits
    `bench --site <dev site> set-config allow_tests true`. Work in the app's folder in the bench (`<bench>/apps/<app>`),
    or open the bench and pass `repo`.
 4. **Plugin settings** (Settings → Plugins → TBO Frappe Dev): **Frappe bench folder** (empty when the repository is in
-   `<bench>/apps/`), **Test site** (empty: the bench's current site, which the plugin uses without checking what it is: make it a dev
-   site, never a live one), **Reviewers** (GitHub logins,
+   `<bench>/apps/`; several, separated by commas, when it is not), **Test site** (local dev sites, separated by commas,
+   never a live one; empty: the bench's default site; see "Several projects"), **Reviewers** (GitHub logins,
    optional), **bench command** and **uv location** if they are not on your PATH.
 5. **TBO Support sign-in** in the `tbo.support` plugin, on the site that holds your tasks.
 
@@ -61,6 +62,31 @@ code and tests      ──► conventional commits
    commits, and runs the tests and the checks until they pass.
 2. Then `/tbo.frappe-dev/open-pr`. The app asks you to confirm the push. Copilot answers with the PR's link; within
    a minute the task shows **Pending Review** and the PR chip in TBO Support.
+
+### Several projects
+
+One set of settings serves every project on the computer, so the bench and the test site are chosen for each
+repository:
+
+- **The bench:** the first bench of **Frappe bench folder** that holds the repository in its `apps/` (as a folder or a
+  link), else the bench around it (`<bench>/apps/<app>`). A bench that does not hold this checkout is never used.
+- **The test site:** (1) the site chosen for this repository before; else (2) the first site of **Test site** that is
+  on the project's bench, has `allow_tests` on (in its `site_config.json`, or the bench's `common_site_config.json`)
+  and has the project's app installed (`bench --site <site> list-apps`, which only reads); else (3) the bench's default
+  site (`bench use <site>`), checked the same way. Sites of other benches in the list are skipped without a bench call.
+- **Remembered:** the choice is kept per repository in the plugin's data folder (`test-sites.json`), so the check runs
+  once. A choice made from the list or the default is made again when **Test site** or the bench's default changes, or
+  when the site is gone (`status` then says so).
+- **Choosing for a project:** ask for it ("run this project's tests on erp.localhost"): `run_tests` or `status` with
+  `site` checks that site the same way and remembers it for the repository; name another to change it. `bench`
+  `migrate` and `clear_cache` run on the project's test site unless the call names a site, which counts for that call
+  only.
+- **When none fits,** `status` and `run_tests` list each site looked at and why not (not on this bench, tests off, the
+  app not installed) with the command that fixes it.
+
+For example, one developer with `alpha_trading` on `~/frappe-bench` and `helpdesk` on `~/frappe-bench-v16` sets Test
+site to `demo-alpha.localhost, hub16.localhost`: each project gets the site on its own bench. Two apps on one bench
+either share a dev site that has both installed, or each gets the listed site that has it.
 
 The other skills are loaded when the work needs them, or picked from the composer's `/` list:
 
@@ -83,11 +109,11 @@ The skills' Frappe facts were checked against Frappe 16.56.0.
 
 | Tool and action | What it does |
 |---|---|
-| `tbo_dev status` | The repository, its GitHub name, branch and task, its base, uncommitted files; `gh` and its login, `uv`, the bench and the test site |
+| `tbo_dev status` | The repository, its GitHub name, branch and task, its base, uncommitted files; `gh` and its login, `uv`, the bench, and the test site with where it came from (`test_site_from`) or why none fits (`bench_problem`). `site`: choose this project's test site (checked, then remembered) |
 | `tbo_dev start_work` | `task`, `subject` (`get_task`'s `branch_subject`), `kind` (`feature` or `fix`), `base`: fetches the base, then creates `feature/TASK-…-short-name` from `<remote>/<base>` (no upstream until the push), or switches to the task's existing branch, local or on the remote. The remote is `origin`, else `upstream` (the name `bench get-app` gives it), else the only one. Refuses a dirty tree; never stashes. The base is remembered in the branch's git config |
 | `tbo_dev check` | The linters CI runs, on the committed branch: see "The checks" |
-| `tbo_dev run_tests` | The test modules the branch touched (a changed test file; `test_<name>.py` beside a changed file; a DocType's own test, also for a change to its JSON; `<app>/tests/test_<name>.py`) or the ones named in `modules`, at most 20, one `bench --site <site> run-tests --module …` each, on the bench that holds this checkout in its `apps/`. A module passes only when its tests ran to the end with `OK` (Frappe 15 can exit 0 with failures, or with testing off). Never the whole suite: CI runs that |
-| `tbo_dev bench` | On the same bench as `run_tests`, in the background: `command` `migrate` (`bench --site <site> migrate`; the test site, or `site`, which must be a site of the bench), `build` (`bench build`, or `bench build --app <app>` with `app`), or `clear_cache` (`bench --site <site> clear-cache`). Nothing else: no console, drop-site, reinstall, restore, and no option such as `--force`; a site or app is checked against the bench's folders and never read as an option. It passes when bench exits 0 within its time (20 minutes, 5 for clear_cache) with no Python traceback. It runs on the working tree as it is, so its result belongs to no commit. One `bench` job at a time on a bench, and never while `run_tests` runs there (or the reverse) |
+| `tbo_dev run_tests` | The test modules the branch touched (a changed test file; `test_<name>.py` beside a changed file; a DocType's own test, also for a change to its JSON; `<app>/tests/test_<name>.py`) or the ones named in `modules`, at most 20, one `bench --site <site> run-tests --module …` each, on the bench that holds this checkout in its `apps/` and the project's test site ("Several projects"; `site` chooses it, then it is remembered). A module passes only when its tests ran to the end with `OK` (Frappe 15 can exit 0 with failures, or with testing off). Never the whole suite: CI runs that |
+| `tbo_dev bench` | On the same bench as `run_tests`, in the background: `command` `migrate` (`bench --site <site> migrate`; the project's test site, or `site` for this call only, which must be a site of the bench), `build` (`bench build`, or `bench build --app <app>` with `app`), or `clear_cache` (`bench --site <site> clear-cache`). Nothing else: no console, drop-site, reinstall, restore, and no option such as `--force`; a site or app is checked against the bench's folders and never read as an option. It passes when bench exits 0 within its time (20 minutes, 5 for clear_cache) with no Python traceback. It runs on the working tree as it is, so its result belongs to no commit. One `bench` job at a time on a bench, and never while `run_tests` runs there (or the reverse) |
 | `tbo_dev job_status` | A job's outcome, or the latest `check`, `run_tests` or `bench` |
 | `tbo_dev_pr open_pr` | See "The pull request" |
 
@@ -146,8 +172,8 @@ only written in a skill.
 
 The plugin also never writes to a site's data itself. `run_tests`, though, runs the app's tests on the test site, and
 Frappe's tests write records there; `bench` `migrate` applies the app's schema, patches and fixtures to the site it
-names, and `clear_cache` clears its cache. That site is a dev site you choose. The plugin checks only that it exists in
-the bench, and with the settings empty it takes the bench's current site as it is.
+names, and `clear_cache` clears its cache. That site is a dev site you choose. The plugin checks that it is a site of the
+bench, has tests on and has the app installed; it cannot tell a dev site from a live one, so list only dev sites.
 
 ## Check it works
 

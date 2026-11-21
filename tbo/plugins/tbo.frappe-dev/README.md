@@ -9,7 +9,9 @@ Design and use: [`docs/tbo/frappe-dev.md`](../../../docs/tbo/frappe-dev.md).
 ## Use it
 
 1. Set up once: `gh auth login`, uv, a local bench with the app on a dev site (`allow_tests` on), and the plugin's
-   settings (Frappe bench folder, Test site, Reviewers). Sign in to TBO Support in the TBO Support plugin.
+   settings (Frappe bench folder, Test site, Reviewers). Several projects: list your dev sites in Test site, separated by
+   commas; each project uses the one on its bench with its app installed, and remembers it. Sign in to TBO Support in
+   the TBO Support plugin.
 2. Open the app's folder and type `/tbo.frappe-dev/start-task TASK-2026-00021`.
 3. When it is done, `/tbo.frappe-dev/open-pr`. The app asks before it pushes.
 
@@ -20,7 +22,8 @@ Design and use: [`docs/tbo/frappe-dev.md`](../../../docs/tbo/frappe-dev.md).
   (open_pr).
 - `lib/git.js`: the repository, branch names, the branches never pushed to.
 - `lib/lint.js`: what CI runs, run here (pre-commit, Semgrep, flake8/ruff, commit titles).
-- `lib/tests.js`: the bench, the test site, the test modules of a change.
+- `lib/tests.js`: the bench, the test modules of a change.
+- `lib/sites.js`: the test site for each project (chosen, remembered, or the first listed site that fits).
 - `lib/bench.js`: `bench` on your own bench: migrate, build, clear_cache, and nothing else.
 - `lib/pr.js`: the PR's title and body.
 - `skills/`: Start work on a task, Open the pull request, TBO Frappe conventions, New Frappe app, DocTypes and fields,

@@ -68,7 +68,8 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
   makeSite(bench, "dev.localhost");
   fs.mkdirSync(path.join(bench, "sites", "assets")); // in every bench, and not a site
   fs.writeFileSync(path.join(bench, "sites", "currentsite.txt"), "dev.localhost\n");
-  const repo = path.join(bench, "apps", "my_app");
+  // workspace "loose": a clone in no bench's apps/ folder
+  const repo = workspace === "loose" ? path.join(top, "loose", "my_app") : path.join(bench, "apps", "my_app");
   git(top, "clone", "-q", GITHUB_URL, repo);
 
   const dataDir = path.join(top, "data");
@@ -78,7 +79,9 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
 
   const calls = [];
   const bodies = [];
-  const benchRuns = []; // every bench call: its arguments, folder and time limit
+  const benchRuns = []; // every bench call but list-apps: its arguments, folder and time limit
+  const listApps = []; // the sites whose apps were listed (bench --site <site> list-apps)
+  const installed = {}; // site -> its apps, for list-apps; default frappe and my_app
   const answers = {
     preCommit: { code: 0, stdout: "black....Passed\n" },
     semgrep: { code: 0, stdout: JSON.stringify({ results: [], errors: [] }) },
@@ -100,6 +103,12 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
       }
       if (hooks.beforeSemgrep) hooks.beforeSemgrep();
       return answers.semgrep;
+    }
+    if (cmd === "bench" && args[2] === "list-apps") {
+      listApps.push(args[1]);
+      const apps = installed[args[1]] || ["frappe", "my_app"];
+      // as bench prints it: name, version, branch
+      return { code: 0, stdout: apps.map((a) => `${a.padEnd(12)} 0.0.1    main`).join("\n") + "\n", stderr: "" };
     }
     if (cmd === "bench") {
       benchRuns.push({ args, cwd: opts.cwd, timeoutMs: opts.timeoutMs });
@@ -123,26 +132,29 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
     }
     throw Object.assign(new Error(`${cmd} missing`), { code: "MISSING" });
   };
-  const dev = createDev({
-    getSettings: async () => ({ uvPath: uv, ...settings }),
-    getDataPath: async () => dataDir,
-    getWorkspace: async () => ({ path: workspace === "bench" ? bench : repo, name: "my_app" }),
-    runFn,
-    env,
-  });
+  // a new createDev is the app started again: only the data folder carries over
+  const makeDev = () =>
+    createDev({
+      getSettings: async () => ({ uvPath: uv, ...settings }),
+      getDataPath: async () => dataDir,
+      getWorkspace: async () => ({ path: workspace === "bench" ? bench : repo, name: "my_app" }),
+      runFn,
+      env,
+    });
+  const dev = makeDev();
   const commit = (rel, text, message) => {
     write(repo, rel, text);
     git(repo, "add", ".");
     git(repo, "commit", "-q", "-m", message);
     return git(repo, "rev-parse", "HEAD");
   };
-  return { dev, repo, origin, bench, top, git, write, commit, calls, bodies, benchRuns, answers, hooks, env, dataDir };
+  return { dev, makeDev, repo, origin, bench, top, git, write, commit, calls, bodies, benchRuns, listApps, installed, answers, hooks, env, dataDir };
 }
 
-// A site of the bench: its folder with its site_config.json.
-function makeSite(bench, name) {
+// A site of the bench: its folder with its site_config.json, tests on unless `tests` is false.
+function makeSite(bench, name, { tests = true } = {}) {
   fs.mkdirSync(path.join(bench, "sites", name), { recursive: true });
-  fs.writeFileSync(path.join(bench, "sites", name, "site_config.json"), "{}\n");
+  fs.writeFileSync(path.join(bench, "sites", name, "site_config.json"), tests ? '{"allow_tests": true}\n' : "{}\n");
 }
 
 // `repo`: needed when the workspace is the bench folder, not the repository
@@ -384,9 +396,9 @@ test("run_tests runs the touched modules one by one on the bench's test site, ne
   const done = await finished(w.dev, (await w.dev.runDev({ action: "run_tests" })).job);
   assert.equal(done.state, "passed");
   assert.deepEqual(done.result.results.map((r) => [r.module, r.status, r.detail]), [["my_app.selling.test_discounts", "passed", "3 test(s), OK"]]);
-  const benchCalls = w.calls.filter((c) => c[0] === "bench");
+  const benchCalls = w.calls.filter((c) => c[0] === "bench" && c[3] !== "list-apps");
   assert.deepEqual(benchCalls, [["bench", "--site", "dev.localhost", "run-tests", "--module", "my_app.selling.test_discounts"]]);
-  assert.ok(!w.calls.some((c) => c[0] === "bench" && (c.includes("--app") || !c.includes("--module"))));
+  assert.ok(!w.calls.some((c) => c[0] === "bench" && c[3] !== "list-apps" && (c.includes("--app") || !c.includes("--module"))));
   await assert.rejects(w.dev.runDev({ action: "run_tests", modules: ["my_app.tests; rm -rf ~"] }), { code: "INVALID_ARGUMENT" });
 });
 
@@ -548,6 +560,7 @@ test("tests from two repositories on one bench run one at a time; the same repos
   // CodeRabbit on #29: run_tests checked only for bench jobs, so another repository's tests could share the test site
   const w = world(t, { workspace: "bench" });
   w.git(w.top, "clone", "-q", GITHUB_URL, path.join(w.bench, "apps", "other_app"));
+  w.installed["dev.localhost"] = ["frappe", "my_app", "other_app"];
   for (const repo of ["apps/my_app", "apps/other_app"]) {
     await w.dev.runDev({ action: "start_work", repo, task: TASK, subject: "Cap the discount per tier" });
     const root = path.join(w.bench, repo);
@@ -900,17 +913,174 @@ test("a configured bench must hold this checkout in its apps/ folder", async (t)
   const w = world(t, { settings: { benchPath: "" } });
   const other = path.join(w.top, "other-bench");
   fs.mkdirSync(path.join(other, "apps", "frappe"), { recursive: true });
-  fs.mkdirSync(path.join(other, "sites", "dev.localhost"), { recursive: true });
-  const w2 = world(t, { settings: { benchPath: other } });
-  await readyBranch(w2);
-  await assert.rejects(w2.dev.runDev({ action: "run_tests" }), { code: "NO_BENCH", message: /is not one of them/ });
-  // the same checkout linked into the bench's apps/ is one of them; another checkout is not
-  fs.symlinkSync(w2.repo, path.join(other, "apps", "my_app"));
+  makeSite(other, "dev.localhost");
+  // a clone in no bench: a listed bench that does not hold it is never used
+  const loose = world(t, { settings: { benchPath: other }, workspace: "loose" });
+  await readyBranch(loose);
+  await assert.rejects(loose.dev.runDev({ action: "run_tests" }), { code: "NO_BENCH", message: /does not hold it/ });
+  // the same checkout linked into the bench's apps/ is one of them
+  fs.symlinkSync(loose.repo, path.join(other, "apps", "my_app"));
   fs.writeFileSync(path.join(other, "sites", "currentsite.txt"), "dev.localhost\n");
-  assert.ok((await w2.dev.runDev({ action: "run_tests" })).job);
+  const job = await loose.dev.runDev({ action: "run_tests" });
+  assert.ok(job.job);
+  await finished(loose.dev, job.job);
+  assert.equal(loose.benchRuns.at(-1).cwd, fs.realpathSync(other));
+  // another checkout is not: a clone in its own bench runs on that bench, never on the listed one
   const third = world(t, { settings: { benchPath: other } });
   await readyBranch(third);
-  await assert.rejects(third.dev.runDev({ action: "run_tests" }), { code: "NO_BENCH" });
+  await finished(third.dev, (await third.dev.runDev({ action: "run_tests" })).job);
+  assert.equal(third.benchRuns.at(-1).cwd, third.bench);
+});
+
+// --- the test site for each project (testing fixes 8) --------------------------------------
+
+const testRunSite = (w) => w.benchRuns.filter((r) => r.args.includes("run-tests")).map((r) => [r.args[1], r.cwd]);
+
+test("projects on two benches each run on the listed test site of their own bench", async (t) => {
+  const settings = { testSite: "alpha.localhost, beta.localhost" };
+  const a = world(t, { settings });
+  const b = world(t, { settings });
+  makeSite(a.bench, "alpha.localhost");
+  makeSite(b.bench, "beta.localhost");
+  // no default site: only the list decides
+  for (const w of [a, b]) fs.rmSync(path.join(w.bench, "sites", "currentsite.txt"));
+  // both benches in the one setting too
+  settings.benchPath = `${a.bench}, ${b.bench}`;
+  for (const [w, site] of [
+    [a, "alpha.localhost"],
+    [b, "beta.localhost"],
+  ]) {
+    const s = await w.dev.runDev({ action: "status" });
+    assert.equal(s.bench, w.bench);
+    assert.equal(s.test_site, site);
+    assert.equal(s.test_site_from, "from your Test site list");
+    await readyBranch(w);
+    const started = await w.dev.runDev({ action: "run_tests" });
+    assert.equal(started.test_site, site);
+    await finished(w.dev, started.job);
+    assert.deepEqual(testRunSite(w), [[site, w.bench]]);
+    // the other bench's site is never asked about; the choice is checked once
+    assert.deepEqual(w.listApps, [site]);
+  }
+});
+
+test("two apps on one bench each get a listed site that has their own app", async (t) => {
+  const w = world(t, { workspace: "bench", settings: { testSite: "first.localhost, second.localhost" } });
+  w.git(w.top, "clone", "-q", GITHUB_URL, path.join(w.bench, "apps", "other_app"));
+  makeSite(w.bench, "first.localhost");
+  makeSite(w.bench, "second.localhost");
+  w.installed["first.localhost"] = ["frappe", "other_app"];
+  w.installed["second.localhost"] = ["frappe", "erpnext", "my_app"];
+  assert.equal((await w.dev.runDev({ action: "status", repo: "apps/my_app" })).test_site, "second.localhost");
+  assert.equal((await w.dev.runDev({ action: "status", repo: "apps/other_app" })).test_site, "first.localhost");
+});
+
+test("a site with tests off or without the app is passed over and named, with what fixes it", async (t) => {
+  const settings = { testSite: "elsewhere.localhost, off.localhost, bare.localhost" };
+  const w = world(t, { settings });
+  makeSite(w.bench, "off.localhost", { tests: false });
+  makeSite(w.bench, "bare.localhost");
+  w.installed["bare.localhost"] = ["frappe"];
+  w.installed["dev.localhost"] = ["frappe", "erpnext"];
+  await readyBranch(w);
+  const reasons = [
+    /elsewhere\.localhost: not on this bench/,
+    /off\.localhost: tests are off \(bench --site off\.localhost set-config allow_tests true\)/,
+    /bare\.localhost: my_app is not installed \(bench --site bare\.localhost install-app my_app\)/,
+    /dev\.localhost: my_app is not installed/,
+  ];
+  for (const why of reasons) await assert.rejects(w.dev.runDev({ action: "run_tests" }), { code: "NO_SITE", message: why });
+  assert.deepEqual(testRunSite(w), [], "no test ran on a site that does not fit");
+  // status does not stop: it says why
+  const s = await w.dev.runDev({ action: "status" });
+  assert.equal(s.test_site, null);
+  for (const why of reasons) assert.match(s.bench_problem, why);
+  assert.ok(!w.listApps.includes("elsewhere.localhost"), "a site of another bench gets no bench call");
+  // migrate without a site needs the project's test site; with one named it runs there, as before
+  await assert.rejects(w.dev.runDev({ action: "bench", command: "migrate" }), { code: "NO_SITE" });
+  await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "migrate", site: "dev.localhost" })).job);
+  assert.deepEqual(benchArgs(w), [["--site", "dev.localhost", "migrate"]]);
+  // allow_tests in the bench's common config counts, as Frappe reads it
+  fs.writeFileSync(path.join(w.bench, "sites", "common_site_config.json"), '{"allow_tests": true}\n');
+  const after = await w.dev.runDev({ action: "status" });
+  assert.equal(after.test_site, "off.localhost");
+  assert.equal(after.bench_problem, undefined);
+});
+
+test("the test site is remembered for the project, also after a restart, until the list changes or the site is gone", async (t) => {
+  const settings = { testSite: "first.localhost, second.localhost" };
+  const w = world(t, { settings });
+  makeSite(w.bench, "first.localhost");
+  makeSite(w.bench, "second.localhost");
+  w.installed["first.localhost"] = ["frappe"];
+  assert.equal((await w.dev.runDev({ action: "status" })).test_site, "second.localhost");
+  assert.deepEqual(w.listApps, ["first.localhost", "second.localhost"]);
+  assert.ok(fs.existsSync(path.join(w.dataDir, "test-sites.json")));
+  // the app started again: no new check
+  const again = await w.makeDev().runDev({ action: "status" });
+  assert.equal(again.test_site, "second.localhost");
+  assert.equal(again.test_site_from, "from your Test site list (remembered for this project)");
+  assert.equal(w.listApps.length, 2);
+  // a changed list chooses again
+  makeSite(w.bench, "third.localhost");
+  settings.testSite = "third.localhost, second.localhost";
+  assert.equal((await w.makeDev().runDev({ action: "status" })).test_site, "third.localhost");
+  assert.equal(w.listApps.at(-1), "third.localhost");
+  // a site that is gone is dropped, with a note
+  fs.rmSync(path.join(w.bench, "sites", "third.localhost"), { recursive: true });
+  const gone = await w.dev.runDev({ action: "status" });
+  assert.equal(gone.test_site, "second.localhost");
+  assert.match(gone.test_site_note, /third\.localhost, the test site before, is no longer a site of this bench/);
+});
+
+test("the developer chooses a project's test site: checked, then remembered; migrate follows it", async (t) => {
+  const w = world(t);
+  makeSite(w.bench, "second.localhost");
+  makeSite(w.bench, "bare.localhost");
+  w.installed["bare.localhost"] = ["frappe"];
+  await readyBranch(w);
+  const started = await w.dev.runDev({ action: "run_tests", site: "second.localhost" });
+  assert.equal(started.test_site, "second.localhost");
+  assert.equal(started.test_site_from, "chosen for this project");
+  await finished(w.dev, started.job);
+  // later calls without a site, and the app started again
+  await finished(w.dev, (await w.dev.runDev({ action: "run_tests" })).job);
+  assert.deepEqual(
+    testRunSite(w).map(([site]) => site),
+    ["second.localhost", "second.localhost"],
+  );
+  const s = await w.makeDev().runDev({ action: "status" });
+  assert.equal(s.test_site, "second.localhost");
+  assert.equal(s.test_site_from, "chosen for this project");
+  // migrate without a site runs on it; a site named for one migrate changes nothing
+  await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "migrate" })).job);
+  await finished(w.dev, (await w.dev.runDev({ action: "bench", command: "clear_cache", site: "dev.localhost" })).job);
+  assert.deepEqual(benchArgs(w).filter((a) => !a.includes("run-tests")), [
+    ["--site", "second.localhost", "migrate"],
+    ["--site", "dev.localhost", "clear-cache"],
+  ]);
+  assert.equal((await w.dev.runDev({ action: "status" })).test_site, "second.localhost");
+  // a site that does not fit is refused and not remembered; nothing odd reaches bench
+  await assert.rejects(w.dev.runDev({ action: "run_tests", site: "bare.localhost" }), { code: "NO_SITE", message: /bare\.localhost cannot be the test site for my_app: my_app is not installed/ });
+  for (const site of ["--force", "all", "assets", "../dev.localhost", "live.example.com"]) {
+    await assert.rejects(w.dev.runDev({ action: "status", site }), { code: "NO_SITE" }, site);
+  }
+  assert.deepEqual([...new Set(w.listApps)].sort(), ["bare.localhost", "second.localhost"]);
+  assert.equal((await w.dev.runDev({ action: "status" })).test_site, "second.localhost");
+});
+
+test("the bench's default site is checked like a listed one", async (t) => {
+  const w = world(t);
+  w.installed["dev.localhost"] = ["frappe"];
+  await readyBranch(w);
+  const s = await w.dev.runDev({ action: "status" });
+  assert.equal(s.test_site, null);
+  assert.match(s.bench_problem, /dev\.localhost: my_app is not installed/);
+  await assert.rejects(w.dev.runDev({ action: "run_tests" }), { code: "NO_SITE" });
+  w.installed["dev.localhost"] = ["frappe", "my_app"];
+  const ok = await w.dev.runDev({ action: "status" });
+  assert.equal(ok.test_site, "dev.localhost");
+  assert.equal(ok.test_site_from, "the bench's default site");
 });
 
 test("a folder inside a larger repository is not taken for a repository", async (t) => {
