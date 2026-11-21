@@ -151,6 +151,8 @@ export const zhTW = {
     backToScheduledAction: "返回已安排",
     backToScheduledTask: "返回已安排 · {{title}}",
     toggleWorkPanel: "切換側邊面板",
+    tboSupport: "TBO Support：登入、登出、專案",
+    tboSupportFailed: "無法開啟 TBO Support：{{reason}}",
     sessions: "會話",
     collapseSidebar: "收起側邊欄",
     expandSidebar: "展開側邊欄",

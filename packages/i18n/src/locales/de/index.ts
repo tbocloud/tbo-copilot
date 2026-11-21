@@ -149,6 +149,8 @@ export const de = {
     "backToScheduledAction": "Zurück zu den geplanten Aufgaben",
     "backToScheduledTask": "Zurück zu den geplanten Aufgaben · {{title}}",
     "toggleWorkPanel": "Seitenpanel umschalten",
+    "tboSupport": "TBO Support: Anmelden, Abmelden, Projekte",
+    "tboSupportFailed": "TBO Support konnte nicht geöffnet werden: {{reason}}",
     "sessions": "Sitzungen",
     "collapseSidebar": "Seitenleiste einklappen",
     "expandSidebar": "Seitenleiste erweitern",

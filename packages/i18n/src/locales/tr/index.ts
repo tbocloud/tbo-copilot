@@ -158,6 +158,8 @@ export const tr = {
     backToScheduledAction: "Zamanlanmış görevlere dön",
     backToScheduledTask: "Zamanlanmış görevlere dön · {{title}}",
     toggleWorkPanel: "Yan paneli aç/kapat",
+    tboSupport: "TBO Support: oturum aç, oturumu kapat, projeler",
+    tboSupportFailed: "TBO Support açılamadı: {{reason}}",
     sessions: "Oturumlar",
     collapseSidebar: "Kenar çubuğunu daralt",
     expandSidebar: "Kenar çubuğunu genişlet",
