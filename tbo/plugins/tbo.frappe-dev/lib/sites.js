@@ -20,6 +20,10 @@ const FILE = "test-sites.json";
 const CHOSEN = "chosen for this project";
 const LISTED = "from your Test site list";
 const DEFAULT = "the bench's default site";
+// The same saved entry (or both none): an automatic choice changes only the entry it read, so a
+// choice saved by another call meanwhile (a site named for the project) is kept (CodeRabbit on #32).
+const sameEntry = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
 // colour codes bench may print around a site's name
 const COLOR = /\u001b\[[0-9;]*m/g;
 
@@ -168,14 +172,16 @@ function createSites({ runFn, env, getDataPath, log = () => {} }) {
       // a listed site of another bench is for another project: no bench call for it
       const why = onBench(bench, site) ? await misfit(bench, site, app, benchCommand) : "not on this bench";
       if (!why) {
-        await remember(key, { bench, site, from, basis });
+        await update((kept) => {
+          if (sameEntry(kept[key], before)) kept[key] = { bench, site, from, basis };
+        });
         return { site, from, remembered: false, ...(note ? { note } : {}) };
       }
       tried.push(`${site}: ${why}`);
     }
     if (before && before.bench === bench) {
       await update((kept) => {
-        delete kept[key];
+        if (sameEntry(kept[key], before)) delete kept[key];
       });
     }
     const looked = tried.length ? `:\n- ${tried.join("\n- ")}` : ': "Test site" is empty and the bench has no default site.';

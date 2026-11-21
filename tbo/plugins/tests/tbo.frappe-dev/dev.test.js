@@ -1180,6 +1180,32 @@ test("two run_tests at once for one project: the second waits its turn, is refus
   await finished(w.dev, started.job);
 });
 
+test("a site named for the project while an automatic choice is checked is kept, whether that choice fails or fits", async (t) => {
+  for (const automaticFits of [false, true]) {
+    const settings = {};
+    const w = world(t, { settings });
+    makeSite(w.bench, "second.localhost");
+    // the bench's default is remembered, then the list changes: the next automatic call checks again
+    assert.equal((await w.dev.runDev({ action: "status" })).test_site, "dev.localhost");
+    settings.testSite = "other.localhost"; // a site of another bench
+    let checked;
+    w.hooks.holdListAppsFor["dev.localhost"] = new Promise((r) => {
+      checked = r;
+    });
+    if (!automaticFits) w.installed["dev.localhost"] = ["frappe"];
+    const automatic = w.dev.runDev({ action: "status" });
+    await waitUntil(() => w.listApps.filter((s) => s === "dev.localhost").length === 2);
+    // meanwhile the developer names a site for the project
+    assert.equal((await w.dev.runDev({ action: "status", site: "second.localhost" })).test_site, "second.localhost");
+    delete w.hooks.holdListAppsFor["dev.localhost"];
+    checked();
+    await automatic;
+    const now = await w.dev.runDev({ action: "status" });
+    assert.equal(now.test_site, "second.localhost", `automatic choice ${automaticFits ? "fits" : "fails"}: the named site stays`);
+    assert.equal(now.test_site_from, "chosen for this project");
+  }
+});
+
 test("two projects choosing their test sites at once both keep their choice", async (t) => {
   const { createSites } = require("../../tbo.frappe-dev/lib/sites");
   const top = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tbo-sites-")));
