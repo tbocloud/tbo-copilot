@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { minimalChildEnv, pluginChildEnv } from "../electron/main/child-process-env.ts";
 import { mcpProcessEnv } from "../electron/main/plugin-mcp.ts";
+import { userLookupPath } from "../electron/main/user-login-path.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = join(here, "..");
@@ -37,6 +38,22 @@ test("a plugin process carries the identity a spawned binary resolves ~ with", (
     assert.equal(env.PI_PLUGIN_ID, "com.example.plugin");
     // PATH still crosses, or a bare command name could never be found.
     assert.ok(typeof env.PATH === "string" && env.PATH.length > 0);
+  });
+});
+
+test("a plugin process searches the user's login-shell PATH, as the Bash tool and MCP servers do", () => {
+  // TBO Copilot Phase 27 (Q1): from the Dock the app has only the system PATH, and a developer plugin
+  // reported bench, uv and gh missing that the user's terminal ran fine
+  withHostEnv({ PATH: "/usr/bin:/bin" }, () => {
+    const seen = [];
+    const env = pluginChildEnv("tbo.dev", (inherited) => {
+      seen.push(inherited);
+      return "/opt/homebrew/bin:/Users/me/.pyenv/shims:/usr/bin:/bin";
+    });
+    assert.deepEqual(seen, ["/usr/bin:/bin"], "the lookup starts from the inherited PATH");
+    assert.equal(env.PATH, "/opt/homebrew/bin:/Users/me/.pyenv/shims:/usr/bin:/bin");
+    // the default is the very lookup stdio MCP servers use
+    assert.equal(pluginChildEnv("tbo.dev").PATH, userLookupPath("/usr/bin:/bin"));
   });
 });
 
