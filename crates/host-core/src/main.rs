@@ -2,6 +2,7 @@ mod activation;
 mod agent_capabilities;
 mod artifacts;
 mod audit;
+mod command_guard;
 mod config_sync;
 mod data_relocation;
 mod db;

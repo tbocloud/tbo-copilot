@@ -1077,7 +1077,14 @@ pub async fn execute_tool_with_path_access(
             allow_external_paths,
             hashline.as_ref(),
         )
+        .map(scrub_site_config_read)
         .map_err(Into::into),
+        "Write" | "Edit" if targets_site_config(args) => Err(hashline::ToolError::new(
+            "USE_BENCH_SET_CONFIG",
+            "A Frappe site's configuration holds its database password and keys: it is changed with \
+             `bench --site <site> set-config <key> <value>` (or `bench set-config -g` for every site), \
+             never by writing the file",
+        )),
         "Glob" => tool_glob(workspace, scratch, args, allow_external_paths).map_err(Into::into),
         "Grep" => tool_grep(
             workspace,
@@ -2807,6 +2814,10 @@ async fn tool_bash(
             // file to Grep instead of just apologizing. The runner-error probe
             // runs first: the marker must be found before the tail budget can
             // cut it away.
+            // TBO Phase 27 (Q5): secret values never reach the model, nor the
+            // spilled copy in scratch
+            let stdout = crate::command_guard::scrub_secrets(&stdout).into_owned();
+            let stderr = crate::command_guard::scrub_secrets(&stderr).into_owned();
             let (stdout, budget_trunc_out) =
                 truncate_with_spill(&stdout, BUDGET_SHELL, scratch, "bash-stdout");
             let (stderr, budget_trunc_err) =
@@ -2822,6 +2833,30 @@ async fn tool_bash(
             }))
         }
     }
+}
+
+/// TBO Phase 27 (Q5): a Frappe site's configuration is shown with its secret
+/// values hidden; settings are read as they are.
+fn scrub_site_config_read(mut value: Value) -> Value {
+    let is_config = value
+        .get("path")
+        .and_then(Value::as_str)
+        .is_some_and(crate::command_guard::is_site_config);
+    if is_config {
+        if let Some(content) = value.get("content").and_then(Value::as_str) {
+            let scrubbed = crate::command_guard::scrub_secrets(content).into_owned();
+            value["content"] = json!(scrubbed);
+        }
+    }
+    value
+}
+
+fn targets_site_config(args: &Value) -> bool {
+    ["path", "file_path"].iter().any(|key| {
+        args.get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(crate::command_guard::is_site_config)
+    })
 }
 
 fn relative_display(root: &Path, path: &Path) -> String {

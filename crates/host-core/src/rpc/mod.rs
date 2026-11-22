@@ -3778,6 +3778,55 @@ async fn handle_request(
                         &p.tool_name,
                         &p.args,
                     );
+                    // TBO Phase 27 (Q5): a shell command is assessed before the
+                    // permission rules. A refused one never runs, whatever the
+                    // mode or the session's grants; a risky one always asks.
+                    let guard = if p.tool_name == "Bash" {
+                        let command = p
+                            .args
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        let mut roots: Vec<std::path::PathBuf> = Vec::new();
+                        if let Some(dir) = ws.as_deref() {
+                            roots.push(std::path::PathBuf::from(dir));
+                        }
+                        if let Some(dir) = scratch.as_deref() {
+                            roots.push(std::path::PathBuf::from(dir));
+                        }
+                        roots.push(std::env::temp_dir());
+                        crate::command_guard::assess(command, &roots)
+                    } else {
+                        crate::command_guard::CommandVerdict::Allow
+                    };
+                    if let crate::command_guard::CommandVerdict::Refuse(reason) = &guard {
+                        let _ = audit::append(
+                            &st.db,
+                            "tool_refused",
+                            Some(&p.session_id),
+                            json!({
+                                "toolName": p.tool_name,
+                                "toolCallId": p.tool_call_id,
+                                "reason": reason,
+                            }),
+                        );
+                        let mut refused = json!({
+                            "toolCallId": p.tool_call_id,
+                            "ok": false,
+                            "isError": true,
+                            "content": {
+                                "error": format!("refused: {reason}"),
+                                "code": "COMMAND_REFUSED"
+                            },
+                            "durationMs": 0,
+                            "denied": true,
+                            "errorCode": "COMMAND_REFUSED"
+                        });
+                        if let Some(shell_id) = command_shell_id.as_deref() {
+                            refused["commandShellId"] = json!(shell_id);
+                        }
+                        return Ok(refused);
+                    }
                     let mut auto = st
                         .permissions
                         .evaluate_auto_with_permission_mode_and_risk_and_path(
@@ -3811,6 +3860,15 @@ async fn handle_request(
                             }
                         }
                     }
+                    let guard_reason = match &guard {
+                        crate::command_guard::CommandVerdict::Ask(reason) => {
+                            if !matches!(auto, Some(PermissionDecision::Deny)) {
+                                auto = None;
+                            }
+                            Some(reason.clone())
+                        }
+                        _ => None,
+                    };
                     if let Some(decision) = auto {
                         (
                             Some(decision),
@@ -3822,7 +3880,9 @@ async fn handle_request(
                             command_shell_id.clone(),
                         )
                     } else {
-                        let reason = if external_path_permission {
+                        let reason = if let Some(reason) = guard_reason.as_deref() {
+                            reason
+                        } else if external_path_permission {
                             "Accesses a path outside the session workspace"
                         } else {
                             match p.tool_name.as_str() {
@@ -8134,6 +8194,251 @@ mod tests {
         .unwrap();
         assert!(after["requests"].as_array().unwrap().is_empty());
         assert_bash_registry_empty(&state).await;
+    }
+
+    /// TBO Phase 27 (Q5): a session in `auto` mode in a project folder.
+    fn guarded_session(
+        name: &str,
+        mode: &str,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        Arc<Mutex<AppState>>,
+        String,
+    ) {
+        let data_dir = tempfile::tempdir().unwrap();
+        let project = data_dir.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let session = sessions::create_session(
+            &app_state.db,
+            Some(name.into()),
+            Some("agent".into()),
+            None,
+            None,
+            Some(project.to_string_lossy().into_owned()),
+        )
+        .unwrap();
+        sessions::configure_session_with_thinking(
+            &app_state.db,
+            &session.id,
+            "agent",
+            None,
+            None,
+            None,
+            Some(mode),
+        )
+        .unwrap();
+        (
+            data_dir,
+            project,
+            Arc::new(Mutex::new(app_state)),
+            session.id,
+        )
+    }
+
+    fn bash_call(session_id: &str, call_id: &str, shell_id: &str, command: String) -> Value {
+        json!({
+            "sessionId": session_id,
+            "toolCallId": call_id,
+            "toolName": "Bash",
+            "args": { "command": command },
+            "expectedCommandShellId": shell_id,
+            "expectedCommandShellDialect": crate::tools::shell::dialect_for_id(shell_id),
+            "mode": "agent"
+        })
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn a_refused_command_never_runs_even_in_auto_mode() {
+        let Some(shell_id) = available_test_shell_id() else {
+            return;
+        };
+        let (_data, project, state, session_id) = guarded_session("Refused", "auto");
+        let marker = project.join("must-not-run.txt");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let command = format!(
+            "bench drop-site demo.localhost --no-backup --force; touch '{}'",
+            marker.display()
+        );
+        let result = handle_request(
+            state.clone(),
+            "tools.execute",
+            bash_call(&session_id, "refused", &shell_id, command),
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["errorCode"], "COMMAND_REFUSED");
+        assert!(
+            result["content"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("drop-site"),
+            "{result}"
+        );
+        assert!(!marker.exists(), "nothing of the command ran");
+        assert!(rx.try_recv().is_err(), "a refusal asks nobody");
+        assert_bash_registry_empty(&state).await;
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn a_risky_command_asks_even_in_auto_mode_and_under_a_session_grant() {
+        let Some(shell_id) = available_test_shell_id() else {
+            return;
+        };
+        for mode in ["auto", "ask"] {
+            let (_data, project, state, session_id) = guarded_session("Risky", mode);
+            // under `ask`, Bash is granted for the session: a plain command runs unasked
+            state
+                .lock()
+                .await
+                .session_grants
+                .insert(session_id.clone(), vec!["Bash".into()]);
+            let plain = project.join("plain.txt");
+            let ran = handle_request(
+                state.clone(),
+                "tools.execute",
+                bash_call(
+                    &session_id,
+                    "plain",
+                    &shell_id,
+                    format!("touch '{}'", plain.display()),
+                ),
+                mpsc::unbounded_channel().0,
+            )
+            .await
+            .unwrap();
+            assert_eq!(ran["ok"], true, "{mode}: {ran}");
+            assert!(plain.exists());
+
+            let marker = project.join("risky.txt");
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let call = bash_call(
+                &session_id,
+                "risky",
+                &shell_id,
+                format!(
+                    "touch '{}' && redis-server config/redis_cache.conf",
+                    marker.display()
+                ),
+            );
+            let task_state = state.clone();
+            let task =
+                tokio::spawn(
+                    async move { handle_request(task_state, "tools.execute", call, tx).await },
+                );
+            let asked = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("the risky command asks")
+                .unwrap();
+            let asked: Value = serde_json::from_str(&asked).unwrap();
+            assert_eq!(asked["method"], "permissions.request");
+            assert!(
+                asked["params"]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("service"),
+                "{mode}: {asked}"
+            );
+            handle_request(
+                state.clone(),
+                "permissions.resolve",
+                json!({ "requestId": asked["params"]["requestId"], "decision": "deny" }),
+                mpsc::unbounded_channel().0,
+            )
+            .await
+            .unwrap();
+            let result = task.await.unwrap().unwrap();
+            assert_eq!(result["errorCode"], "TOOL_DENIED");
+            assert!(
+                !marker.exists(),
+                "{mode}: a denied risky command did not run"
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn bash_output_and_site_configs_hide_secrets() {
+        let Some(shell_id) = available_test_shell_id() else {
+            return;
+        };
+        let (_data, project, state, session_id) = guarded_session("Secrets", "auto");
+        let site = project.join("sites").join("demo.localhost");
+        fs::create_dir_all(&site).unwrap();
+        let config = site.join("site_config.json");
+        fs::write(
+            &config,
+            "{\n \"allow_tests\": true,\n \"db_password\": \"s3cretValue123\"\n}\n",
+        )
+        .unwrap();
+
+        let shown = handle_request(
+            state.clone(),
+            "tools.execute",
+            bash_call(
+                &session_id,
+                "cat",
+                &shell_id,
+                format!("cat '{}'", config.display()),
+            ),
+            mpsc::unbounded_channel().0,
+        )
+        .await
+        .unwrap();
+        let stdout = shown["content"]["stdout"].as_str().unwrap();
+        assert!(
+            !stdout.contains("s3cretValue123")
+                && stdout.contains("\"db_password\": \"[redacted]\""),
+            "{stdout}"
+        );
+        assert!(stdout.contains("\"allow_tests\": true"));
+
+        let read = handle_request(
+            state.clone(),
+            "tools.execute",
+            json!({
+                "sessionId": session_id,
+                "toolCallId": "read",
+                "toolName": "Read",
+                "args": { "path": "sites/demo.localhost/site_config.json" },
+                "mode": "agent"
+            }),
+            mpsc::unbounded_channel().0,
+        )
+        .await
+        .unwrap();
+        let content = read["content"]["content"].as_str().unwrap();
+        assert!(
+            !content.contains("s3cretValue123") && content.contains("[redacted]"),
+            "{read}"
+        );
+
+        let written = handle_request(
+            state.clone(),
+            "tools.execute",
+            json!({
+                "sessionId": session_id,
+                "toolCallId": "write",
+                "toolName": "Write",
+                "args": { "path": "sites/demo.localhost/site_config.json", "content": "{}" },
+                "mode": "agent"
+            }),
+            mpsc::unbounded_channel().0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(written["errorCode"], "USE_BENCH_SET_CONFIG", "{written}");
+        assert!(
+            fs::read_to_string(&config)
+                .unwrap()
+                .contains("s3cretValue123"),
+            "the file itself is untouched"
+        );
     }
 
     #[tokio::test]
