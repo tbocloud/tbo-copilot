@@ -8622,6 +8622,25 @@ mod tests {
         );
         fs::remove_file(project.join("alias.txt")).unwrap();
         fs::remove_file(project.join("copy.txt")).unwrap();
+        // a configuration with only its password, by a hard link, read from the value's line
+        let only = project.join("sites").join("b.localhost");
+        fs::create_dir_all(&only).unwrap();
+        fs::write(
+            only.join("site_config.json"),
+            "{\n \"db_password\":\n  \"0nlyPassw0rd\"\n}\n",
+        )
+        .unwrap();
+        fs::hard_link(only.join("site_config.json"), project.join("alias2.txt")).unwrap();
+        let read = run(
+            "Read",
+            json!({ "path": "alias2.txt", "offset": 2, "limit": 1 }),
+        )
+        .await
+        .unwrap();
+        let content = read["content"]["content"].as_str().unwrap();
+        assert!(!content.contains("0nlyPassw0rd"), "{read}");
+        fs::remove_file(project.join("alias2.txt")).unwrap();
+        fs::remove_dir_all(&only).unwrap();
 
         // a move onto a link named site_config.json writes nothing behind it
         let other = project.join("sites").join("other.localhost");

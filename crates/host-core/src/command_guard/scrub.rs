@@ -120,11 +120,10 @@ pub fn is_site_config_path(path: &Path) -> bool {
 }
 
 /// A Frappe site's configuration by its content, whatever its name (a copy, a hard link): a JSON
-/// object with the `db_name` and `db_password` settings Frappe writes.
+/// object with a `db_password` or an `encryption_key` setting.
 pub fn looks_like_site_config(text: &str) -> bool {
     text.trim_start().starts_with('{')
-        && text.contains("\"db_name\"")
-        && text.contains("\"db_password\"")
+        && (text.contains("\"db_password\"") || text.contains("\"encryption_key\""))
 }
 
 /// What kind of secret runs on at the end of a text.
@@ -186,6 +185,23 @@ fn open_secret(text: &str) -> Option<Open> {
             })
         })
         .min_by_key(|open| open.start)
+}
+
+/// Where a run of name characters (`DB_PASSWORD`, `--admin-password`) that holds a secret word
+/// reaches the end of `text` from before `cut`: a setting's name cut before its `=` has arrived.
+fn name_at(text: &str, cut: usize) -> Option<usize> {
+    static SECRET_WORD: OnceLock<Regex> = OnceLock::new();
+    let secret_word = SECRET_WORD.get_or_init(|| {
+        Regex::new(r"(?i)password|passwd|secret|token|api_?key|apikey|private_?key|access_?key|encryption_key|client_secret|auth_token|authorization")
+            .expect("secret word")
+    });
+    let start = text
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        .last()
+        .map(|(at, _)| at)?;
+    (start < cut && secret_word.is_match(&text[start..])).then_some(start)
 }
 
 /// A double-quoted string at a cut.
@@ -295,6 +311,9 @@ enum Hiding {
     Key { escaped: bool },
     /// After a hidden key: a `:` next makes the next value hidden too.
     AfterKey,
+    /// A setting's name cut by the hold, to its end; an `=` or `:` after it (or white space after
+    /// a `--` argument) makes the next value hidden too.
+    Name { argument: bool },
     /// A secret's value that has not started: the next value (a quoted string or a word) is hidden,
     /// wherever it comes (on a later line, after any white space).
     Value,
@@ -378,6 +397,21 @@ impl StreamScrubber {
                         '"' => Hiding::AfterKey,
                         _ => Hiding::Key { escaped: false },
                     };
+                }
+                Hiding::Name { .. }
+                    if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') => {}
+                Hiding::Name { .. } if c == '=' || c == ':' => {
+                    shown.push(c);
+                    self.hiding = Hiding::Value;
+                }
+                Hiding::Name { argument: true } if c == ' ' || c == '\t' => {
+                    shown.push(c);
+                    self.hiding = Hiding::Value;
+                }
+                Hiding::Name { .. } => {
+                    self.hiding = Hiding::Nothing;
+                    end = i;
+                    break;
                 }
                 Hiding::AfterKey if c.is_whitespace() => shown.push(c),
                 Hiding::AfterKey if c == ':' => {
@@ -485,6 +519,15 @@ impl StreamScrubber {
                         }
                         _ => break,
                     }
+                }
+                // a long setting name with a secret word, its `=` not arrived: hidden, with its value
+                if let Some(start) = name_at(&text, cut) {
+                    let mut out = self.emit(&text[..start]);
+                    out.push_str(REDACTED);
+                    self.hiding = Hiding::Name {
+                        argument: text[start..].starts_with("--"),
+                    };
+                    return out;
                 }
                 self.pending = text[cut..].to_string();
                 self.emit(&text[..cut])

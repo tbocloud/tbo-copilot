@@ -2872,28 +2872,31 @@ fn is_site_config_target(requested: &Path, resolved: &Path) -> bool {
         .any(|p| crate::command_guard::is_site_config_path(p))
 }
 
-/// TBO Phase 27 (Q5): a search hit in a Frappe site's configuration (by its name, or by its content
-/// under another name: a copy, a hard link) shows its line from the whole file scrubbed, as a Read
-/// does (a value on the line after its key). The line is taken from the file again only while it
-/// is still the line that was searched; otherwise, or when the file cannot be read again, the hit's
-/// text is hidden.
+/// TBO Phase 27 (Q5): search hits as they are safe to show. Every hit's line is read from its file
+/// again and shown only while it is still the line that was searched: a file deleted, unreadable or
+/// changed since hides its hit. In a Frappe site's configuration (by its name, or by its content
+/// under another name: a copy, a hard link), a line is shown only when it carries its own key,
+/// scrubbed; a line with a value but no key (a value on the line after its key) is hidden, so what
+/// is shown never depends on another line. A file larger than a site's configuration can be is
+/// not read again.
 fn scrub_site_config_grep(mut value: Value, workspace: Option<&Path>) -> Value {
     /// A larger file is never a site's configuration.
     const CONFIG_MAX_BYTES: u64 = 1024 * 1024;
-    type Lines = (Vec<String>, Vec<String>);
+    enum Again {
+        /// Not read again (too large to be a site's configuration).
+        Large,
+        /// Deleted or unreadable since the search.
+        Gone,
+        Read {
+            lines: Vec<String>,
+            config: bool,
+        },
+    }
     let Some(hits) = value.get_mut("matches").and_then(Value::as_array_mut) else {
         return value;
     };
-    let lines_of = |text: &str| -> Vec<String> {
-        text.split('\n')
-            .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
-            .collect()
-    };
-    let clip = |line: &String| clip_chars(line.clone(), MAX_LINE_CHARS).0;
-    // per file: not a configuration (None), or a configuration with its lines as searched and
-    // scrubbed, when it can be read again
-    let mut files: std::collections::HashMap<String, Option<Option<Lines>>> =
-        std::collections::HashMap::new();
+    let clip = |line: &str| clip_chars(line.to_string(), MAX_LINE_CHARS).0;
+    let mut files: std::collections::HashMap<String, Again> = std::collections::HashMap::new();
     for hit in hits {
         let Some(shown) = hit.get("path").and_then(Value::as_str).map(str::to_string) else {
             continue;
@@ -2901,48 +2904,62 @@ fn scrub_site_config_grep(mut value: Value, workspace: Option<&Path>) -> Value {
         let Some(searched) = hit.get("text").and_then(Value::as_str).map(str::to_string) else {
             continue;
         };
-        let config = files.entry(shown.clone()).or_insert_with(|| {
+        let again = files.entry(shown.clone()).or_insert_with(|| {
             let by_name = crate::command_guard::is_site_config(&shown);
             let file = if Path::new(&shown).is_absolute() {
                 PathBuf::from(&shown)
             } else {
                 match workspace {
                     Some(root) => root.join(&shown),
-                    None => return by_name.then_some(None),
+                    None => return Again::Gone,
                 }
             };
-            let small = std::fs::metadata(&file).is_ok_and(|m| m.len() <= CONFIG_MAX_BYTES);
-            let text = small.then(|| std::fs::read_to_string(&file).ok()).flatten();
-            let by_content = text
-                .as_deref()
-                .is_some_and(crate::command_guard::looks_like_site_config);
-            if !(by_name || by_content) {
-                return None;
+            match std::fs::metadata(&file) {
+                Ok(meta) if meta.len() > CONFIG_MAX_BYTES && !by_name => return Again::Large,
+                Ok(_) => {}
+                Err(_) => return Again::Gone,
             }
-            Some(text.map(|text| {
-                let scrubbed = crate::command_guard::scrub_secrets(&text);
-                (lines_of(&text), lines_of(&scrubbed))
-            }))
+            match std::fs::read_to_string(&file) {
+                Ok(text) => Again::Read {
+                    config: by_name || crate::command_guard::looks_like_site_config(&text),
+                    lines: text
+                        .split('\n')
+                        .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+                        .collect(),
+                },
+                Err(_) => Again::Gone,
+            }
         });
-        let Some(config) = config else {
-            continue;
-        };
         let line = hit
             .get("line")
             .and_then(Value::as_u64)
             .and_then(|n| usize::try_from(n).ok())
             .and_then(|n| n.checked_sub(1));
-        let text = match (config, line) {
-            (Some((raw, scrubbed)), Some(at))
-                if raw.get(at).is_some_and(|l| clip(l) == searched) =>
+        let text = match (&*again, line) {
+            (Again::Large, _) => Some(searched),
+            (Again::Read { lines, config }, Some(at))
+                if lines.get(at).is_some_and(|l| clip(l) == searched) =>
             {
-                scrubbed.get(at).map(clip)
+                if !*config {
+                    Some(searched)
+                } else if lines[at].contains('"') && !starts_with_key(&lines[at]) {
+                    None
+                } else {
+                    Some(clip(&crate::command_guard::scrub_secrets(&lines[at])))
+                }
             }
             _ => None,
         };
         hit["text"] = json!(text.unwrap_or_else(|| "[redacted]".to_string()));
     }
     value
+}
+
+/// A JSON line that starts with its own key (`"name": …`).
+fn starts_with_key(line: &str) -> bool {
+    static KEY: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| regex::Regex::new(r#"^\s*[{,]?\s*"(?:[^"\\]|\\.)*"\s*:"#).expect("key"))
+        .is_match(line)
 }
 
 /// TBO Phase 27 (Q5): a Frappe site's configuration is never written by Write
@@ -4257,8 +4274,18 @@ mod tests {
                 .unwrap()
                 .to_string()
         };
-        assert_eq!(found(4, "  \"s3cret\""), "  \"[redacted]\"");
+        let hit = |path: &str, line: u64, text: &str| {
+            let value = json!({ "matches": [{ "path": path, "line": line, "text": text }] });
+            scrub_site_config_grep(value, Some(dir.path()))["matches"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        // a value on its own line never shows, whatever the line before says now (CodeRabbit on
+        // #34); a line with its own key shows, scrubbed by itself
+        assert_eq!(found(4, "  \"s3cret\""), "[redacted]");
         assert_eq!(found(2, " \"db_name\": \"_x\","), " \"db_name\": \"_x\",");
+        assert_eq!(found(3, " \"db_password\":"), " \"db_password\":");
         // the file changed: the old hit's line now holds something else
         assert_eq!(found(2, " \"db_name\": \"_old\","), "[redacted]");
         // a copy under another name is known by its content
@@ -4267,19 +4294,25 @@ mod tests {
             dir.path().join("notes.txt"),
         )
         .unwrap();
-        let value =
-            json!({ "matches": [{ "path": "notes.txt", "line": 4, "text": "  \"s3cret\"" }] });
+        assert_eq!(hit("notes.txt", 4, "  \"s3cret\""), "[redacted]");
+        // a configuration with only its key, under another name
+        std::fs::write(
+            dir.path().join("keys.txt"),
+            "{\n \"encryption_key\": \"k3y\"\n}\n",
+        )
+        .unwrap();
         assert_eq!(
-            scrub_site_config_grep(value, Some(dir.path()))["matches"][0]["text"],
-            "  \"[redacted]\""
+            hit("keys.txt", 2, " \"encryption_key\": \"k3y\""),
+            " \"encryption_key\": \"[redacted]\""
         );
-        // an ordinary file's hit is left as it is
+        // a file deleted since the search hides its hit
+        std::fs::remove_file(dir.path().join("notes.txt")).unwrap();
+        assert_eq!(hit("notes.txt", 4, "  \"s3cret\""), "[redacted]");
+        // an ordinary file's hit is left as it is, and hidden once the file changed
         std::fs::write(dir.path().join("plain.txt"), "s3cret\n").unwrap();
-        let value = json!({ "matches": [{ "path": "plain.txt", "line": 1, "text": "s3cret" }] });
-        assert_eq!(
-            scrub_site_config_grep(value, Some(dir.path()))["matches"][0]["text"],
-            "s3cret"
-        );
+        assert_eq!(hit("plain.txt", 1, "s3cret"), "s3cret");
+        std::fs::write(dir.path().join("plain.txt"), "other\n").unwrap();
+        assert_eq!(hit("plain.txt", 1, "s3cret"), "[redacted]");
     }
 
     #[cfg(unix)]
@@ -4389,6 +4422,8 @@ mod tests {
     async fn grep_uses_injected_rg_when_present() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "needle in workspace\n").unwrap();
+        // the fake rg's hit is a real file: a hit whose file is gone since the search is hidden
+        std::fs::write(dir.path().join("from-rg.txt"), "hello from rg\n").unwrap();
         let fake_dir = tempfile::tempdir().unwrap();
         let rg = write_fake_rg(
             fake_dir.path(),
