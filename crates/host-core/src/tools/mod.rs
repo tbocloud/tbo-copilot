@@ -2877,9 +2877,10 @@ fn is_site_config_target(requested: &Path, resolved: &Path) -> bool {
 
 /// TBO Phase 27 (Q5): search hits as they are safe to show. Every hit's line is read from its file
 /// again and shown only while the file is the one that was searched: a file deleted, unreadable,
-/// or written after the search began (its modified time is later than `searched_at`) hides its
-/// hits, since what it was when searched (a site's configuration or not) can no longer be told;
-/// an unchanged file is also checked line by line. In a Frappe site's configuration (by its name, or by its content
+/// or written after the search began (its modified time, read after the file is read again, is
+/// later than `searched_at`) hides its hits, since what it was when searched (a site's
+/// configuration or not) can no longer be told; an unchanged file is also checked line by line.
+/// In a Frappe site's configuration (by its name, or by its content
 /// under another name: a copy, a hard link), a line is shown only when it carries its own key,
 /// scrubbed; a line with a value but no key (a value on the line after its key) is hidden, so what
 /// is shown never depends on another line. A file larger than a site's configuration can be is
@@ -2933,19 +2934,23 @@ fn scrub_site_config_grep(
         } else {
             workspace.map(|root| root.join(shown))
         };
-        let changed = |meta: &std::fs::Metadata| meta.modified().map_or(true, |m| m > searched_at);
-        let again = match file.as_deref().map(std::fs::metadata) {
-            Some(Ok(meta)) if changed(&meta) => Again::Gone,
-            Some(Ok(meta)) if meta.len() > CONFIG_MAX_BYTES && !by_name => Again::Large,
-            Some(Ok(_)) => match file.as_deref().map(std::fs::read_to_string) {
-                Some(Ok(text)) => Again::Read {
-                    config: by_name || crate::command_guard::looks_like_site_config(&text),
-                    lines: lines_named(&text, lines),
-                },
-                _ => Again::Gone,
-            },
-            _ => Again::Gone,
-        };
+        // one handle for the checks and the read, so they all see the same file
+        let again = (|| {
+            let handle = File::open(file.as_deref()?).ok()?;
+            let meta = handle.metadata().ok()?;
+            if modified_since(&meta, searched_at) {
+                return None;
+            }
+            if meta.len() > CONFIG_MAX_BYTES && !by_name {
+                return Some(Again::Large);
+            }
+            let text = read_unchanged_since(handle, searched_at)?;
+            Some(Again::Read {
+                config: by_name || crate::command_guard::looks_like_site_config(&text),
+                lines: lines_named(&text, lines),
+            })
+        })()
+        .unwrap_or(Again::Gone);
         files.insert(shown.clone(), again);
     }
     for hit in hits.iter_mut() {
@@ -2974,6 +2979,22 @@ fn scrub_site_config_grep(
         hit["text"] = json!(text.unwrap_or_else(|| "[redacted]".to_string()));
     }
     value
+}
+
+/// Whether the file was written after `searched_at` (or its modified time can't be read).
+fn modified_since(meta: &std::fs::Metadata, searched_at: std::time::SystemTime) -> bool {
+    meta.modified().map_or(true, |m| m > searched_at)
+}
+
+/// TBO Phase 27 (Q5), CodeRabbit on #35: the file's text, only when it was not written after
+/// `searched_at`. The modified time is read through the same handle *after* the text, so a write at
+/// any moment from the search's start to the end of this read is seen, and the text returned is the
+/// text that was searched.
+fn read_unchanged_since(mut handle: File, searched_at: std::time::SystemTime) -> Option<String> {
+    let mut text = String::new();
+    handle.read_to_string(&mut text).ok()?;
+    let meta = handle.metadata().ok()?;
+    (!modified_since(&meta, searched_at)).then_some(text)
 }
 
 /// The lines of `text` at the given 0-based positions, line ends removed: only what search hits
@@ -4375,6 +4396,34 @@ mod tests {
         );
         // the same file, unchanged since a later search, is an ordinary file and shows
         assert_eq!(hit("was-config.txt", 3, "  \"s3cret\""), "  \"s3cret\"");
+    }
+
+    #[test]
+    fn a_file_written_between_its_first_check_and_its_read_is_not_used() {
+        // TBO Phase 27 (Q5), CodeRabbit on #35: the file is opened and found unchanged, then
+        // written (a configuration's key line becomes an ordinary one) before it is read; the
+        // check after the read sees the write, so the new text is never used to classify the hit
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("swapped.txt");
+        std::fs::write(&path, "{\n \"db_password\":\n  \"s3cret\"\n}\n").unwrap();
+        let searched_at = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        let handle = File::open(&path).unwrap();
+        assert!(!modified_since(&handle.metadata().unwrap(), searched_at));
+        std::fs::write(&path, "{\n \"note\":\n  \"s3cret\"\n}\n").unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(searched_at + std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(read_unchanged_since(handle, searched_at), None);
+        // unwritten since the search, the same read returns the text
+        let handle = File::open(&path).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(120);
+        assert_eq!(
+            read_unchanged_since(handle, later).as_deref(),
+            Some("{\n \"note\":\n  \"s3cret\"\n}\n")
+        );
     }
 
     #[test]
