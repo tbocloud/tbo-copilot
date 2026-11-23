@@ -1085,15 +1085,18 @@ pub async fn execute_tool_with_path_access(
              never by writing the file",
         )),
         "Glob" => tool_glob(workspace, scratch, args, allow_external_paths).map_err(Into::into),
-        "Grep" => tool_grep(
-            workspace,
-            scratch,
-            args,
-            allow_external_paths,
-            hashline.as_ref(),
-        )
-        .map(|found| scrub_site_config_grep(found, workspace))
-        .map_err(Into::into),
+        "Grep" => {
+            let searched_at = std::time::SystemTime::now();
+            tool_grep(
+                workspace,
+                scratch,
+                args,
+                allow_external_paths,
+                hashline.as_ref(),
+            )
+            .map(|found| scrub_site_config_grep(found, workspace, searched_at))
+            .map_err(Into::into)
+        }
         "Write" => tool_write(
             workspace,
             scratch,
@@ -2873,13 +2876,19 @@ fn is_site_config_target(requested: &Path, resolved: &Path) -> bool {
 }
 
 /// TBO Phase 27 (Q5): search hits as they are safe to show. Every hit's line is read from its file
-/// again and shown only while it is still the line that was searched: a file deleted, unreadable or
-/// changed since hides its hit. In a Frappe site's configuration (by its name, or by its content
+/// again and shown only while the file is the one that was searched: a file deleted, unreadable,
+/// or written after the search began (its modified time is later than `searched_at`) hides its
+/// hits, since what it was when searched (a site's configuration or not) can no longer be told;
+/// an unchanged file is also checked line by line. In a Frappe site's configuration (by its name, or by its content
 /// under another name: a copy, a hard link), a line is shown only when it carries its own key,
 /// scrubbed; a line with a value but no key (a value on the line after its key) is hidden, so what
 /// is shown never depends on another line. A file larger than a site's configuration can be is
 /// not read again.
-fn scrub_site_config_grep(mut value: Value, workspace: Option<&Path>) -> Value {
+fn scrub_site_config_grep(
+    mut value: Value,
+    workspace: Option<&Path>,
+    searched_at: std::time::SystemTime,
+) -> Value {
     /// A larger file is never a site's configuration.
     const CONFIG_MAX_BYTES: u64 = 1024 * 1024;
     enum Again {
@@ -2924,7 +2933,9 @@ fn scrub_site_config_grep(mut value: Value, workspace: Option<&Path>) -> Value {
         } else {
             workspace.map(|root| root.join(shown))
         };
+        let changed = |meta: &std::fs::Metadata| meta.modified().map_or(true, |m| m > searched_at);
         let again = match file.as_deref().map(std::fs::metadata) {
+            Some(Ok(meta)) if changed(&meta) => Again::Gone,
             Some(Ok(meta)) if meta.len() > CONFIG_MAX_BYTES && !by_name => Again::Large,
             Some(Ok(_)) => match file.as_deref().map(std::fs::read_to_string) {
                 Some(Ok(text)) => Again::Read {
@@ -4292,14 +4303,24 @@ mod tests {
         let found = |line: u64, text: &str| {
             let value =
                 json!({ "matches": [{ "path": "site_config.json", "line": line, "text": text }] });
-            scrub_site_config_grep(value, Some(dir.path()))["matches"][0]["text"]
+            // the search runs after the files are written
+            scrub_site_config_grep(value, Some(dir.path()), std::time::SystemTime::now())["matches"]
+                [0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let hit_at = |path: &str, line: u64, text: &str, searched_at: std::time::SystemTime| {
+            let value = json!({ "matches": [{ "path": path, "line": line, "text": text }] });
+            scrub_site_config_grep(value, Some(dir.path()), searched_at)["matches"][0]["text"]
                 .as_str()
                 .unwrap()
                 .to_string()
         };
         let hit = |path: &str, line: u64, text: &str| {
             let value = json!({ "matches": [{ "path": path, "line": line, "text": text }] });
-            scrub_site_config_grep(value, Some(dir.path()))["matches"][0]["text"]
+            scrub_site_config_grep(value, Some(dir.path()), std::time::SystemTime::now())["matches"]
+                [0]["text"]
                 .as_str()
                 .unwrap()
                 .to_string()
@@ -4336,6 +4357,24 @@ mod tests {
         assert_eq!(hit("plain.txt", 1, "s3cret"), "s3cret");
         std::fs::write(dir.path().join("plain.txt"), "other\n").unwrap();
         assert_eq!(hit("plain.txt", 1, "s3cret"), "[redacted]");
+        // a file written after the search began: what it was when searched (a configuration or
+        // not) can no longer be told, so its hits are hidden even though the line still matches
+        // (CodeRabbit on #35)
+        let searched_at = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let was_config = dir.path().join("was-config.txt");
+        std::fs::write(&was_config, "{\n \"x\":\n  \"s3cret\"\n}\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&was_config)
+            .unwrap()
+            .set_modified(searched_at + std::time::Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(
+            hit_at("was-config.txt", 3, "  \"s3cret\"", searched_at),
+            "[redacted]"
+        );
+        // the same file, unchanged since a later search, is an ordinary file and shows
+        assert_eq!(hit("was-config.txt", 3, "  \"s3cret\""), "  \"s3cret\"");
     }
 
     #[test]
