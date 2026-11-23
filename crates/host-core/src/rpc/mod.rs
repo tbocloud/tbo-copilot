@@ -8549,6 +8549,100 @@ mod tests {
         assert!(project.join("notes.txt").exists());
     }
 
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn site_configs_stay_hidden_by_window_search_link_name_and_hard_link() {
+        // CodeRabbit on #34, round 3
+        let (_data, project, state, session_id) = guarded_session("Secrets 3", "auto");
+        let site = project.join("sites").join("demo.localhost");
+        fs::create_dir_all(&site).unwrap();
+        let config = site.join("site_config.json");
+        // valid JSON with the value on the line after its key
+        let original = "{\n \"db_password\":\n  \"s3cretValue123\",\n \"x\": 1\n}\n";
+        fs::write(&config, original).unwrap();
+        let call = |name: &str, args: Value| json!({ "sessionId": session_id, "toolCallId": name, "toolName": name, "args": args, "mode": "agent" });
+        let run = |name: &str, args: Value| {
+            handle_request(
+                state.clone(),
+                "tools.execute",
+                call(name, args),
+                mpsc::unbounded_channel().0,
+            )
+        };
+
+        // a Read window that starts at the value's line
+        let read = run(
+            "Read",
+            json!({ "path": "sites/demo.localhost/site_config.json", "offset": 2, "limit": 1 }),
+        )
+        .await
+        .unwrap();
+        let content = read["content"]["content"].as_str().unwrap();
+        assert!(
+            !content.contains("s3cretValue123") && content.contains("[redacted]"),
+            "{read}"
+        );
+        // a search hit on the value's line
+        let grep = run(
+            "Grep",
+            json!({ "pattern": "s3cret", "outputMode": "content" }),
+        )
+        .await
+        .unwrap();
+        let text = grep["content"].to_string();
+        assert!(
+            text.contains("site_config.json") && !text.contains("s3cretValue123"),
+            "{grep}"
+        );
+
+        // a move onto a link named site_config.json writes nothing behind it
+        let other = project.join("sites").join("other.localhost");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(project.join("backing.json"), "{\"db_password\": \"b\"}\n").unwrap();
+        std::os::unix::fs::symlink(project.join("backing.json"), other.join("site_config.json"))
+            .unwrap();
+        fs::write(project.join("notes.txt"), "hello\n").unwrap();
+        let tag_of = |read: &Value| read["content"]["tag"].as_str().unwrap().to_string();
+        let tag = tag_of(&run("Read", json!({ "path": "notes.txt" })).await.unwrap());
+        let moved = run(
+            "Edit",
+            json!({ "path": "notes.txt", "tag": tag, "ops": "MV sites/other.localhost/site_config.json" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(moved["errorCode"], "USE_BENCH_SET_CONFIG", "{moved}");
+        assert_eq!(
+            fs::read_to_string(project.join("backing.json")).unwrap(),
+            "{\"db_password\": \"b\"}\n"
+        );
+
+        // a hard link to the configuration: the write lands under the name given only
+        fs::hard_link(&config, project.join("copy.json")).unwrap();
+        let written = run("Write", json!({ "path": "copy.json", "content": "{}" }))
+            .await
+            .unwrap();
+        assert!(written.get("errorCode").is_none(), "{written}");
+        assert_eq!(fs::read_to_string(project.join("copy.json")).unwrap(), "{}");
+        fs::hard_link(&config, project.join("copy2.json")).unwrap();
+        let tag = tag_of(&run("Read", json!({ "path": "notes.txt" })).await.unwrap());
+        let moved = run(
+            "Edit",
+            json!({ "path": "notes.txt", "tag": tag, "ops": "MV copy2.json" }),
+        )
+        .await
+        .unwrap();
+        assert!(moved.get("errorCode").is_none(), "{moved}");
+        assert_eq!(
+            fs::read_to_string(project.join("copy2.json")).unwrap(),
+            "hello\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&config).unwrap(),
+            original,
+            "the configuration is untouched"
+        );
+    }
+
     #[tokio::test]
     async fn tools_abort_during_permission_removes_the_pending_request() {
         let Some(shell_id) = available_test_shell_id() else {

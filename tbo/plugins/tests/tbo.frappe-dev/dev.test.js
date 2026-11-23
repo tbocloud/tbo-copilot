@@ -40,6 +40,8 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
     GIT_COMMITTER_NAME: "Dev",
     GIT_COMMITTER_EMAIL: "dev@example.com",
   };
+  // Frappe's own overrides come only from a test that sets them
+  for (const name of Object.keys(env)) if (name.startsWith("FRAPPE_")) delete env[name];
   const git = (cwd, ...args) => execFileSync("git", args, { cwd, env, encoding: "utf8" }).trim();
   const write = (root, rel, text) => {
     fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
@@ -157,6 +159,7 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
       log: (message) => logs.push(message),
       probe: async (host, port) => {
         readyCalls.push(`probe ${host}:${port}`);
+        if (hooks.probeThrows) throw new RangeError("the probe failed");
         return !servicesDown.has(`${host}:${port}`);
       },
     });
@@ -1396,6 +1399,60 @@ test("ready reports a Redis address it cannot check, and never its password", as
   w.servicesDown.clear();
   commonConfig(w, { redis_cache: "rediss://default:hunter2@127.0.0.1:13000/0" });
   assert.equal(byId(await w.dev.runDev({ action: "ready" })).services.ok, true);
+});
+
+test("ready never shows a Redis credential, and an invalid port or a failing probe is not answering", async (t) => {
+  const w = world(t);
+  // CodeRabbit on #34: an address with no host took the password for the host
+  commonConfig(w, { redis_cache: "redis://hunter2@", redis_queue: "redis://[hunter2@x]:6379" });
+  const noHost = byId(await w.dev.runDev({ action: "ready" })).services;
+  assert.equal(noHost.ok, false);
+  assert.match(noHost.detail, /Redis cache \(a redis address this check cannot reach/);
+  assert.doesNotMatch(JSON.stringify(noHost), /hunter2/);
+  // a port no service can have is a failed item, not an exception
+  commonConfig(w, { redis_cache: "redis://127.0.0.1:65536", redis_queue: "redis://127.0.0.1:11000", db_port: 0 });
+  const badPort = byId(await w.dev.runDev({ action: "ready" })).services;
+  assert.equal(badPort.ok, false);
+  assert.match(badPort.detail, /Redis cache \(127\.0\.0\.1: the port is not a valid port number\)/);
+  assert.ok(!w.readyCalls.includes("probe 127.0.0.1:65536"), "never probed");
+  // the real probe cannot throw on such a port either
+  const { tcpProbe } = require("../../tbo.frappe-dev/lib/ready");
+  assert.equal(await tcpProbe("127.0.0.1", 65536), false);
+  // a probe that throws is a service that does not answer, and the report still comes back
+  commonConfig(w, {});
+  w.hooks.probeThrows = true;
+  const thrown = byId(await w.dev.runDev({ action: "ready" })).services;
+  assert.equal(thrown.ok, false);
+  assert.match(thrown.detail, /MariaDB \(127\.0\.0\.1:3306\)/);
+});
+
+test("ready probes the services as Frappe connects to them: overrides, the site's own config, defaults", async (t) => {
+  const w = world(t);
+  commonConfig(w, {}); // no addresses: Frappe's defaults
+  await w.dev.runDev({ action: "ready" });
+  assert.ok(["probe 127.0.0.1:3306", "probe 127.0.0.1:13311", "probe 127.0.0.1:11311"].every((p) => w.readyCalls.includes(p)), w.readyCalls.join(" | "));
+  // the site's own setting over the bench's
+  commonConfig(w, { redis_cache: "redis://127.0.0.1:13000", db_port: 3306 });
+  fs.writeFileSync(path.join(w.bench, "sites", "dev.localhost", "site_config.json"), JSON.stringify({ allow_tests: true, db_port: 3310, redis_cache: "redis://127.0.0.1:13010" }));
+  w.readyCalls.length = 0;
+  await w.dev.runDev({ action: "ready" });
+  assert.ok(w.readyCalls.includes("probe 127.0.0.1:3310") && w.readyCalls.includes("probe 127.0.0.1:13010"), w.readyCalls.join(" | "));
+  // CodeRabbit on #34: Frappe's environment overrides come first
+  Object.assign(w.env, { FRAPPE_DB_HOST: "db.internal", FRAPPE_DB_PORT: "3307", FRAPPE_REDIS_CACHE: "redis://cache.internal:6380", FRAPPE_REDIS_QUEUE: "redis://queue.internal:6381" });
+  w.servicesDown.add("127.0.0.1:3310"); // the file's address is down, the real one answers
+  w.readyCalls.length = 0;
+  const services = byId(await w.dev.runDev({ action: "ready" })).services;
+  assert.equal(services.ok, true, services.detail);
+  assert.ok(["probe db.internal:3307", "probe cache.internal:6380", "probe queue.internal:6381"].every((p) => w.readyCalls.includes(p)), w.readyCalls.join(" | "));
+  // a database socket is probed as a socket; SQLite has no server
+  Object.assign(w.env, { FRAPPE_DB_SOCKET: "/tmp/mysql.sock" });
+  w.readyCalls.length = 0;
+  await w.dev.runDev({ action: "ready" });
+  assert.ok(w.readyCalls.includes("probe /tmp/mysql.sock:undefined"), w.readyCalls.join(" | "));
+  Object.assign(w.env, { FRAPPE_DB_TYPE: "sqlite" });
+  w.readyCalls.length = 0;
+  await w.dev.runDev({ action: "ready" });
+  assert.ok(!w.readyCalls.some((p) => p.includes("mysql.sock") || p.includes("db.internal")), w.readyCalls.join(" | "));
 });
 
 test("ready checks a remembered test site again", async (t) => {

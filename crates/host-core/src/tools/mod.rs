@@ -1077,7 +1077,6 @@ pub async fn execute_tool_with_path_access(
             allow_external_paths,
             hashline.as_ref(),
         )
-        .map(scrub_site_config_read)
         .map_err(Into::into),
         "Write" | "Edit" if targets_site_config(args) => Err(hashline::ToolError::new(
             "USE_BENCH_SET_CONFIG",
@@ -1093,7 +1092,7 @@ pub async fn execute_tool_with_path_access(
             allow_external_paths,
             hashline.as_ref(),
         )
-        .map(scrub_site_config_grep)
+        .map(|found| scrub_site_config_grep(found, workspace))
         .map_err(Into::into),
         "Write" => tool_write(
             workspace,
@@ -1382,9 +1381,23 @@ fn tool_read(
     let file = hashline::normalize_file(&bytes);
     let tag = hashline::tag_of_lf_text(&file.text);
     let total_line_count = hashline::split_lines(&file.text).len();
+    // TBO Phase 27 (Q5): a Frappe site's configuration is shown with its secret values hidden,
+    // scrubbed whole before the window is taken (a value on the line after its key); lines stay
+    // where they are, and the tag is the file's own
+    let scrubbed;
+    let shown = if is_site_config_target(Path::new(path), &resolved) {
+        scrubbed = hashline::normalize_file(
+            crate::command_guard::scrub_secrets(&file.text)
+                .into_owned()
+                .as_bytes(),
+        );
+        &scrubbed
+    } else {
+        &file
+    };
     let window = hashline::format_read_window(
         &display,
-        &file,
+        shown,
         &tag,
         offset,
         limit,
@@ -1463,7 +1476,7 @@ fn tool_write(
     let (resolved, root_kind) =
         resolve_tool_path_with_external(root, scratch, path, allow_external_paths)
             .map_err(|e| (e.clone(), e))?;
-    if let Some(refusal) = site_config_refusal(&resolved) {
+    if let Some(refusal) = site_config_refusal(Path::new(path), &resolved) {
         return Err(refusal);
     }
     if ignore_rules::is_sensitive_path(&resolved) {
@@ -1473,7 +1486,7 @@ fn tool_write(
         std::fs::create_dir_all(parent)
             .map_err(|e| ("TOOL_FAILED".into(), format!("mkdir failed: {e}")))?;
     }
-    std::fs::write(&resolved, &content).map_err(|e| {
+    write_tool_file(&resolved, content.as_bytes()).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             ("FILE_NOT_FOUND".into(), format!("File not found: {path}"))
         } else {
@@ -1510,7 +1523,7 @@ fn tool_edit(
     let (resolved, root_kind) =
         resolve_tool_path_with_external(root, scratch, path, allow_external_paths)
             .map_err(|e| hashline::ToolError::new(e.clone(), e))?;
-    refuse_site_config(&resolved)?;
+    refuse_site_config(Path::new(path), &resolved)?;
     if ignore_rules::is_sensitive_path(&resolved) {
         let (code, message) = ignore_rules::denied_error(path);
         return Err(hashline::ToolError::new(code, message));
@@ -1607,7 +1620,7 @@ fn tool_edit(
         let (dest_resolved, dest_root) =
             resolve_tool_path_with_external(root, scratch, dest, allow_external_paths)
                 .map_err(|e| hashline::ToolError::new(e.clone(), e))?;
-        refuse_site_config(&dest_resolved)?;
+        refuse_site_config(Path::new(dest), &dest_resolved)?;
         if ignore_rules::is_sensitive_path(&dest_resolved) {
             let (code, message) = ignore_rules::denied_error(dest);
             return Err(hashline::ToolError::new(code, message));
@@ -1617,7 +1630,7 @@ fn tool_edit(
                 hashline::ToolError::new("TOOL_FAILED", format!("mkdir failed: {e}"))
             })?;
         }
-        std::fs::write(&dest_resolved, &bytes)
+        write_tool_file(&dest_resolved, &bytes)
             .map_err(|e| hashline::ToolError::new("TOOL_FAILED", format!("write failed: {e}")))?;
         std::fs::remove_file(&resolved)
             .map_err(|e| hashline::ToolError::new("TOOL_FAILED", format!("move failed: {e}")))?;
@@ -1641,7 +1654,7 @@ fn tool_edit(
         }));
     }
 
-    std::fs::write(&resolved, &bytes)
+    write_tool_file(&resolved, &bytes)
         .map_err(|e| hashline::ToolError::new("TOOL_FAILED", format!("write failed: {e}")))?;
     hashline::record_write(hashline, &canonical, &file, &success.tag);
     Ok(json!({
@@ -2847,50 +2860,63 @@ async fn tool_bash(
     }
 }
 
-/// TBO Phase 27 (Q5): a Frappe site's configuration is shown with its secret
-/// values hidden; settings are read as they are.
-fn scrub_site_config_read(mut value: Value) -> Value {
-    let is_config = value
-        .get("path")
-        .and_then(Value::as_str)
-        .is_some_and(crate::command_guard::is_site_config);
-    if is_config {
-        if let Some(content) = value.get("content").and_then(Value::as_str) {
-            let scrubbed = crate::command_guard::scrub_secrets(content).into_owned();
-            value["content"] = json!(scrubbed);
-        }
-    }
-    value
+/// TBO Phase 27 (Q5): whether a tool's target is a Frappe site's configuration, by the name asked
+/// for, the path it resolved to, or the file a link there points to.
+fn is_site_config_target(requested: &Path, resolved: &Path) -> bool {
+    let target = std::fs::canonicalize(resolved).unwrap_or_else(|_| resolved.to_path_buf());
+    [requested, resolved, target.as_path()]
+        .iter()
+        .any(|p| crate::command_guard::is_site_config_path(p))
 }
 
 /// TBO Phase 27 (Q5): a search hit in a Frappe site's configuration shows its
-/// secret values hidden, as a Read of the file does.
-fn scrub_site_config_grep(mut value: Value) -> Value {
-    if let Some(hits) = value.get_mut("matches").and_then(Value::as_array_mut) {
-        for hit in hits {
-            let is_config = hit
-                .get("path")
-                .and_then(Value::as_str)
-                .is_some_and(crate::command_guard::is_site_config);
-            if !is_config {
-                continue;
-            }
-            if let Some(text) = hit.get("text").and_then(Value::as_str) {
-                let scrubbed = crate::command_guard::scrub_secrets(text).into_owned();
-                hit["text"] = json!(scrubbed);
-            }
+/// line from the whole file scrubbed, as a Read of the file does (a value on
+/// the line after its key); a hit whose file cannot be read again is hidden.
+fn scrub_site_config_grep(mut value: Value, workspace: Option<&Path>) -> Value {
+    let Some(hits) = value.get_mut("matches").and_then(Value::as_array_mut) else {
+        return value;
+    };
+    let mut scrubbed_files: std::collections::HashMap<String, Option<Vec<String>>> =
+        std::collections::HashMap::new();
+    for hit in hits {
+        let Some(shown) = hit.get("path").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        if !crate::command_guard::is_site_config(&shown) || hit.get("text").is_none() {
+            continue;
         }
+        let lines = scrubbed_files.entry(shown.clone()).or_insert_with(|| {
+            let file = if Path::new(&shown).is_absolute() {
+                PathBuf::from(&shown)
+            } else {
+                workspace?.join(&shown)
+            };
+            let text = std::fs::read_to_string(file).ok()?;
+            let scrubbed = crate::command_guard::scrub_secrets(&text);
+            Some(scrubbed.split('\n').map(str::to_string).collect())
+        });
+        let line = hit
+            .get("line")
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n > 0);
+        let text = match (lines.as_ref(), line) {
+            (Some(lines), Some(n)) => lines.get(n - 1).map(|l| {
+                let l = l.strip_suffix('\r').unwrap_or(l);
+                l.chars().take(MAX_LINE_CHARS).collect::<String>()
+            }),
+            _ => None,
+        };
+        hit["text"] = json!(text.unwrap_or_else(|| "[redacted]".to_string()));
     }
     value
 }
 
 /// TBO Phase 27 (Q5): a Frappe site's configuration is never written by Write
-/// or Edit, whatever path names it (a link to it, a move onto it).
-fn site_config_refusal(resolved: &Path) -> Option<(String, String)> {
-    let target = std::fs::canonicalize(resolved).unwrap_or_else(|_| resolved.to_path_buf());
-    if crate::command_guard::is_site_config_path(resolved)
-        || crate::command_guard::is_site_config_path(&target)
-    {
+/// or Edit, whatever path names it (the name asked for, a link to it, a move
+/// onto it; a hard link is never written through, see `write_tool_file`).
+fn site_config_refusal(requested: &Path, resolved: &Path) -> Option<(String, String)> {
+    if is_site_config_target(requested, resolved) {
         return Some((
             "USE_BENCH_SET_CONFIG".into(),
             "A Frappe site's configuration holds its database password and keys: it is changed with \
@@ -2902,11 +2928,67 @@ fn site_config_refusal(resolved: &Path) -> Option<(String, String)> {
     None
 }
 
-fn refuse_site_config(resolved: &Path) -> Result<(), hashline::ToolError> {
-    match site_config_refusal(resolved) {
+fn refuse_site_config(requested: &Path, resolved: &Path) -> Result<(), hashline::ToolError> {
+    match site_config_refusal(requested, resolved) {
         Some((code, message)) => Err(hashline::ToolError::new(code, message)),
         None => Ok(()),
     }
+}
+
+/// TBO Phase 27 (Q5): writes a tool's file. A file with other names (hard links) is replaced, not
+/// written through, so the change lands only under the name given: another name may be a
+/// protected file, such as a Frappe site's configuration, that no name check can see.
+fn write_tool_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() && link_count(path, &meta) > 1 => meta,
+        _ => return std::fs::write(path, bytes),
+    };
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let temp = path.with_file_name(format!(".{name}.{}.{nanos}.pi-write", std::process::id()));
+    std::fs::write(&temp, bytes)?;
+    let _ = std::fs::set_permissions(&temp, meta.permissions());
+    std::fs::rename(&temp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
+}
+
+/// How many names (hard links) a file has.
+#[cfg(unix)]
+fn link_count(_path: &Path, meta: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    meta.nlink()
+}
+
+#[cfg(windows)]
+fn link_count(path: &Path, _meta: &std::fs::Metadata) -> u64 {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let Ok(file) = std::fs::File::open(path) else {
+        return 1;
+    };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `file` keeps the handle open for the call, and `info` is a valid, writable
+    // BY_HANDLE_FILE_INFORMATION for the function to fill.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
+    if ok == 0 {
+        1
+    } else {
+        u64::from(info.nNumberOfLinks)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn link_count(_path: &Path, _meta: &std::fs::Metadata) -> u64 {
+    1
 }
 
 fn targets_site_config(args: &Value) -> bool {

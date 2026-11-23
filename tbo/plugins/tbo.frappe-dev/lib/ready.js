@@ -24,10 +24,17 @@ function readJson(file) {
   }
 }
 
-// Whether something listens at host:port, within `timeoutMs`.
+// Whether something listens at host:port (or at the unix socket `host` when no port is given),
+// within `timeoutMs`; an address that cannot be tried is not answering.
 function tcpProbe(host, port, timeoutMs = 800) {
   return new Promise((resolve) => {
-    const socket = net.connect({ host, port });
+    let socket;
+    try {
+      socket = net.connect(port === undefined ? { path: host } : { host, port });
+    } catch {
+      resolve(false);
+      return;
+    }
     const done = (ok) => {
       socket.destroy();
       resolve(ok);
@@ -39,9 +46,10 @@ function tcpProbe(host, port, timeoutMs = 800) {
 }
 
 // host and port of a redis:// or rediss:// address (with or without user:password@ and a database),
-// or { unsupported } for any other form, such as a unix socket. Never the credentials.
+// or { unsupported } for any other form, such as a unix socket or an address with no host. Never
+// the credentials: a host never holds an @ (CodeRabbit on #34).
 function redisAddress(url) {
-  const m = /^(rediss?):\/\/(?:[^/]*@)?(\[[^\]]+\]|[^:/?#]+)(?::(\d+))?(?:[/?#].*)?$/i.exec(String(url || "").trim());
+  const m = /^(rediss?):\/\/(?:[^/]*@)?(\[[^\]@/]+\]|[^:/?#@[\]]+)(?::(\d+))?(?:[/?#].*)?$/i.exec(String(url || "").trim());
   if (!m) {
     // only a plain scheme name is shown (unix, redis+sentinel…); anything else could be part of a
     // password, so it is never echoed (CodeRabbit on #34)
@@ -51,33 +59,72 @@ function redisAddress(url) {
   return { host: m[2].replace(/^\[|\]$/g, ""), port: Number(m[3] || 6379) };
 }
 
+const validPort = (port) => Number.isInteger(port) && port > 0 && port < 65536;
+
 const item = (id, ok, detail, extra = {}) => ({ id, ok, detail, blocking: extra.blocking !== false, ...(extra.fix ? { fix: extra.fix } : {}) });
 const manual = (steps) => ({ kind: "person", steps });
 const auto = (fix, site, steps) => ({ kind: "tbo_dev fix", fix, ...(site ? { site } : {}), steps });
 
 function createReady({ runFn, env, probe = tcpProbe }) {
-  // The bench's services: MariaDB at db_host/db_port (a site may name its own host), Redis at the
-  // addresses in common_site_config.json.
-  async function services(bench, site) {
+  // The services as Frappe itself connects to them (frappe.get_site_config, v15 and v16): an
+  // environment override first (FRAPPE_DB_TYPE, FRAPPE_DB_SOCKET, FRAPPE_DB_HOST, FRAPPE_DB_PORT,
+  // FRAPPE_REDIS_CACHE, FRAPPE_REDIS_QUEUE, from the environment bench commands get), then the
+  // site's own setting over the bench's common one, then Frappe's default.
+  function effectiveConfig(bench, site) {
     const common = readJson(path.join(bench, "sites", "common_site_config.json"));
     const own = site ? readJson(path.join(bench, "sites", site, "site_config.json")) : {};
-    const dbHost = own.db_host || common.db_host || "127.0.0.1";
-    const dbPort = Number(own.db_port || common.db_port || 3306);
-    const host = dbHost === "localhost" ? "127.0.0.1" : dbHost;
+    const conf = { ...common, ...own };
+    const from = (name, key, fallback) => (env && env[name]) || conf[key] || fallback;
+    const dbType = String(from("FRAPPE_DB_TYPE", "db_type", "mariadb"));
+    return {
+      dbType,
+      dbSocket: from("FRAPPE_DB_SOCKET", "db_socket", ""),
+      dbHost: String(from("FRAPPE_DB_HOST", "db_host", "127.0.0.1")),
+      dbPort: Number(from("FRAPPE_DB_PORT", "db_port", dbType === "postgres" ? 5432 : 3306)),
+      redis: [
+        ["cache", from("FRAPPE_REDIS_CACHE", "redis_cache", "redis://127.0.0.1:13311")],
+        ["queue", from("FRAPPE_REDIS_QUEUE", "redis_queue", "redis://127.0.0.1:11311")],
+      ],
+    };
+  }
+
+  // Whether a service answers; a probe that fails is a service that does not.
+  async function answers(...target) {
+    try {
+      return Boolean(await probe(...target));
+    } catch {
+      return false;
+    }
+  }
+
+  // The bench's services: the database server (MariaDB or PostgreSQL; SQLite has none) and Redis.
+  async function services(bench, site) {
+    const c = effectiveConfig(bench, site);
     const down = [];
-    if (!(await probe(host, dbPort))) down.push(`MariaDB (${dbHost}:${dbPort})`);
-    for (const key of ["redis_cache", "redis_queue"]) {
-      if (!common[key]) continue;
-      const at = redisAddress(common[key]);
-      const name = `Redis ${key.replace("redis_", "")}`;
+    let database = "";
+    if (c.dbType === "mariadb" || c.dbType === "postgres") {
+      database = c.dbType === "postgres" ? "PostgreSQL" : "MariaDB";
+      if (c.dbSocket) {
+        if (!(await answers(String(c.dbSocket)))) down.push(`${database} (socket ${c.dbSocket})`);
+      } else if (!validPort(c.dbPort)) {
+        down.push(`${database} (${c.dbHost}: the port is not a valid port number)`);
+      } else if (!(await answers(c.dbHost === "localhost" ? "127.0.0.1" : c.dbHost, c.dbPort))) {
+        down.push(`${database} (${c.dbHost}:${c.dbPort})`);
+      }
+    }
+    for (const [key, url] of c.redis) {
+      const at = redisAddress(url);
+      const name = `Redis ${key}`;
       // an address the check cannot reach is said, never taken as answering (CodeRabbit on #34)
       if (at.unsupported) down.push(`${name} (a ${at.unsupported} address this check cannot reach; check it yourself)`);
-      else if (!(await probe(at.host, at.port))) down.push(`${name} (${at.host}:${at.port})`);
+      else if (!validPort(at.port)) down.push(`${name} (${at.host}: the port is not a valid port number)`);
+      else if (!(await answers(at.host, at.port))) down.push(`${name} (${at.host}:${at.port})`);
     }
-    if (!down.length) return item("services", true, "MariaDB and the bench's Redis answer");
+    if (!down.length) return item("services", true, `${database ? `${database} and ` : ""}the bench's Redis answer`);
+    const databaseDown = database && down.some((d) => d.startsWith(database));
     return item("services", false, `Not answering: ${down.join(", ")}`, {
       fix: manual(
-        `Start the bench's services: in a terminal, \`cd ${bench} && bench start\`, and keep it open${down.some((d) => d.startsWith("MariaDB")) ? "; start MariaDB too (on a Mac: `brew services start mariadb`)" : ""}. Then check again.`,
+        `Start the bench's services: in a terminal, \`cd ${bench} && bench start\`, and keep it open${databaseDown ? `; start ${database} too (on a Mac: \`brew services start ${database === "MariaDB" ? "mariadb" : "postgresql"}\`)` : ""}. Then check again.`,
       ),
     });
   }

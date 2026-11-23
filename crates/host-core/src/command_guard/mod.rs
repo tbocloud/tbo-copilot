@@ -23,9 +23,11 @@
 //! guardrail, not a sandbox: it catches the plain forms an agent writes.
 
 use regex::Regex;
-use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
+
+mod scrub;
+pub use scrub::{is_site_config, is_site_config_path, scrub_secrets, StreamScrubber};
 
 /// What happens to a shell command before the permission decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,20 +43,55 @@ pub enum CommandVerdict {
 /// Assess a shell command. `cwd` is the folder it starts in (the session's
 /// workspace); `allowed_roots` are the folders a recursive delete may target
 /// (the workspace, its scratch folder, the temp folder). The working folder is
-/// followed through `cd` and `pushd`, so a relative delete is placed where it
-/// runs; when the folder cannot be known, the delete is asked.
+/// followed through `cd` and `pushd`, through `&&`, `||`, `;`, pipes and
+/// subshells, so a relative delete is placed in every folder it may run in; a
+/// link in the project to a folder outside it is followed; when a folder cannot
+/// be known, the delete is asked.
 pub fn assess(command: &str, cwd: Option<&Path>, allowed_roots: &[PathBuf]) -> CommandVerdict {
-    assess_in(command, cwd, allowed_roots, &|path: &Path| path.is_dir())
+    let world = World {
+        home: std::env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from),
+        canonical: &|path: &Path| std::fs::canonicalize(path).ok(),
+    };
+    assess_in(command, cwd, allowed_roots, &world)
 }
 
-/// `assess`, with the check whether a folder exists given (tests use a made-up file system). A `cd`
-/// to a folder that does not exist fails and leaves the shell where it was, which the guard cannot
-/// count on (`cd a && cd missing; rm -rf old` deletes in a): the folder is then unknown.
+/// What the guard knows of the computer: the home folder, and a path as the file system resolves
+/// it (links followed), when it exists. Tests give a made-up one.
+struct World<'a> {
+    home: Option<PathBuf>,
+    canonical: &'a dyn Fn(&Path) -> Option<PathBuf>,
+}
+
+/// The folders a part of the command may run in; `None` is a folder the guard cannot know.
+type Dirs = Vec<Option<PathBuf>>;
+
+/// More possible folders than this and the folder is taken as unknown.
+const MAX_DIRS: usize = 16;
+
+fn add_dirs(into: &mut Dirs, from: &[Option<PathBuf>]) {
+    for dir in from {
+        if !into.contains(dir) {
+            into.push(dir.clone());
+        }
+    }
+    if into.len() > MAX_DIRS {
+        *into = vec![None];
+    }
+}
+
+fn both(a: &[Option<PathBuf>], b: &[Option<PathBuf>]) -> Dirs {
+    let mut out = a.to_vec();
+    add_dirs(&mut out, b);
+    out
+}
+
 fn assess_in(
     command: &str,
     cwd: Option<&Path>,
     allowed_roots: &[PathBuf],
-    is_dir: &dyn Fn(&Path) -> bool,
+    world: &World<'_>,
 ) -> CommandVerdict {
     let mut asks: Vec<String> = Vec::new();
     if let Some(reason) = destructive_sql(command) {
@@ -63,44 +100,115 @@ fn assess_in(
     if pipes_download_into_shell(command) {
         asks.push("runs a script downloaded from the internet".into());
     }
-    let mut here: Option<PathBuf> = cwd.map(normalize);
-    for segment in segments(command) {
-        let words = words(&segment);
-        let Some(run) = resolve_command(&words) else {
-            continue;
-        };
-        match run.program.as_str() {
-            "cd" | "pushd" => {
-                here = change_dir(here.as_deref(), &run.args).filter(|dir| is_dir(dir));
+    // The folders the shell may be in after the last part, when that part succeeded and when it
+    // failed: a `cd` can fail (no such folder, no permission) and leave the shell where it was, and
+    // `&&` / `||` decide which of the two the next part runs in.
+    let mut ok: Dirs = vec![cwd.map(normalize)];
+    let mut failed: Dirs = Vec::new();
+    let mut join = Op::Seq;
+    let mut subshells: Vec<Dirs> = Vec::new();
+    // a pipeline's parts run side by side, each in the folder the pipeline started in
+    let mut pipeline: Option<(Dirs, Dirs)> = None;
+    let items = items(command);
+    for (at, item) in items.iter().enumerate() {
+        let text = match item {
+            Item::Op(op) => {
+                join = *op;
                 continue;
             }
-            "popd" => {
-                here = None;
+            // a subshell's `cd` ends with it
+            Item::Open => {
+                subshells.push(both(&ok, &failed));
                 continue;
             }
-            _ => {}
-        }
-        let place = Place {
-            roots: allowed_roots,
-            cwd: here.as_deref(),
-            from_input: run.from_input,
-        };
-        let mut verdicts = vec![assess_one(&run.program, &run.args, &place)];
-        if run.admin {
-            verdicts.push(CommandVerdict::Ask(
-                "runs a command as the administrator".into(),
-            ));
-        }
-        for verdict in verdicts {
-            match verdict {
-                CommandVerdict::Refuse(reason) => return CommandVerdict::Refuse(reason),
-                CommandVerdict::Ask(reason) => {
-                    if !asks.contains(&reason) {
-                        asks.push(reason);
-                    }
+            Item::Close => {
+                if let Some(before) = subshells.pop() {
+                    ok = before.clone();
+                    failed = before;
                 }
-                CommandVerdict::Allow => {}
+                continue;
             }
+            Item::Part(text) => text,
+        };
+        let next = match items.get(at + 1) {
+            Some(Item::Op(op)) => Some(*op),
+            _ => None,
+        };
+        let (input, carry_ok, carry_failed): (Dirs, Dirs, Dirs) = match (join, &pipeline) {
+            (Op::And, _) => (ok.clone(), Vec::new(), failed.clone()),
+            (Op::Or, _) => (failed.clone(), ok.clone(), Vec::new()),
+            (Op::Pipe, Some((input, _))) => (input.clone(), Vec::new(), Vec::new()),
+            _ => (both(&ok, &failed), Vec::new(), Vec::new()),
+        };
+        if join != Op::Pipe && next == Some(Op::Pipe) {
+            let all = both(&both(&input, &carry_ok), &carry_failed);
+            pipeline = Some((input.clone(), all));
+        }
+        let detached = join == Op::Pipe || next == Some(Op::Pipe) || next == Some(Op::Background);
+
+        let words = words(text);
+        let run = resolve_command(&words);
+        let changed: Option<Dirs> = match &run {
+            Some(run) if run.program == "cd" || run.program == "pushd" => Some(
+                input
+                    .iter()
+                    .map(|dir| change_dir(dir.as_deref(), &run.args, world.home.as_deref()))
+                    .collect(),
+            ),
+            Some(run) if run.program == "popd" => Some(vec![None]),
+            _ => None,
+        };
+        if let (Some(run), None) = (&run, &changed) {
+            let dirs = if input.is_empty() {
+                vec![None]
+            } else {
+                input.clone()
+            };
+            let place = Place {
+                roots: allowed_roots,
+                dirs: &dirs,
+                from_input: run.from_input,
+                world,
+            };
+            let mut verdicts = vec![assess_one(&run.program, &run.args, &place)];
+            if run.admin {
+                verdicts.push(CommandVerdict::Ask(
+                    "runs a command as the administrator".into(),
+                ));
+            }
+            for verdict in verdicts {
+                match verdict {
+                    CommandVerdict::Refuse(reason) => return CommandVerdict::Refuse(reason),
+                    CommandVerdict::Ask(reason) => {
+                        if !asks.contains(&reason) {
+                            asks.push(reason);
+                        }
+                    }
+                    CommandVerdict::Allow => {}
+                }
+            }
+        }
+
+        if detached {
+            // in a pipeline or in the background: run in a subshell, except perhaps a pipeline's
+            // last part (zsh runs it in the shell itself), where a `cd` may or may not last
+            let mut all = match (&pipeline, join) {
+                (Some((_, all)), Op::Pipe) => all.clone(),
+                _ => both(&both(&input, &carry_ok), &carry_failed),
+            };
+            let last_of_pipeline =
+                join == Op::Pipe && next != Some(Op::Pipe) && next != Some(Op::Background);
+            if let (Some(changed), true) = (&changed, last_of_pipeline) {
+                add_dirs(&mut all, changed);
+            }
+            ok = all.clone();
+            failed = all;
+        } else {
+            ok = both(changed.as_deref().unwrap_or(&input), &carry_ok);
+            failed = both(&input, &carry_failed);
+        }
+        if next != Some(Op::Pipe) {
+            pipeline = None;
         }
     }
     if asks.is_empty() {
@@ -168,8 +276,10 @@ const PASSWORD_FLAGS: &[&str] = &[
 /// and whether it takes its operands from its input (`xargs`).
 struct Place<'a> {
     roots: &'a [PathBuf],
-    cwd: Option<&'a Path>,
+    /// Every folder the part may run in.
+    dirs: &'a [Option<PathBuf>],
     from_input: bool,
+    world: &'a World<'a>,
 }
 
 fn assess_one(program: &str, args: &[String], place: &Place<'_>) -> CommandVerdict {
@@ -377,11 +487,13 @@ const GIT_OPTIONS_WITH_VALUE: &[&str] = &[
     "--config-env",
 ];
 
+/// Where a recursive delete lands, from safest to worst.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Target {
     Inside,
     Broad,
-    Outside,
     Unknown,
+    Outside,
 }
 
 fn inside(path: &Path, roots: &[PathBuf]) -> bool {
@@ -389,8 +501,8 @@ fn inside(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| normal.starts_with(normalize(root)))
 }
 
+/// Where a delete target lands, in the worst of the folders the command may run in.
 fn delete_target(target: &str, place: &Place<'_>) -> Target {
-    let roots = place.roots;
     let t = target.trim_matches(|c| c == '"' || c == '\'');
     if matches!(
         t,
@@ -399,51 +511,106 @@ fn delete_target(target: &str, place: &Place<'_>) -> Target {
     {
         return Target::Outside;
     }
+    place
+        .dirs
+        .iter()
+        .map(|dir| delete_target_from(t, dir.as_deref(), place))
+        .max()
+        .unwrap_or(Target::Unknown)
+}
+
+fn delete_target_from(t: &str, dir: Option<&Path>, place: &Place<'_>) -> Target {
     if matches!(t, "." | "./" | "*" | "./*" | ".*") {
-        return match place.cwd {
-            Some(dir) if !inside(dir, roots) => Target::Outside,
-            _ => Target::Broad,
+        return match dir {
+            Some(dir) => match contained(dir, true, place) {
+                Target::Inside => Target::Broad,
+                other => other,
+            },
+            None => Target::Broad,
         };
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let expanded: Option<PathBuf> = if let Some(rest) = t.strip_prefix("~/") {
-        home.map(|h| h.join(rest))
+    let home = place.world.home.as_deref();
+    let in_home = |rest: &str| home.map(|h| h.join(rest));
+    let path = if let Some(rest) = t.strip_prefix("~/") {
+        in_home(rest)
     } else if let Some(rest) = t
         .strip_prefix("$HOME/")
         .or_else(|| t.strip_prefix("${HOME}/"))
     {
-        home.map(|h| h.join(rest))
+        in_home(rest)
     } else if t.starts_with('/') {
         Some(PathBuf::from(t))
-    } else {
+    } else if t.contains('$') || t.contains('`') || t.starts_with('~') {
         None
+    } else {
+        // a relative target is placed in the folder the command runs in
+        dir.map(|dir| dir.join(t))
     };
-    // a relative target is placed in the folder the command runs in
-    let path = match expanded {
-        Some(path) => path,
-        None if t.contains('$') || t.contains('`') => return Target::Unknown,
-        None => match place.cwd {
-            Some(dir) => dir.join(t),
-            None => return Target::Unknown,
-        },
+    match path {
+        // `x/` (and `x/.`) is the folder a link `x` points to; `x` alone is the link itself
+        Some(path) => contained(&path, t.ends_with('/') || t.ends_with("/."), place),
+        None => Target::Unknown,
+    }
+}
+
+/// Inside the allowed folders as written and as the file system resolves the folders on the way
+/// (a link in the project to a folder outside it). `follow_last` resolves the path itself too.
+fn contained(path: &Path, follow_last: bool, place: &Place<'_>) -> Target {
+    let lexical = normalize(path);
+    if !inside(&lexical, place.roots) {
+        return Target::Outside;
+    }
+    let probe = if follow_last {
+        lexical.clone()
+    } else {
+        lexical
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| lexical.clone())
     };
-    if inside(&path, roots) {
+    let Some(real) = resolve_existing(&probe, place.world) else {
+        return Target::Unknown;
+    };
+    let real_roots: Vec<PathBuf> = place
+        .roots
+        .iter()
+        .map(|root| (place.world.canonical)(root).unwrap_or_else(|| normalize(root)))
+        .collect();
+    if inside(&real, &real_roots) {
         Target::Inside
     } else {
         Target::Outside
     }
 }
 
-/// The folder after `cd <target>` (or `pushd`) from `from`; None when it cannot be known.
-fn change_dir(from: Option<&Path>, args: &[String]) -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+/// `path` with its longest existing part resolved by the file system and the rest as written.
+fn resolve_existing(path: &Path, world: &World<'_>) -> Option<PathBuf> {
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    let mut at = path.to_path_buf();
+    loop {
+        if let Some(mut real) = (world.canonical)(&at) {
+            for name in rest.iter().rev() {
+                real.push(name);
+            }
+            return Some(real);
+        }
+        rest.push(at.file_name()?.to_os_string());
+        if !at.pop() {
+            return None;
+        }
+    }
+}
+
+/// The folder after `cd <target>` (or `pushd`) from `from`, if it succeeds; None when it cannot be
+/// known.
+fn change_dir(from: Option<&Path>, args: &[String], home: Option<&Path>) -> Option<PathBuf> {
     let target = args
         .iter()
         .find(|a| !(a.starts_with('-') && a.len() > 1))
         .map(String::as_str)
         .unwrap_or("~");
     let path = match target {
-        "~" | "$HOME" | "${HOME}" => home?,
+        "~" | "$HOME" | "${HOME}" => home?.to_path_buf(),
         "-" => return None,
         t if t.contains('$') || t.contains('`') || t.contains('*') => return None,
         t if t.starts_with("~/") => home?.join(&t[2..]),
@@ -497,9 +664,44 @@ fn pipes_download_into_shell(command: &str) -> bool {
     .is_match(command)
 }
 
-/// The command's parts, split on `;`, `&&`, `||`, `|` and new lines.
-fn segments(command: &str) -> Vec<String> {
-    let mut parts = Vec::new();
+/// How a part follows the one before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Op {
+    /// `;`, a new line or the start: runs whatever happened before.
+    Seq,
+    /// `&&`: runs only if the part before succeeded.
+    And,
+    /// `||`: runs only if the part before failed.
+    Or,
+    /// `|`: runs side by side with the part before.
+    Pipe,
+    /// `&`: the part before runs in the background.
+    Background,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Item {
+    Part(String),
+    Op(Op),
+    /// `(` or `$(`: a subshell starts.
+    Open,
+    /// `)`: it ends.
+    Close,
+}
+
+fn end_part(items: &mut Vec<Item>, current: &mut String) {
+    if current.trim().is_empty() {
+        current.clear();
+    } else {
+        items.push(Item::Part(std::mem::take(current)));
+    }
+}
+
+/// The command's parts with the operators between them and its subshells. `{ … }` groups run in
+/// the same shell and only separate parts; a brace inside a word (`${HOME}`, `build{1,2}`) stays
+/// in it, as do `&>` and `>&`.
+fn items(command: &str) -> Vec<Item> {
+    let mut items = Vec::new();
     let mut current = String::new();
     let mut chars = command.chars().peekable();
     let mut quote: Option<char> = None;
@@ -516,22 +718,58 @@ fn segments(command: &str) -> Vec<String> {
                 quote = Some(c);
                 current.push(c);
             }
-            ';' | '\n' | '|' | '&' => {
-                if (c == '|' || c == '&') && chars.peek() == Some(&c) {
+            // the word keeps a `$` for what the substitution gives, which the guard cannot know
+            // (`cd $(git rev-parse --show-toplevel)` goes to an unknown folder, not home)
+            '$' if chars.peek() == Some(&'(') => {
+                current.push('$');
+                chars.next();
+                end_part(&mut items, &mut current);
+                items.push(Item::Open);
+            }
+            '(' => {
+                end_part(&mut items, &mut current);
+                items.push(Item::Open);
+            }
+            ')' => {
+                end_part(&mut items, &mut current);
+                items.push(Item::Close);
+            }
+            '{' | '}' if current.trim().is_empty() || current.ends_with(char::is_whitespace) => {
+                end_part(&mut items, &mut current);
+            }
+            ';' | '\n' => {
+                end_part(&mut items, &mut current);
+                items.push(Item::Op(Op::Seq));
+            }
+            '&' if chars.peek() == Some(&'&') => {
+                chars.next();
+                end_part(&mut items, &mut current);
+                items.push(Item::Op(Op::And));
+            }
+            '&' if chars.peek() == Some(&'>') || current.trim_end().ends_with('>') => {
+                current.push(c)
+            }
+            '&' => {
+                end_part(&mut items, &mut current);
+                items.push(Item::Op(Op::Background));
+            }
+            '|' if chars.peek() == Some(&'|') => {
+                chars.next();
+                end_part(&mut items, &mut current);
+                items.push(Item::Op(Op::Or));
+            }
+            '|' => {
+                if chars.peek() == Some(&'&') {
                     chars.next();
                 }
-                if c == '&' && current.trim_end().ends_with('>') {
-                    current.push(c);
-                    continue;
-                }
-                parts.push(std::mem::take(&mut current));
+                end_part(&mut items, &mut current);
+                items.push(Item::Op(Op::Pipe));
             }
-            '(' | ')' | '{' | '}' => parts.push(std::mem::take(&mut current)),
             _ => current.push(c),
         }
     }
-    parts.push(current);
-    parts.into_iter().filter(|p| !p.trim().is_empty()).collect()
+    end_part(&mut items, &mut current);
+    items
 }
 
 /// A part's words, quotes removed (a rough shell word split).
@@ -634,6 +872,9 @@ const WRAPPERS: &[&str] = &[
     "env", "nohup", "time", "command", "exec", "nice", "timeout", "xargs", "stdbuf", "sudo", "doas",
 ];
 
+/// Shell words that come before a command (`if rm …`, `then rm …`, `! rm …`).
+const KEYWORDS: &[&str] = &["if", "then", "else", "elif", "do", "while", "until", "!"];
+
 /// The command a part runs, past variable assignments and wrappers (`env`, `nohup`, `nice -n 10`,
 /// `timeout 30`, `xargs -0`, `sudo -u root`…) with their own options: a wrapper's option is never
 /// taken for the program (`nice -n 10 bench drop-site` is a bench command).
@@ -649,7 +890,7 @@ fn resolve_command(words: &[String]) -> Option<Run> {
                 !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             })
             .unwrap_or(false);
-        if is_assignment {
+        if is_assignment || KEYWORDS.contains(&w.as_str()) {
             i += 1;
             continue;
         }
@@ -694,178 +935,6 @@ fn resolve_command(words: &[String]) -> Option<Run> {
         }
     }
     None
-}
-
-const REDACTED: &str = "[redacted]";
-
-/// Tool output with secret values replaced by `[redacted]`: private keys, the
-/// values of password, secret, token and key settings (JSON, `.env`, YAML), a
-/// password given on a command line, authorization headers, and well-known
-/// token formats.
-pub fn scrub_secrets(text: &str) -> Cow<'_, str> {
-    static RULES: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
-    let rules = RULES.get_or_init(|| {
-        let names = r"[a-z0-9_.\-]*(?:password|passwd|secret|token|api_?key|apikey|private_?key|access_?key|encryption_key|client_secret|auth_token|authorization)[a-z0-9_.\-]*";
-        vec![
-            (
-                Regex::new(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
-                    .expect("key block"),
-                "-----BEGIN PRIVATE KEY----- [redacted] -----END PRIVATE KEY-----",
-            ),
-            (
-                // the whole string, escaped quotes and all
-                Regex::new(&format!(r#"(?i)("{names}"\s*:\s*")(?:[^"\\]|\\.)+(")"#)).expect("json"),
-                "${1}[redacted]${2}",
-            ),
-            (
-                Regex::new(&format!(r#"(?im)^(\s*(?:export\s+)?{names}\s*[=:]\s*)(?:"(?:[^"\\\n]|\\.)+"|'[^'\n]+'|[^\s"'\n]+)[ \t]*$"#))
-                    .expect("env"),
-                "${1}[redacted]",
-            ),
-            (
-                // NAME=value inside a command line (`DB_PASSWORD='x' bench …`), quotes respected
-                Regex::new(r#"(?i)(^|[\s;&|(])((?:export\s+)?[a-z_][a-z0-9_]*(?:password|passwd|secret|token|api_?key|apikey|private_?key|access_?key|encryption_key|client_secret|auth_token)[a-z0-9_]*=)(?:'[^'\n]*'|"(?:[^"\\\n]|\\.)*"|\\.|[^\s'"\\;&|])+"#)
-                    .expect("inline"),
-                "${1}${2}[redacted]",
-            ),
-            (
-                // a password given as an argument: the whole shell word, quoted and unquoted pieces and
-                // escaped spaces together (`'alpha beta'gamma`, `alpha\ beta`)
-                Regex::new(r#"(?i)(--(?:mariadb-root-|db-root-|root-|admin-|db-)?password(?:=|\s+))(?:'[^'\n]*'|"(?:[^"\\\n]|\\.)*"|\\.|[^\s'"\\])+"#)
-                    .expect("flag"),
-                "${1}[redacted]",
-            ),
-            (
-                Regex::new(r"(?i)(authorization:\s*(?:bearer|token|basic)\s+)\S+").expect("header"),
-                "${1}[redacted]",
-            ),
-            (
-                Regex::new(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_\-]{20,}|xox[abprs]-[A-Za-z0-9\-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16})\b")
-                    .expect("tokens"),
-                REDACTED,
-            ),
-            (
-                Regex::new(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b").expect("jwt"),
-                REDACTED,
-            ),
-        ]
-    });
-    let mut out: Cow<'_, str> = Cow::Borrowed(text);
-    for (regex, replacement) in rules {
-        if regex.is_match(&out) {
-            out = Cow::Owned(regex.replace_all(&out, *replacement).into_owned());
-        }
-    }
-    out
-}
-
-/// A Frappe site's configuration files hold its database password and keys.
-pub fn is_site_config(path: &str) -> bool {
-    is_site_config_path(Path::new(path))
-}
-
-pub fn is_site_config_path(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|n| n.to_str()),
-        Some("site_config.json") | Some("common_site_config.json")
-    )
-}
-
-/// The longest partial line held back before it is scrubbed and passed on anyway.
-const STREAM_HOLD_MAX: usize = 64 * 1024;
-
-/// Scrubs output as it streams, before it is captured, clipped or sent to the
-/// app as a live notification: whole lines are scrubbed (a partial line waits
-/// for its end), and a private key block is hidden from its BEGIN line to its
-/// END line even when it arrives in pieces.
-#[derive(Debug, Default)]
-pub struct StreamScrubber {
-    pending: String,
-    in_key: bool,
-    /// An overlong line was cut inside a secret value: the rest of that line is hidden.
-    hide_rest_of_line: bool,
-}
-
-/// The start of a secret value that may run past where an overlong line is cut: a JSON value, a
-/// NAME= assignment or a password argument, to the end of the text.
-fn dangling_secret() -> &'static Regex {
-    static DANGLING: OnceLock<Regex> = OnceLock::new();
-    DANGLING.get_or_init(|| {
-        let names = r"[a-z0-9_.\-]*(?:password|passwd|secret|token|api_?key|apikey|private_?key|access_?key|encryption_key|client_secret|auth_token|authorization)[a-z0-9_.\-]*";
-        Regex::new(&format!(
-            r#"(?i)("{names}"\s*:\s*"|(?:^|[\s;&|(]){names}\s*[=:]\s*|--(?:mariadb-root-|db-root-|root-|admin-|db-)?password(?:=|\s+))[^\n]*$"#
-        ))
-        .expect("dangling")
-    })
-}
-
-impl StreamScrubber {
-    /// The scrubbed complete lines of what has arrived so far.
-    pub fn push(&mut self, text: &str) -> String {
-        self.pending.push_str(text);
-        let mut out = String::new();
-        loop {
-            if self.hide_rest_of_line {
-                match self.pending.find(['\n', '\r']) {
-                    Some(end) => {
-                        self.pending.drain(..end);
-                        self.hide_rest_of_line = false;
-                    }
-                    None => {
-                        self.pending.clear();
-                        return out;
-                    }
-                }
-            }
-            let Some(end) = self.pending.find(['\n', '\r']) else {
-                break;
-            };
-            let line: String = self.pending.drain(..=end).collect();
-            out.push_str(&self.line(&line));
-        }
-        if self.pending.len() > STREAM_HOLD_MAX {
-            // a line longer than the hold is passed on in pieces; one cut inside a secret value hides
-            // the value and the rest of its line (CodeRabbit on #34)
-            let rest = std::mem::take(&mut self.pending);
-            let scrubbed = self.line(&rest);
-            match dangling_secret().captures(&scrubbed) {
-                Some(found) => {
-                    let start = found.get(1).map(|m| m.end()).unwrap_or(scrubbed.len());
-                    out.push_str(&scrubbed[..start]);
-                    out.push_str(REDACTED);
-                    self.hide_rest_of_line = true;
-                }
-                None => out.push_str(&scrubbed),
-            }
-        }
-        out
-    }
-
-    /// The scrubbed rest, at the end of the output.
-    pub fn finish(&mut self) -> String {
-        let rest = std::mem::take(&mut self.pending);
-        if rest.is_empty() {
-            return rest;
-        }
-        self.line(&rest)
-    }
-
-    fn line(&mut self, line: &str) -> String {
-        let is_begin = line.contains("-----BEGIN") && line.contains("PRIVATE KEY-----");
-        let is_end = line.contains("-----END") && line.contains("PRIVATE KEY-----");
-        if self.in_key {
-            if is_end {
-                self.in_key = false;
-                return "-----END PRIVATE KEY-----\n".into();
-            }
-            return String::new();
-        }
-        if is_begin && !is_end {
-            self.in_key = true;
-            return "-----BEGIN PRIVATE KEY----- [redacted]\n".into();
-        }
-        scrub_secrets(line).into_owned()
-    }
 }
 
 #[cfg(test)]

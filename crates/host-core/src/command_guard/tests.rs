@@ -1,24 +1,45 @@
 //! Tests of the command guard and the secret scrubbing (TBO Copilot Phase 27, Q5).
 
 use super::*;
+use std::borrow::Cow;
 
 fn roots() -> Vec<PathBuf> {
     vec![PathBuf::from("/work/app"), PathBuf::from("/tmp/scratch")]
 }
-/// A made-up file system: the project, its scratch folder, /home/user and the real home exist; a
-/// folder named "missing" does not.
-fn fake_dir(path: &Path) -> bool {
+
+/// A made-up file system: the project, its scratch folder, /home/user, the home /home/tester and
+/// /elsewhere exist; a folder named "missing" does not; /work/app/linked is a link to
+/// /elsewhere/cache, outside the project.
+fn fake_canonical(path: &Path) -> Option<PathBuf> {
     let p = path.to_string_lossy();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let known = ["/work/app", "/tmp/scratch", "/home/user"]
-        .iter()
-        .any(|root| p.starts_with(root))
-        || (!home.is_empty() && p.starts_with(&home));
-    known && !p.contains("missing")
+    if p.contains("missing") {
+        return None;
+    }
+    if let Some(rest) = p.strip_prefix("/work/app/linked") {
+        return Some(PathBuf::from(format!("/elsewhere/cache{rest}")));
+    }
+    let exists = [
+        "/work/app",
+        "/tmp/scratch",
+        "/home/user",
+        "/home/tester",
+        "/elsewhere",
+    ]
+    .iter()
+    .any(|root| p.starts_with(root))
+        || matches!(p.as_ref(), "/" | "/work" | "/tmp" | "/home");
+    exists.then(|| path.to_path_buf())
 }
 
+fn verdict_with_home(cmd: &str, home: Option<&str>) -> CommandVerdict {
+    let world = World {
+        home: home.map(PathBuf::from),
+        canonical: &fake_canonical,
+    };
+    assess_in(cmd, Some(Path::new("/work/app")), &roots(), &world)
+}
 fn verdict(cmd: &str) -> CommandVerdict {
-    assess_in(cmd, Some(Path::new("/work/app")), &roots(), &fake_dir)
+    verdict_with_home(cmd, Some("/home/tester"))
 }
 fn refused(cmd: &str) -> bool {
     matches!(verdict(cmd), CommandVerdict::Refuse(_))
@@ -210,17 +231,96 @@ fn a_relative_delete_is_placed_where_it_runs() {
     // a folder that cannot be known: asked, never taken for the project
     assert!(asked("cd $SOMEWHERE && rm -rf old"));
     assert!(asked("cd - && rm -rf old"));
+    assert!(asked("cd $(git rev-parse --show-toplevel) && rm -rf dist"));
     assert!(asked("pushd /work/app && popd && rm -rf old"));
-    // a cd that fails (no such folder) leaves the shell where it was: CodeRabbit on #34
-    assert!(!allowed(
+    // a cd that fails (no such folder, no permission) leaves the shell where it was, and `;` runs
+    // the next part either way: CodeRabbit on #34
+    assert!(refused(
         "cd /home/user/Documents && cd /work/app/missing; rm -rf old"
     ));
-    assert!(asked("cd /work/app/missing && rm -rf old"));
+    assert!(refused(
+        "cd /home/user/Documents && cd /work/app/locked; rm -rf old"
+    ));
+    assert!(refused(
+        "cd /home/user/Documents; cd /work/app/locked; rm -rf old"
+    ));
+    // `&&` runs the delete only where the cd succeeded
+    assert!(allowed("cd /work/app/missing && rm -rf old"));
+    assert!(allowed("cd /work/app/sub; rm -rf build"));
+    // a return to the project skipped by `||`, or one undone by a subshell
+    assert!(refused(
+        "cd /home/user/Documents; true || cd /work/app; rm -rf old"
+    ));
+    assert!(refused(
+        "cd /home/user/Documents || cd /work/app && rm -rf old"
+    ));
+    assert!(refused(
+        "cd /home/user/Documents && (cd /work/app && true) && rm -rf old"
+    ));
+    assert!(refused(
+        "cd /home/user/Documents && $(cd /work/app) && rm -rf old"
+    ));
+    assert!(refused("(cd /home/user/Documents && rm -rf old)"));
+    assert!(allowed("(cd /work/app/sub && rm -rf build) && rm -rf dist"));
+    // a pipeline's last part may run in the shell itself (zsh), so its cd may last; a first part
+    // runs in a subshell in every shell
+    assert!(refused("true | cd /home/user/Documents; rm -rf old"));
+    assert!(allowed("cd /home/user/Documents | cat; rm -rf old"));
+    // a part in the background runs in a subshell: its cd never lasts
+    assert!(allowed("cd /home/user/Documents & rm -rf old"));
+    assert!(refused(
+        "cd /home/user/Documents & cd /home/user; rm -rf old"
+    ));
+    // commands behind shell keywords are read too
+    assert!(refused("if true; then rm -rf /home/user/x; fi"));
+    assert!(refused("while true; do rm -rf ~/x; done"));
+    assert!(refused("if cd /home/user/Documents; then rm -rf old; fi"));
+    // `${…}` stays in its word, `{ … }` groups run in the same shell
+    assert!(refused("rm -rf ${HOME}/projects"));
+    assert!(refused("{ cd /home/user/Documents; } && rm -rf old"));
+    assert!(allowed("rm -rf build{1,2}"));
     // no starting folder known at all
     assert!(matches!(
         assess("rm -rf old", None, &roots()),
         CommandVerdict::Ask(_)
     ));
+}
+
+#[test]
+fn a_link_to_a_folder_outside_the_project_is_followed() {
+    // CodeRabbit on #34: /work/app/linked is a link to /elsewhere/cache
+    assert!(refused("rm -rf linked/old"));
+    assert!(refused("rm -rf /work/app/linked/old"));
+    assert!(refused("rm -rf linked/"));
+    assert!(refused("rm -rf linked/*"));
+    assert!(refused("cd linked && rm -rf *"));
+    assert!(refused("cd linked && rm -rf old"));
+    // the link itself is in the project, and so is an ordinary folder
+    assert!(allowed("rm -rf linked"));
+    assert!(allowed("rm -rf build/cache"));
+    assert!(allowed("rm -rf missing/new"));
+}
+
+#[test]
+fn the_home_folder_comes_from_the_guard_not_the_test_process() {
+    // CodeRabbit on #34: the tests used the process's HOME
+    assert!(refused("rm -rf ~/projects"));
+    assert!(refused("cd ~; rm -rf old"));
+    // no home known: a path in it cannot be placed, and is asked
+    let no_home = |cmd: &str| verdict_with_home(cmd, None);
+    assert!(matches!(
+        no_home("rm -rf ~/projects"),
+        CommandVerdict::Ask(_)
+    ));
+    assert!(matches!(
+        no_home("rm -rf $HOME/projects"),
+        CommandVerdict::Ask(_)
+    ));
+    assert!(matches!(
+        no_home("cd ~ && rm -rf old"),
+        CommandVerdict::Ask(_)
+    ));
+    assert!(matches!(no_home("rm -rf ~"), CommandVerdict::Refuse(_)));
 }
 
 #[test]
@@ -336,6 +436,76 @@ fn streamed_output_is_scrubbed_across_chunks() {
     let mut s = StreamScrubber::default();
     assert_eq!(s.push("DB_PASSWORD=hun"), "");
     assert_eq!(s.push("ter2\n"), "DB_PASSWORD=[redacted]\n");
+}
+
+#[test]
+fn live_output_holds_a_secret_until_its_value_ends() {
+    // CodeRabbit on #34, each case passed a value on unscrubbed
+    let run = |chunks: &[&str]| {
+        let mut scrubber = StreamScrubber::default();
+        let mut out: String = chunks.iter().map(|c| scrubber.push(c)).collect();
+        out.push_str(&scrubber.finish());
+        out
+    };
+    // a key name cut by the hold limit
+    let out = run(&[
+        &format!("{}{{\"db_pas", " ".repeat(65_529)),
+        "sword\": \"s3cret\"}\n",
+    ]);
+    assert!(
+        !out.contains("s3cret") && out.contains("[redacted]"),
+        "{}",
+        out.trim()
+    );
+    // a JSON value on the line after its key, and the colon on the next line
+    let out = run(&["{\n \"db_password\":\n", "  \"s3cret\"\n}\n"]);
+    assert!(!out.contains("s3cret"), "{out}");
+    let out = run(&["{\n \"db_password\"\n", " : \"s3cret\"\n}\n"]);
+    assert!(!out.contains("s3cret"), "{out}");
+    // the held line is passed on, scrubbed, as soon as its value has ended
+    let mut s = StreamScrubber::default();
+    assert_eq!(s.push("{\n \"db_password\":\n"), "{\n");
+    assert_eq!(
+        s.push("  \"s3cret\",\n \"x\": 1\n"),
+        " \"db_password\":\n  \"[redacted]\",\n \"x\": 1\n"
+    );
+    // an overlong line that starts with a whole secret: the value is hidden, what follows is shown
+    let out = run(&[
+        &format!("DB_PASSWORD=s3cret {}", "diagnostic ".repeat(7_000)),
+        "end of the diagnostics\nnext line\n",
+    ]);
+    assert!(!out.contains("s3cret"), "{}", &out[..80]);
+    assert!(
+        out.contains("end of the diagnostics") && out.contains("next line"),
+        "{}",
+        &out[out.len() - 80..]
+    );
+    // the output ends (a timeout, an abort) inside a secret value: the value is hidden
+    let out = run(&["{\"db_password\": \"s3c"]);
+    assert_eq!(out, "{\"db_password\": \"[redacted]");
+    let out = run(&["export API_TOKEN='abc"]);
+    assert!(!out.contains("abc"), "{out}");
+    // ordinary output that ends without a new line is shown as it is
+    assert_eq!(run(&["Ran 4 tests", " in 0.08s"]), "Ran 4 tests in 0.08s");
+    assert_eq!(run(&["token count: "]), "token count: ");
+}
+
+#[test]
+fn a_bare_secret_name_on_a_command_line_is_hidden() {
+    // CodeRabbit on #34: `TOKEN=` was missed when nothing came before the word
+    assert_eq!(
+        scrub_secrets("env TOKEN=fixture-value MODE=dev ./run"),
+        "env TOKEN=[redacted] MODE=dev ./run"
+    );
+    assert_eq!(
+        scrub_secrets("PASSWORD=x SECRET='a b' ./run"),
+        "PASSWORD=[redacted] SECRET=[redacted] ./run"
+    );
+    // a key block keeps its lines, so a Read window stays in place
+    let key = "a\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\nabc\n-----END RSA PRIVATE KEY-----\nb";
+    let out = scrub_secrets(key);
+    assert_eq!(out.lines().count(), key.lines().count(), "{out}");
+    assert!(!out.contains("MIIE") && out.ends_with("\nb"), "{out}");
 }
 
 #[test]
