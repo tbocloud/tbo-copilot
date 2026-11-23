@@ -568,7 +568,15 @@ fn delete_target_from(t: &str, dir: Option<&Path>, place: &Place<'_>) -> Target 
 /// by link before each `..` (`linked/../old` is next to the link's target, not in the project).
 /// `follow_last` resolves the path itself too.
 fn contained(path: &Path, follow_last: bool, place: &Place<'_>) -> Target {
-    if !inside(&normalize(path), place.roots) {
+    let real_roots: Vec<PathBuf> = place
+        .roots
+        .iter()
+        .map(|root| (place.world.canonical)(root).unwrap_or_else(|| normalize(root)))
+        .collect();
+    // inside as written, or as the system spells the allowed folders (the physical folder of a
+    // `cd -P` in a project that is itself reached through a link)
+    let written = normalize(path);
+    if !inside(&written, place.roots) && !inside(&written, &real_roots) {
         return Target::Outside;
     }
     let probe = if follow_last {
@@ -581,11 +589,6 @@ fn contained(path: &Path, follow_last: bool, place: &Place<'_>) -> Target {
     let Some(real) = resolve_existing(&probe, place.world) else {
         return Target::Unknown;
     };
-    let real_roots: Vec<PathBuf> = place
-        .roots
-        .iter()
-        .map(|root| (place.world.canonical)(root).unwrap_or_else(|| normalize(root)))
-        .collect();
     if inside(&real, &real_roots) {
         Target::Inside
     } else {

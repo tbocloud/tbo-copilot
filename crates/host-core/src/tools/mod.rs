@@ -2887,8 +2887,9 @@ fn scrub_site_config_grep(mut value: Value, workspace: Option<&Path>) -> Value {
         Large,
         /// Deleted or unreadable since the search.
         Gone,
+        /// Read again: only the lines the hits name are kept.
         Read {
-            lines: Vec<String>,
+            lines: std::collections::HashMap<usize, String>,
             config: bool,
         },
     }
@@ -2896,56 +2897,65 @@ fn scrub_site_config_grep(mut value: Value, workspace: Option<&Path>) -> Value {
         return value;
     };
     let clip = |line: &str| clip_chars(line.to_string(), MAX_LINE_CHARS).0;
+    let line_of = |hit: &Value| {
+        hit.get("line")
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .and_then(|n| n.checked_sub(1))
+    };
+    // each file's hit lines, so a file read again keeps only those
+    let mut wanted: std::collections::HashMap<String, std::collections::HashSet<usize>> =
+        std::collections::HashMap::new();
+    for hit in hits.iter() {
+        let (Some(path), Some(_)) = (hit.get("path").and_then(Value::as_str), hit.get("text"))
+        else {
+            continue;
+        };
+        let lines = wanted.entry(path.to_string()).or_default();
+        if let Some(at) = line_of(hit) {
+            lines.insert(at);
+        }
+    }
     let mut files: std::collections::HashMap<String, Again> = std::collections::HashMap::new();
-    for hit in hits {
+    for (shown, lines) in &wanted {
+        let by_name = crate::command_guard::is_site_config(shown);
+        let file = if Path::new(shown).is_absolute() {
+            Some(PathBuf::from(shown))
+        } else {
+            workspace.map(|root| root.join(shown))
+        };
+        let again = match file.as_deref().map(std::fs::metadata) {
+            Some(Ok(meta)) if meta.len() > CONFIG_MAX_BYTES && !by_name => Again::Large,
+            Some(Ok(_)) => match file.as_deref().map(std::fs::read_to_string) {
+                Some(Ok(text)) => Again::Read {
+                    config: by_name || crate::command_guard::looks_like_site_config(&text),
+                    lines: lines_named(&text, lines),
+                },
+                _ => Again::Gone,
+            },
+            _ => Again::Gone,
+        };
+        files.insert(shown.clone(), again);
+    }
+    for hit in hits.iter_mut() {
         let Some(shown) = hit.get("path").and_then(Value::as_str).map(str::to_string) else {
             continue;
         };
         let Some(searched) = hit.get("text").and_then(Value::as_str).map(str::to_string) else {
             continue;
         };
-        let again = files.entry(shown.clone()).or_insert_with(|| {
-            let by_name = crate::command_guard::is_site_config(&shown);
-            let file = if Path::new(&shown).is_absolute() {
-                PathBuf::from(&shown)
-            } else {
-                match workspace {
-                    Some(root) => root.join(&shown),
-                    None => return Again::Gone,
-                }
-            };
-            match std::fs::metadata(&file) {
-                Ok(meta) if meta.len() > CONFIG_MAX_BYTES && !by_name => return Again::Large,
-                Ok(_) => {}
-                Err(_) => return Again::Gone,
-            }
-            match std::fs::read_to_string(&file) {
-                Ok(text) => Again::Read {
-                    config: by_name || crate::command_guard::looks_like_site_config(&text),
-                    lines: text
-                        .split('\n')
-                        .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
-                        .collect(),
-                },
-                Err(_) => Again::Gone,
-            }
-        });
-        let line = hit
-            .get("line")
-            .and_then(Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok())
-            .and_then(|n| n.checked_sub(1));
-        let text = match (&*again, line) {
-            (Again::Large, _) => Some(searched),
-            (Again::Read { lines, config }, Some(at))
-                if lines.get(at).is_some_and(|l| clip(l) == searched) =>
+        let text = match (files.get(&shown), line_of(hit)) {
+            (Some(Again::Large), _) => Some(searched),
+            (Some(Again::Read { lines, config }), Some(at))
+                if lines.get(&at).is_some_and(|l| clip(l) == searched) =>
             {
+                let line = &lines[&at];
                 if !*config {
                     Some(searched)
-                } else if lines[at].contains('"') && !starts_with_key(&lines[at]) {
+                } else if line.contains('"') && !starts_with_key(line) {
                     None
                 } else {
-                    Some(clip(&crate::command_guard::scrub_secrets(&lines[at])))
+                    Some(clip(&crate::command_guard::scrub_secrets(line)))
                 }
             }
             _ => None,
@@ -2953,6 +2963,19 @@ fn scrub_site_config_grep(mut value: Value, workspace: Option<&Path>) -> Value {
         hit["text"] = json!(text.unwrap_or_else(|| "[redacted]".to_string()));
     }
     value
+}
+
+/// The lines of `text` at the given 0-based positions, line ends removed: only what search hits
+/// name is kept, however large the file.
+fn lines_named(
+    text: &str,
+    wanted: &std::collections::HashSet<usize>,
+) -> std::collections::HashMap<usize, String> {
+    text.split('\n')
+        .enumerate()
+        .filter(|(at, _)| wanted.contains(at))
+        .map(|(at, line)| (at, line.strip_suffix('\r').unwrap_or(line).to_string()))
+        .collect()
 }
 
 /// A JSON line that starts with its own key (`"name": …`).
@@ -4313,6 +4336,20 @@ mod tests {
         assert_eq!(hit("plain.txt", 1, "s3cret"), "s3cret");
         std::fs::write(dir.path().join("plain.txt"), "other\n").unwrap();
         assert_eq!(hit("plain.txt", 1, "s3cret"), "[redacted]");
+    }
+
+    #[test]
+    fn a_file_read_again_for_its_hits_keeps_only_their_lines() {
+        // TBO Phase 27 (Q5), CodeRabbit on #35: a large file's other lines are not kept
+        let text = (0..10_000)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        let wanted: std::collections::HashSet<usize> = [3, 9_999].into_iter().collect();
+        let kept = lines_named(&text, &wanted);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[&3], "line 3");
+        assert_eq!(kept[&9_999], "line 9999");
     }
 
     #[cfg(unix)]

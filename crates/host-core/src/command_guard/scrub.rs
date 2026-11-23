@@ -314,6 +314,9 @@ enum Hiding {
     /// A setting's name cut by the hold, to its end; an `=` or `:` after it (or white space after
     /// a `--` argument) makes the next value hidden too.
     Name { argument: bool },
+    /// After a hidden setting's name and spaces: an `=` or `:` next makes the next value hidden
+    /// too; anything else ends the hiding.
+    AfterName,
     /// A secret's value that has not started: the next value (a quoted string or a word) is hidden,
     /// wherever it comes (on a later line, after any white space).
     Value,
@@ -408,7 +411,16 @@ impl StreamScrubber {
                     shown.push(c);
                     self.hiding = Hiding::Value;
                 }
-                Hiding::Name { .. } => {
+                // `DB_PASSWORD = value`: spaces before the separator keep the value hidden
+                Hiding::Name { argument: false } | Hiding::AfterName if c == ' ' || c == '\t' => {
+                    shown.push(c);
+                    self.hiding = Hiding::AfterName;
+                }
+                Hiding::AfterName if c == '=' || c == ':' => {
+                    shown.push(c);
+                    self.hiding = Hiding::Value;
+                }
+                Hiding::Name { .. } | Hiding::AfterName => {
                     self.hiding = Hiding::Nothing;
                     end = i;
                     break;
