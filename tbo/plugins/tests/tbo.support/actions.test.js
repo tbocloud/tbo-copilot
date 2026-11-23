@@ -486,6 +486,29 @@ test("start_task starts the person's own timer through TBO Support", async () =>
   assert.deepEqual(posted, [["helpdesk.api.mobile.start_task", { task: "TASK-2026-00021" }]]);
   assert.equal(r.status, "Working");
   assert.deepEqual(r.timer, { running: true });
+  assert.equal(r.timer_running, true);
+  assert.match(r.note, /Its timer runs\./);
+});
+
+test("start_task sends only the task and says when the timer is not running (Phase 27, Q8)", async () => {
+  const posted = [];
+  const client = {
+    async post(path, params) {
+      posted.push([path, params]);
+      return { v: 1, data: { ...TASK_ROW, status: "Working", timer: { state: "paused", started_at: null, logged_hours: 0 } } };
+    },
+  };
+  // as an agent sent it on 21 Nov: every other action's fields filled in
+  const r = await runAction(
+    client,
+    { action: "start_task", task: "TASK-2026-00011", days: [{ date: "2026-11-18", hours: 0.03 }], hours_worked: 0.03, press_action: "restart_bench", reason: "Other", when: "now", notes: "", plan: "", site: "", target: "", text: "" },
+    ENV,
+    CHANGE_TOOL,
+  );
+  assert.deepEqual(posted, [["helpdesk.api.mobile.start_task", { task: "TASK-2026-00011" }]]);
+  assert.equal(r.timer_running, false);
+  assert.match(r.note, /timer is NOT running/);
+  assert.doesNotMatch(r.note, /Its timer runs/);
 });
 
 test("report_problem sends the person's words to TBO Support's feedback, from the desktop app", async () => {

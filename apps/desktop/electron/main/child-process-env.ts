@@ -1,3 +1,5 @@
+import { userLookupPath } from "./user-login-path.ts";
+
 /**
  * The environment a restricted child process is allowed to inherit.
  *
@@ -54,11 +56,26 @@ export function minimalChildEnv(): Record<string, string> {
   return env;
 }
 
-/** The environment of a plugin's own utility process: minimal, plus its identity. */
-export function pluginChildEnv(pluginId: string): Record<string, string> {
-  return {
+/**
+ * The environment of a plugin's own utility process: minimal, plus its identity.
+ *
+ * PATH is the user's login-shell PATH (ADR 0045), as the Bash tool and stdio MCP
+ * servers already get it: a plugin that starts the user's own programs (git, gh,
+ * uv, bench, node) must find them where the user's terminal does. From the
+ * Finder or the Dock the app has only `/usr/bin:/bin:/usr/sbin:/sbin`, and a
+ * developer plugin then reported tools as missing that the terminal ran fine
+ * (TBO Copilot Phase 27, Q1). `lookupPath` is for tests.
+ */
+export function pluginChildEnv(
+  pluginId: string,
+  lookupPath: (inherited: string) => string = userLookupPath,
+): Record<string, string> {
+  const env: Record<string, string> = {
     ...minimalChildEnv(),
     PI_PLUGIN_ID: pluginId,
     NODE_ENV: process.env.NODE_ENV ?? "production",
   };
+  const path = lookupPath(env.PATH ?? "");
+  if (path) env.PATH = path;
+  return env;
 }

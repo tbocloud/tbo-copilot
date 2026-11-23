@@ -127,6 +127,8 @@ stdio 与 Tokio 的动态阻塞池隔离，因此后一种情况
 | `TOOL_BINARY_CONTENT` | 不 | `Read` 拒绝把二进制文件倾倒进模型上下文 |
 | `TOOL_NOT_FOUND` | 不 | 未知工具 |
 | `TOOL_DENIED` | 不 | 权限被拒绝/模式被禁止 |
+| `COMMAND_REFUSED` | 不 | TBO：host-core 的命令守卫拒绝了一条 Bash 命令（`crates/host-core/src/command_guard/`）；无论模式或授权如何都不会执行 |
+| `USE_BENCH_SET_CONFIG` | 不 | TBO：Write/Edit 写入 Frappe 的 `site_config.json` 或 `common_site_config.json`；请改用 `bench set-config` |
 | `TOOL_TIMEOUT` | 是的 | 工具执行超时 |
 | `TOOL_FAILED` | 也许 | 工具已执行但失败 |
 | `FILE_NOT_FOUND` | 不 | Read/Write/Edit 目标路径不存在（与 `TOOL_DENIED` 可区分） |

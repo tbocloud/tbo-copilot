@@ -125,6 +125,8 @@ does not turn temporary thread pressure into a host process exit.
 | `TOOL_BINARY_CONTENT` | no | `Read` refused to dump a binary file into the model context |
 | `TOOL_NOT_FOUND` | no | unknown tool |
 | `TOOL_DENIED` | no | permission denied / mode forbidden |
+| `COMMAND_REFUSED` | no | TBO: host-core's command guard refused a Bash command (`crates/host-core/src/command_guard/`); never runs, whatever the mode or grants |
+| `USE_BENCH_SET_CONFIG` | no | TBO: Write/Edit of a Frappe `site_config.json` or `common_site_config.json`; use `bench set-config` |
 | `TOOL_TIMEOUT` | yes | tool execution timeout |
 | `TOOL_FAILED` | maybe | tool executed but failed |
 | `FILE_NOT_FOUND` | no | Read/Write/Edit target path does not exist (distinct from `TOOL_DENIED`) |

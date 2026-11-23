@@ -373,9 +373,23 @@ const ACTIONS = {
     );
   },
 
+  // Only the task is sent, whatever else the call carries. The answer says what the timer really
+  // does: outside the person's work hours TBO Support moves the task to Working with its timer
+  // paused (Phase 27, Q8: an agent told the person the timer ran when it did not).
   async start_task(client, args) {
     const t = ((await client.post("helpdesk.api.mobile.start_task", { task: taskArg(args) })) || {}).data || {};
-    return { task: t.name, status: t.status, timer: t.timer || null, note: "The task is Working and its timer runs. With a pull request that closes it, the merge completes the task with the timer's hours; complete_task is only for work without a pull request." };
+    const timer = t.timer || null;
+    const running = Boolean(timer && (timer.state === "running" || timer.running === true));
+    const when = running
+      ? "Its timer runs."
+      : "Its timer is NOT running (TBO Support keeps it paused outside the person's work hours): tell the person, who can start it in TBO Support.";
+    return {
+      task: t.name,
+      status: t.status,
+      timer,
+      timer_running: running,
+      note: `The task is ${t.status || "Working"}. ${when} With a pull request that closes it, the merge completes the task with the timer's hours; complete_task is only for work without a pull request.`,
+    };
   },
 
   // the person's own task, from the desktop app (Phase 22)

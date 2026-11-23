@@ -1078,6 +1078,12 @@ pub async fn execute_tool_with_path_access(
             hashline.as_ref(),
         )
         .map_err(Into::into),
+        "Write" | "Edit" if targets_site_config(args) => Err(hashline::ToolError::new(
+            "USE_BENCH_SET_CONFIG",
+            "A Frappe site's configuration holds its database password and keys: it is changed with \
+             `bench --site <site> set-config <key> <value>` (or `bench set-config -g` for every site), \
+             never by writing the file",
+        )),
         "Glob" => tool_glob(workspace, scratch, args, allow_external_paths).map_err(Into::into),
         "Grep" => tool_grep(
             workspace,
@@ -1086,6 +1092,7 @@ pub async fn execute_tool_with_path_access(
             allow_external_paths,
             hashline.as_ref(),
         )
+        .map(|found| scrub_site_config_grep(found, workspace))
         .map_err(Into::into),
         "Write" => tool_write(
             workspace,
@@ -1374,9 +1381,26 @@ fn tool_read(
     let file = hashline::normalize_file(&bytes);
     let tag = hashline::tag_of_lf_text(&file.text);
     let total_line_count = hashline::split_lines(&file.text).len();
+    // TBO Phase 27 (Q5): a Frappe site's configuration (by its name, or by its content under
+    // another name: a copy, a hard link) is shown with its secret values hidden, scrubbed whole
+    // before the window is taken (a value on the line after its key); lines stay where they are,
+    // and the tag is the file's own
+    let scrubbed;
+    let shown = if is_site_config_target(Path::new(path), &resolved)
+        || crate::command_guard::looks_like_site_config(&file.text)
+    {
+        scrubbed = hashline::normalize_file(
+            crate::command_guard::scrub_secrets(&file.text)
+                .into_owned()
+                .as_bytes(),
+        );
+        &scrubbed
+    } else {
+        &file
+    };
     let window = hashline::format_read_window(
         &display,
-        &file,
+        shown,
         &tag,
         offset,
         limit,
@@ -1455,6 +1479,9 @@ fn tool_write(
     let (resolved, root_kind) =
         resolve_tool_path_with_external(root, scratch, path, allow_external_paths)
             .map_err(|e| (e.clone(), e))?;
+    if let Some(refusal) = site_config_refusal(Path::new(path), &resolved) {
+        return Err(refusal);
+    }
     if ignore_rules::is_sensitive_path(&resolved) {
         return Err(ignore_rules::denied_error(path));
     }
@@ -1462,7 +1489,7 @@ fn tool_write(
         std::fs::create_dir_all(parent)
             .map_err(|e| ("TOOL_FAILED".into(), format!("mkdir failed: {e}")))?;
     }
-    std::fs::write(&resolved, &content).map_err(|e| {
+    write_tool_file(&resolved, content.as_bytes()).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             ("FILE_NOT_FOUND".into(), format!("File not found: {path}"))
         } else {
@@ -1499,6 +1526,7 @@ fn tool_edit(
     let (resolved, root_kind) =
         resolve_tool_path_with_external(root, scratch, path, allow_external_paths)
             .map_err(|e| hashline::ToolError::new(e.clone(), e))?;
+    refuse_site_config(Path::new(path), &resolved)?;
     if ignore_rules::is_sensitive_path(&resolved) {
         let (code, message) = ignore_rules::denied_error(path);
         return Err(hashline::ToolError::new(code, message));
@@ -1595,6 +1623,7 @@ fn tool_edit(
         let (dest_resolved, dest_root) =
             resolve_tool_path_with_external(root, scratch, dest, allow_external_paths)
                 .map_err(|e| hashline::ToolError::new(e.clone(), e))?;
+        refuse_site_config(Path::new(dest), &dest_resolved)?;
         if ignore_rules::is_sensitive_path(&dest_resolved) {
             let (code, message) = ignore_rules::denied_error(dest);
             return Err(hashline::ToolError::new(code, message));
@@ -1604,7 +1633,7 @@ fn tool_edit(
                 hashline::ToolError::new("TOOL_FAILED", format!("mkdir failed: {e}"))
             })?;
         }
-        std::fs::write(&dest_resolved, &bytes)
+        write_tool_file(&dest_resolved, &bytes)
             .map_err(|e| hashline::ToolError::new("TOOL_FAILED", format!("write failed: {e}")))?;
         std::fs::remove_file(&resolved)
             .map_err(|e| hashline::ToolError::new("TOOL_FAILED", format!("move failed: {e}")))?;
@@ -1628,7 +1657,7 @@ fn tool_edit(
         }));
     }
 
-    std::fs::write(&resolved, &bytes)
+    write_tool_file(&resolved, &bytes)
         .map_err(|e| hashline::ToolError::new("TOOL_FAILED", format!("write failed: {e}")))?;
     hashline::record_write(hashline, &canonical, &file, &success.tag);
     Ok(json!({
@@ -2205,6 +2234,9 @@ impl Utf8Decoder {
 struct CapturedOutput {
     bytes: Vec<u8>,
     decoder: Utf8Decoder,
+    // TBO Phase 27 (Q5): secrets are hidden as the output streams, before it is
+    // clipped, captured or sent to the app as a live notification
+    scrubber: crate::command_guard::StreamScrubber,
     retained_lines: usize,
     omitted_bytes: u64,
     omitted_lines: u64,
@@ -2214,14 +2246,17 @@ struct CapturedOutput {
 impl CapturedOutput {
     fn push(&mut self, bytes: &[u8]) -> String {
         let decoded = self.decoder.push(bytes);
-        self.retain(&decoded);
-        decoded
+        let scrubbed = self.scrubber.push(&decoded);
+        self.retain(&scrubbed);
+        scrubbed
     }
 
     fn finish(&mut self) -> String {
         let decoded = self.decoder.finish();
-        self.retain(&decoded);
-        decoded
+        let mut scrubbed = self.scrubber.push(&decoded);
+        scrubbed.push_str(&self.scrubber.finish());
+        self.retain(&scrubbed);
+        scrubbed
     }
 
     fn retain(&mut self, text: &str) {
@@ -2807,6 +2842,10 @@ async fn tool_bash(
             // file to Grep instead of just apologizing. The runner-error probe
             // runs first: the marker must be found before the tail budget can
             // cut it away.
+            // TBO Phase 27 (Q5): secret values never reach the model, nor the
+            // spilled copy in scratch
+            let stdout = crate::command_guard::scrub_secrets(&stdout).into_owned();
+            let stderr = crate::command_guard::scrub_secrets(&stderr).into_owned();
             let (stdout, budget_trunc_out) =
                 truncate_with_spill(&stdout, BUDGET_SHELL, scratch, "bash-stdout");
             let (stderr, budget_trunc_err) =
@@ -2822,6 +2861,234 @@ async fn tool_bash(
             }))
         }
     }
+}
+
+/// TBO Phase 27 (Q5): whether a tool's target is a Frappe site's configuration, by the name asked
+/// for, the path it resolved to, or the file a link there points to.
+fn is_site_config_target(requested: &Path, resolved: &Path) -> bool {
+    let target = std::fs::canonicalize(resolved).unwrap_or_else(|_| resolved.to_path_buf());
+    [requested, resolved, target.as_path()]
+        .iter()
+        .any(|p| crate::command_guard::is_site_config_path(p))
+}
+
+/// TBO Phase 27 (Q5): a search hit in a Frappe site's configuration (by its name, or by its content
+/// under another name: a copy, a hard link) shows its line from the whole file scrubbed, as a Read
+/// does (a value on the line after its key). The line is taken from the file again only while it
+/// is still the line that was searched; otherwise, or when the file cannot be read again, the hit's
+/// text is hidden.
+fn scrub_site_config_grep(mut value: Value, workspace: Option<&Path>) -> Value {
+    /// A larger file is never a site's configuration.
+    const CONFIG_MAX_BYTES: u64 = 1024 * 1024;
+    type Lines = (Vec<String>, Vec<String>);
+    let Some(hits) = value.get_mut("matches").and_then(Value::as_array_mut) else {
+        return value;
+    };
+    let lines_of = |text: &str| -> Vec<String> {
+        text.split('\n')
+            .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+            .collect()
+    };
+    let clip = |line: &String| clip_chars(line.clone(), MAX_LINE_CHARS).0;
+    // per file: not a configuration (None), or a configuration with its lines as searched and
+    // scrubbed, when it can be read again
+    let mut files: std::collections::HashMap<String, Option<Option<Lines>>> =
+        std::collections::HashMap::new();
+    for hit in hits {
+        let Some(shown) = hit.get("path").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        let Some(searched) = hit.get("text").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        let config = files.entry(shown.clone()).or_insert_with(|| {
+            let by_name = crate::command_guard::is_site_config(&shown);
+            let file = if Path::new(&shown).is_absolute() {
+                PathBuf::from(&shown)
+            } else {
+                match workspace {
+                    Some(root) => root.join(&shown),
+                    None => return by_name.then_some(None),
+                }
+            };
+            let small = std::fs::metadata(&file).is_ok_and(|m| m.len() <= CONFIG_MAX_BYTES);
+            let text = small.then(|| std::fs::read_to_string(&file).ok()).flatten();
+            let by_content = text
+                .as_deref()
+                .is_some_and(crate::command_guard::looks_like_site_config);
+            if !(by_name || by_content) {
+                return None;
+            }
+            Some(text.map(|text| {
+                let scrubbed = crate::command_guard::scrub_secrets(&text);
+                (lines_of(&text), lines_of(&scrubbed))
+            }))
+        });
+        let Some(config) = config else {
+            continue;
+        };
+        let line = hit
+            .get("line")
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .and_then(|n| n.checked_sub(1));
+        let text = match (config, line) {
+            (Some((raw, scrubbed)), Some(at))
+                if raw.get(at).is_some_and(|l| clip(l) == searched) =>
+            {
+                scrubbed.get(at).map(clip)
+            }
+            _ => None,
+        };
+        hit["text"] = json!(text.unwrap_or_else(|| "[redacted]".to_string()));
+    }
+    value
+}
+
+/// TBO Phase 27 (Q5): a Frappe site's configuration is never written by Write
+/// or Edit, whatever path names it (the name asked for, a link to it, a move
+/// onto it; a hard link is never written through, see `write_tool_file`).
+fn site_config_refusal(requested: &Path, resolved: &Path) -> Option<(String, String)> {
+    if is_site_config_target(requested, resolved) {
+        return Some((
+            "USE_BENCH_SET_CONFIG".into(),
+            "A Frappe site's configuration holds its database password and keys: it is changed with \
+             `bench --site <site> set-config <key> <value>` (or `bench set-config -g` for every site), \
+             never by writing the file"
+                .into(),
+        ));
+    }
+    None
+}
+
+fn refuse_site_config(requested: &Path, resolved: &Path) -> Result<(), hashline::ToolError> {
+    match site_config_refusal(requested, resolved) {
+        Some((code, message)) => Err(hashline::ToolError::new(code, message)),
+        None => Ok(()),
+    }
+}
+
+/// TBO Phase 27 (Q5): writes a tool's file. A file with other names (hard links) is replaced, not
+/// written through, so the change lands only under the name given: another name may be a
+/// protected file, such as a Frappe site's configuration, that no name check can see. The
+/// replacement is a new file beside it, created exclusively and readable by its owner only until
+/// it has the original's permissions; it is removed if anything fails before it takes the place.
+fn write_tool_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() && must_replace(link_count(path, &meta)) => {
+            replace_file(path, bytes, meta.permissions())
+        }
+        _ => std::fs::write(path, bytes),
+    }
+}
+
+/// Puts a new file with `bytes` and `permissions` in `path`'s place; the new file is removed if
+/// anything fails before it takes the place.
+fn replace_file(
+    path: &Path,
+    bytes: &[u8],
+    permissions: std::fs::Permissions,
+) -> std::io::Result<()> {
+    let (staging, file) = create_staging(path)?;
+    let placed = place_staging(file, &staging, path, bytes, permissions);
+    if placed.is_err() {
+        let _ = std::fs::remove_file(&staging);
+    }
+    placed
+}
+
+/// A new file beside `path`, created exclusively (never an existing file) and, on Unix, readable
+/// and writable by its owner only.
+fn create_staging(path: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    for _ in 0..16 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let staging = path.with_file_name(format!(
+            ".{name}.{}.{nanos}.{}.pi-write",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&staging) {
+            Ok(file) => return Ok((staging, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no free name beside the file for its replacement",
+    ))
+}
+
+/// Writes the replacement, gives it the original's permissions, and puts it in the file's place.
+fn place_staging(
+    mut file: std::fs::File,
+    staging: &Path,
+    path: &Path,
+    bytes: &[u8],
+    permissions: std::fs::Permissions,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::set_permissions(staging, permissions)?;
+    std::fs::rename(staging, path)
+}
+
+/// Whether a write replaces the file instead of writing through it: it has other names, or how
+/// many names it has cannot be told.
+fn must_replace(names: Option<u64>) -> bool {
+    names.is_none_or(|n| n > 1)
+}
+
+/// How many names (hard links) a file has, when the system can tell.
+#[cfg(unix)]
+fn link_count(_path: &Path, meta: &std::fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(meta.nlink())
+}
+
+#[cfg(windows)]
+fn link_count(path: &Path, _meta: &std::fs::Metadata) -> Option<u64> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let file = std::fs::File::open(path).ok()?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `file` keeps the handle open for the call, and `info` is a valid, writable
+    // BY_HANDLE_FILE_INFORMATION for the function to fill.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
+    (ok != 0).then_some(u64::from(info.nNumberOfLinks))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn link_count(_path: &Path, _meta: &std::fs::Metadata) -> Option<u64> {
+    None
+}
+
+fn targets_site_config(args: &Value) -> bool {
+    ["path", "file_path"].iter().any(|key| {
+        args.get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(crate::command_guard::is_site_config)
+    })
 }
 
 fn relative_display(root: &Path, path: &Path) -> String {
@@ -3971,6 +4238,110 @@ mod tests {
         .await;
         assert!(excluded_file.ok);
         assert_eq!(excluded_file.content["count"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn a_search_hit_whose_line_changed_since_the_search_is_hidden() {
+        // TBO Phase 27 (Q5), CodeRabbit on #34: the line shown is the line that was searched
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("site_config.json"),
+            "{\n \"db_name\": \"_x\",\n \"db_password\":\n  \"s3cret\"\n}\n",
+        )
+        .unwrap();
+        let found = |line: u64, text: &str| {
+            let value =
+                json!({ "matches": [{ "path": "site_config.json", "line": line, "text": text }] });
+            scrub_site_config_grep(value, Some(dir.path()))["matches"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(found(4, "  \"s3cret\""), "  \"[redacted]\"");
+        assert_eq!(found(2, " \"db_name\": \"_x\","), " \"db_name\": \"_x\",");
+        // the file changed: the old hit's line now holds something else
+        assert_eq!(found(2, " \"db_name\": \"_old\","), "[redacted]");
+        // a copy under another name is known by its content
+        std::fs::copy(
+            dir.path().join("site_config.json"),
+            dir.path().join("notes.txt"),
+        )
+        .unwrap();
+        let value =
+            json!({ "matches": [{ "path": "notes.txt", "line": 4, "text": "  \"s3cret\"" }] });
+        assert_eq!(
+            scrub_site_config_grep(value, Some(dir.path()))["matches"][0]["text"],
+            "  \"[redacted]\""
+        );
+        // an ordinary file's hit is left as it is
+        std::fs::write(dir.path().join("plain.txt"), "s3cret\n").unwrap();
+        let value = json!({ "matches": [{ "path": "plain.txt", "line": 1, "text": "s3cret" }] });
+        assert_eq!(
+            scrub_site_config_grep(value, Some(dir.path()))["matches"][0]["text"],
+            "s3cret"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_replacement_is_created_new_private_and_leaves_nothing_behind() {
+        // TBO Phase 27 (Q5), CodeRabbit on #34
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.json");
+        std::fs::write(&file, "old").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::fs::hard_link(&file, dir.path().join("b.json")).unwrap();
+        let (first, _) = create_staging(&file).unwrap();
+        let (second, _) = create_staging(&file).unwrap();
+        assert_ne!(first, second);
+        let mode = std::fs::metadata(&first).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "private until it has the original's permissions"
+        );
+        std::fs::remove_file(&first).unwrap();
+        std::fs::remove_file(&second).unwrap();
+
+        write_tool_file(&file, b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.json")).unwrap(),
+            "old"
+        );
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640);
+        let leftovers = |dir: &Path| {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".pi-write"))
+                .count()
+        };
+        assert_eq!(leftovers(dir.path()), 0);
+        // a replacement that cannot take the place (a folder is there): removed again
+        std::fs::create_dir(dir.path().join("taken")).unwrap();
+        std::fs::write(dir.path().join("taken").join("x"), "x").unwrap();
+        let perms = std::fs::metadata(&file).unwrap().permissions();
+        assert!(replace_file(&dir.path().join("taken"), b"x", perms).is_err());
+        assert_eq!(leftovers(dir.path()), 0);
+        // a folder it cannot write in: the write fails and leaves nothing
+        std::fs::hard_link(&file, dir.path().join("c.json")).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let failed = write_tool_file(&file, b"newer");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(failed.is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
+        assert_eq!(leftovers(dir.path()), 0);
+    }
+
+    #[test]
+    fn a_file_with_other_names_or_an_unknown_count_is_replaced() {
+        // TBO Phase 27 (Q5), CodeRabbit on #34: a count the system cannot give (Windows, when the
+        // file cannot be opened or asked) is treated as other names, never written through
+        assert!(must_replace(None));
+        assert!(must_replace(Some(2)));
+        assert!(!must_replace(Some(1)));
     }
 
     #[tokio::test]

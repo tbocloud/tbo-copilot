@@ -138,6 +138,10 @@ export const ErrorCodes = {
   PATH_OUTSIDE_WORKSPACE: "PATH_OUTSIDE_WORKSPACE",
   TOOL_NOT_FOUND: "TOOL_NOT_FOUND",
   TOOL_DENIED: "TOOL_DENIED",
+  /** TBO: host-core's command guard refused a Bash command (a site or database dropped, a delete outside the project, a force-push). Never runs, in any mode. */
+  COMMAND_REFUSED: "COMMAND_REFUSED",
+  /** TBO: a Frappe site's configuration is changed with `bench set-config`, never written by Write/Edit. */
+  USE_BENCH_SET_CONFIG: "USE_BENCH_SET_CONFIG",
   TOOL_TIMEOUT: "TOOL_TIMEOUT",
   TOOL_FAILED: "TOOL_FAILED",
   /** Read/Write/Edit target path does not exist. Distinct from TOOL_DENIED. */
