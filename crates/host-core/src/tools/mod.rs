@@ -1085,15 +1085,18 @@ pub async fn execute_tool_with_path_access(
              never by writing the file",
         )),
         "Glob" => tool_glob(workspace, scratch, args, allow_external_paths).map_err(Into::into),
-        "Grep" => tool_grep(
-            workspace,
-            scratch,
-            args,
-            allow_external_paths,
-            hashline.as_ref(),
-        )
-        .map(|found| scrub_site_config_grep(found, workspace))
-        .map_err(Into::into),
+        "Grep" => {
+            let searched_at = std::time::SystemTime::now();
+            tool_grep(
+                workspace,
+                scratch,
+                args,
+                allow_external_paths,
+                hashline.as_ref(),
+            )
+            .map(|found| scrub_site_config_grep(found, workspace, searched_at))
+            .map_err(Into::into)
+        }
         "Write" => tool_write(
             workspace,
             scratch,
@@ -2872,77 +2875,146 @@ fn is_site_config_target(requested: &Path, resolved: &Path) -> bool {
         .any(|p| crate::command_guard::is_site_config_path(p))
 }
 
-/// TBO Phase 27 (Q5): a search hit in a Frappe site's configuration (by its name, or by its content
-/// under another name: a copy, a hard link) shows its line from the whole file scrubbed, as a Read
-/// does (a value on the line after its key). The line is taken from the file again only while it
-/// is still the line that was searched; otherwise, or when the file cannot be read again, the hit's
-/// text is hidden.
-fn scrub_site_config_grep(mut value: Value, workspace: Option<&Path>) -> Value {
+/// TBO Phase 27 (Q5): search hits as they are safe to show. Every hit's line is read from its file
+/// again and shown only while the file is the one that was searched: a file deleted, unreadable,
+/// or written after the search began (its modified time, read after the file is read again, is
+/// later than `searched_at`) hides its hits, since what it was when searched (a site's
+/// configuration or not) can no longer be told; an unchanged file is also checked line by line.
+/// In a Frappe site's configuration (by its name, or by its content
+/// under another name: a copy, a hard link), a line is shown only when it carries its own key,
+/// scrubbed; a line with a value but no key (a value on the line after its key) is hidden, so what
+/// is shown never depends on another line. A file larger than a site's configuration can be is
+/// not read again.
+fn scrub_site_config_grep(
+    mut value: Value,
+    workspace: Option<&Path>,
+    searched_at: std::time::SystemTime,
+) -> Value {
     /// A larger file is never a site's configuration.
     const CONFIG_MAX_BYTES: u64 = 1024 * 1024;
-    type Lines = (Vec<String>, Vec<String>);
+    enum Again {
+        /// Not read again (too large to be a site's configuration).
+        Large,
+        /// Deleted or unreadable since the search.
+        Gone,
+        /// Read again: only the lines the hits name are kept.
+        Read {
+            lines: std::collections::HashMap<usize, String>,
+            config: bool,
+        },
+    }
     let Some(hits) = value.get_mut("matches").and_then(Value::as_array_mut) else {
         return value;
     };
-    let lines_of = |text: &str| -> Vec<String> {
-        text.split('\n')
-            .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
-            .collect()
+    let clip = |line: &str| clip_chars(line.to_string(), MAX_LINE_CHARS).0;
+    let line_of = |hit: &Value| {
+        hit.get("line")
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .and_then(|n| n.checked_sub(1))
     };
-    let clip = |line: &String| clip_chars(line.clone(), MAX_LINE_CHARS).0;
-    // per file: not a configuration (None), or a configuration with its lines as searched and
-    // scrubbed, when it can be read again
-    let mut files: std::collections::HashMap<String, Option<Option<Lines>>> =
+    // each file's hit lines, so a file read again keeps only those
+    let mut wanted: std::collections::HashMap<String, std::collections::HashSet<usize>> =
         std::collections::HashMap::new();
-    for hit in hits {
+    for hit in hits.iter() {
+        let (Some(path), Some(_)) = (hit.get("path").and_then(Value::as_str), hit.get("text"))
+        else {
+            continue;
+        };
+        let lines = wanted.entry(path.to_string()).or_default();
+        if let Some(at) = line_of(hit) {
+            lines.insert(at);
+        }
+    }
+    let mut files: std::collections::HashMap<String, Again> = std::collections::HashMap::new();
+    for (shown, lines) in &wanted {
+        let by_name = crate::command_guard::is_site_config(shown);
+        let file = if Path::new(shown).is_absolute() {
+            Some(PathBuf::from(shown))
+        } else {
+            workspace.map(|root| root.join(shown))
+        };
+        // one handle for the checks and the read, so they all see the same file
+        let again = (|| {
+            let handle = File::open(file.as_deref()?).ok()?;
+            let meta = handle.metadata().ok()?;
+            if modified_since(&meta, searched_at) {
+                return None;
+            }
+            if meta.len() > CONFIG_MAX_BYTES && !by_name {
+                return Some(Again::Large);
+            }
+            let text = read_unchanged_since(handle, searched_at)?;
+            Some(Again::Read {
+                config: by_name || crate::command_guard::looks_like_site_config(&text),
+                lines: lines_named(&text, lines),
+            })
+        })()
+        .unwrap_or(Again::Gone);
+        files.insert(shown.clone(), again);
+    }
+    for hit in hits.iter_mut() {
         let Some(shown) = hit.get("path").and_then(Value::as_str).map(str::to_string) else {
             continue;
         };
         let Some(searched) = hit.get("text").and_then(Value::as_str).map(str::to_string) else {
             continue;
         };
-        let config = files.entry(shown.clone()).or_insert_with(|| {
-            let by_name = crate::command_guard::is_site_config(&shown);
-            let file = if Path::new(&shown).is_absolute() {
-                PathBuf::from(&shown)
-            } else {
-                match workspace {
-                    Some(root) => root.join(&shown),
-                    None => return by_name.then_some(None),
-                }
-            };
-            let small = std::fs::metadata(&file).is_ok_and(|m| m.len() <= CONFIG_MAX_BYTES);
-            let text = small.then(|| std::fs::read_to_string(&file).ok()).flatten();
-            let by_content = text
-                .as_deref()
-                .is_some_and(crate::command_guard::looks_like_site_config);
-            if !(by_name || by_content) {
-                return None;
-            }
-            Some(text.map(|text| {
-                let scrubbed = crate::command_guard::scrub_secrets(&text);
-                (lines_of(&text), lines_of(&scrubbed))
-            }))
-        });
-        let Some(config) = config else {
-            continue;
-        };
-        let line = hit
-            .get("line")
-            .and_then(Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok())
-            .and_then(|n| n.checked_sub(1));
-        let text = match (config, line) {
-            (Some((raw, scrubbed)), Some(at))
-                if raw.get(at).is_some_and(|l| clip(l) == searched) =>
+        let text = match (files.get(&shown), line_of(hit)) {
+            (Some(Again::Large), _) => Some(searched),
+            (Some(Again::Read { lines, config }), Some(at))
+                if lines.get(&at).is_some_and(|l| clip(l) == searched) =>
             {
-                scrubbed.get(at).map(clip)
+                let line = &lines[&at];
+                if !*config {
+                    Some(searched)
+                } else if line.contains('"') && !starts_with_key(line) {
+                    None
+                } else {
+                    Some(clip(&crate::command_guard::scrub_secrets(line)))
+                }
             }
             _ => None,
         };
         hit["text"] = json!(text.unwrap_or_else(|| "[redacted]".to_string()));
     }
     value
+}
+
+/// Whether the file was written after `searched_at` (or its modified time can't be read).
+fn modified_since(meta: &std::fs::Metadata, searched_at: std::time::SystemTime) -> bool {
+    meta.modified().map_or(true, |m| m > searched_at)
+}
+
+/// TBO Phase 27 (Q5), CodeRabbit on #35: the file's text, only when it was not written after
+/// `searched_at`. The modified time is read through the same handle *after* the text, so a write at
+/// any moment from the search's start to the end of this read is seen, and the text returned is the
+/// text that was searched.
+fn read_unchanged_since(mut handle: File, searched_at: std::time::SystemTime) -> Option<String> {
+    let mut text = String::new();
+    handle.read_to_string(&mut text).ok()?;
+    let meta = handle.metadata().ok()?;
+    (!modified_since(&meta, searched_at)).then_some(text)
+}
+
+/// The lines of `text` at the given 0-based positions, line ends removed: only what search hits
+/// name is kept, however large the file.
+fn lines_named(
+    text: &str,
+    wanted: &std::collections::HashSet<usize>,
+) -> std::collections::HashMap<usize, String> {
+    text.split('\n')
+        .enumerate()
+        .filter(|(at, _)| wanted.contains(at))
+        .map(|(at, line)| (at, line.strip_suffix('\r').unwrap_or(line).to_string()))
+        .collect()
+}
+
+/// A JSON line that starts with its own key (`"name": …`).
+fn starts_with_key(line: &str) -> bool {
+    static KEY: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| regex::Regex::new(r#"^\s*[{,]?\s*"(?:[^"\\]|\\.)*"\s*:"#).expect("key"))
+        .is_match(line)
 }
 
 /// TBO Phase 27 (Q5): a Frappe site's configuration is never written by Write
@@ -4252,13 +4324,33 @@ mod tests {
         let found = |line: u64, text: &str| {
             let value =
                 json!({ "matches": [{ "path": "site_config.json", "line": line, "text": text }] });
-            scrub_site_config_grep(value, Some(dir.path()))["matches"][0]["text"]
+            // the search runs after the files are written
+            scrub_site_config_grep(value, Some(dir.path()), std::time::SystemTime::now())["matches"]
+                [0]["text"]
                 .as_str()
                 .unwrap()
                 .to_string()
         };
-        assert_eq!(found(4, "  \"s3cret\""), "  \"[redacted]\"");
+        let hit_at = |path: &str, line: u64, text: &str, searched_at: std::time::SystemTime| {
+            let value = json!({ "matches": [{ "path": path, "line": line, "text": text }] });
+            scrub_site_config_grep(value, Some(dir.path()), searched_at)["matches"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let hit = |path: &str, line: u64, text: &str| {
+            let value = json!({ "matches": [{ "path": path, "line": line, "text": text }] });
+            scrub_site_config_grep(value, Some(dir.path()), std::time::SystemTime::now())["matches"]
+                [0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        // a value on its own line never shows, whatever the line before says now (CodeRabbit on
+        // #34); a line with its own key shows, scrubbed by itself
+        assert_eq!(found(4, "  \"s3cret\""), "[redacted]");
         assert_eq!(found(2, " \"db_name\": \"_x\","), " \"db_name\": \"_x\",");
+        assert_eq!(found(3, " \"db_password\":"), " \"db_password\":");
         // the file changed: the old hit's line now holds something else
         assert_eq!(found(2, " \"db_name\": \"_old\","), "[redacted]");
         // a copy under another name is known by its content
@@ -4267,19 +4359,85 @@ mod tests {
             dir.path().join("notes.txt"),
         )
         .unwrap();
-        let value =
-            json!({ "matches": [{ "path": "notes.txt", "line": 4, "text": "  \"s3cret\"" }] });
+        assert_eq!(hit("notes.txt", 4, "  \"s3cret\""), "[redacted]");
+        // a configuration with only its key, under another name
+        std::fs::write(
+            dir.path().join("keys.txt"),
+            "{\n \"encryption_key\": \"k3y\"\n}\n",
+        )
+        .unwrap();
         assert_eq!(
-            scrub_site_config_grep(value, Some(dir.path()))["matches"][0]["text"],
-            "  \"[redacted]\""
+            hit("keys.txt", 2, " \"encryption_key\": \"k3y\""),
+            " \"encryption_key\": \"[redacted]\""
         );
-        // an ordinary file's hit is left as it is
+        // a file deleted since the search hides its hit
+        std::fs::remove_file(dir.path().join("notes.txt")).unwrap();
+        assert_eq!(hit("notes.txt", 4, "  \"s3cret\""), "[redacted]");
+        // an ordinary file's hit is left as it is, and hidden once the file changed
         std::fs::write(dir.path().join("plain.txt"), "s3cret\n").unwrap();
-        let value = json!({ "matches": [{ "path": "plain.txt", "line": 1, "text": "s3cret" }] });
+        assert_eq!(hit("plain.txt", 1, "s3cret"), "s3cret");
+        std::fs::write(dir.path().join("plain.txt"), "other\n").unwrap();
+        assert_eq!(hit("plain.txt", 1, "s3cret"), "[redacted]");
+        // a file written after the search began: what it was when searched (a configuration or
+        // not) can no longer be told, so its hits are hidden even though the line still matches
+        // (CodeRabbit on #35)
+        let searched_at = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let was_config = dir.path().join("was-config.txt");
+        std::fs::write(&was_config, "{\n \"x\":\n  \"s3cret\"\n}\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&was_config)
+            .unwrap()
+            .set_modified(searched_at + std::time::Duration::from_secs(30))
+            .unwrap();
         assert_eq!(
-            scrub_site_config_grep(value, Some(dir.path()))["matches"][0]["text"],
-            "s3cret"
+            hit_at("was-config.txt", 3, "  \"s3cret\"", searched_at),
+            "[redacted]"
         );
+        // the same file, unchanged since a later search, is an ordinary file and shows
+        assert_eq!(hit("was-config.txt", 3, "  \"s3cret\""), "  \"s3cret\"");
+    }
+
+    #[test]
+    fn a_file_written_between_its_first_check_and_its_read_is_not_used() {
+        // TBO Phase 27 (Q5), CodeRabbit on #35: the file is opened and found unchanged, then
+        // written (a configuration's key line becomes an ordinary one) before it is read; the
+        // check after the read sees the write, so the new text is never used to classify the hit
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("swapped.txt");
+        std::fs::write(&path, "{\n \"db_password\":\n  \"s3cret\"\n}\n").unwrap();
+        let searched_at = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        let handle = File::open(&path).unwrap();
+        assert!(!modified_since(&handle.metadata().unwrap(), searched_at));
+        std::fs::write(&path, "{\n \"note\":\n  \"s3cret\"\n}\n").unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(searched_at + std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(read_unchanged_since(handle, searched_at), None);
+        // unwritten since the search, the same read returns the text
+        let handle = File::open(&path).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(120);
+        assert_eq!(
+            read_unchanged_since(handle, later).as_deref(),
+            Some("{\n \"note\":\n  \"s3cret\"\n}\n")
+        );
+    }
+
+    #[test]
+    fn a_file_read_again_for_its_hits_keeps_only_their_lines() {
+        // TBO Phase 27 (Q5), CodeRabbit on #35: a large file's other lines are not kept
+        let text = (0..10_000)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        let wanted: std::collections::HashSet<usize> = [3, 9_999].into_iter().collect();
+        let kept = lines_named(&text, &wanted);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[&3], "line 3");
+        assert_eq!(kept[&9_999], "line 9999");
     }
 
     #[cfg(unix)]
@@ -4389,6 +4547,8 @@ mod tests {
     async fn grep_uses_injected_rg_when_present() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "needle in workspace\n").unwrap();
+        // the fake rg's hit is a real file: a hit whose file is gone since the search is hidden
+        std::fs::write(dir.path().join("from-rg.txt"), "hello from rg\n").unwrap();
         let fake_dir = tempfile::tempdir().unwrap();
         let rg = write_fake_rg(
             fake_dir.path(),

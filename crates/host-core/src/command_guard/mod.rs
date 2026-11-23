@@ -155,7 +155,7 @@ fn assess_in(
             Some(run) if run.program == "cd" || run.program == "pushd" => Some(
                 input
                     .iter()
-                    .map(|dir| change_dir(dir.as_deref(), &run.args, world.home.as_deref()))
+                    .map(|dir| change_dir(dir.as_deref(), &run.args, world))
                     .collect(),
             ),
             Some(run) if run.program == "popd" => Some(vec![None]),
@@ -568,7 +568,15 @@ fn delete_target_from(t: &str, dir: Option<&Path>, place: &Place<'_>) -> Target 
 /// by link before each `..` (`linked/../old` is next to the link's target, not in the project).
 /// `follow_last` resolves the path itself too.
 fn contained(path: &Path, follow_last: bool, place: &Place<'_>) -> Target {
-    if !inside(&normalize(path), place.roots) {
+    let real_roots: Vec<PathBuf> = place
+        .roots
+        .iter()
+        .map(|root| (place.world.canonical)(root).unwrap_or_else(|| normalize(root)))
+        .collect();
+    // inside as written, or as the system spells the allowed folders (the physical folder of a
+    // `cd -P` in a project that is itself reached through a link)
+    let written = normalize(path);
+    if !inside(&written, place.roots) && !inside(&written, &real_roots) {
         return Target::Outside;
     }
     let probe = if follow_last {
@@ -581,11 +589,6 @@ fn contained(path: &Path, follow_last: bool, place: &Place<'_>) -> Target {
     let Some(real) = resolve_existing(&probe, place.world) else {
         return Target::Unknown;
     };
-    let real_roots: Vec<PathBuf> = place
-        .roots
-        .iter()
-        .map(|root| (place.world.canonical)(root).unwrap_or_else(|| normalize(root)))
-        .collect();
     if inside(&real, &real_roots) {
         Target::Inside
     } else {
@@ -612,8 +615,16 @@ fn resolve_existing(path: &Path, world: &World<'_>) -> Option<PathBuf> {
 }
 
 /// The folder after `cd <target>` (or `pushd`) from `from`, if it succeeds; None when it cannot be
-/// known.
-fn change_dir(from: Option<&Path>, args: &[String], home: Option<&Path>) -> Option<PathBuf> {
+/// known. A shell's `cd` is logical (`linked/..` is the folder holding the link) unless `-P` asks
+/// for the physical folder, which is resolved as the system does (the link's target's parent).
+fn change_dir(from: Option<&Path>, args: &[String], world: &World<'_>) -> Option<PathBuf> {
+    let home = world.home.as_deref();
+    let options: String = args
+        .iter()
+        .take_while(|a| a.starts_with('-') && a.len() > 1 && *a != "--")
+        .flat_map(|a| a.chars().skip(1))
+        .collect();
+    let physical = options.rfind('P') > options.rfind('L');
     let target = args
         .iter()
         .find(|a| !(a.starts_with('-') && a.len() > 1))
@@ -628,6 +639,9 @@ fn change_dir(from: Option<&Path>, args: &[String], home: Option<&Path>) -> Opti
         t if t.starts_with('~') => return None,
         t => from?.join(t),
     };
+    if physical {
+        return resolve_existing(&path, world);
+    }
     Some(normalize(&path))
 }
 

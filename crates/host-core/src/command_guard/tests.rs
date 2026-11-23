@@ -9,8 +9,8 @@ fn roots() -> Vec<PathBuf> {
 
 /// A made-up file system: the project, its scratch folder, /home/user, the home /home/tester and
 /// /elsewhere exist; a folder named "missing" does not; /work/app/linked is a link to
-/// /elsewhere/cache, outside the project. A path is resolved as the system does: link by link,
-/// before each `..`.
+/// /elsewhere/cache, outside the project, and /tmp a link to /private/tmp (as on macOS). A path
+/// is resolved as the system does: link by link, before each `..`.
 fn fake_canonical(path: &Path) -> Option<PathBuf> {
     let mut real = PathBuf::new();
     for component in path.components() {
@@ -24,6 +24,9 @@ fn fake_canonical(path: &Path) -> Option<PathBuf> {
                 if real == Path::new("/work/app/linked") {
                     real = PathBuf::from("/elsewhere/cache");
                 }
+                if real == Path::new("/tmp") {
+                    real = PathBuf::from("/private/tmp");
+                }
             }
         }
     }
@@ -33,14 +36,17 @@ fn fake_canonical(path: &Path) -> Option<PathBuf> {
     }
     let exists = [
         "/work/app",
-        "/tmp/scratch",
+        "/private/tmp/scratch",
         "/home/user",
         "/home/tester",
         "/elsewhere",
     ]
     .iter()
     .any(|root| p.starts_with(root))
-        || matches!(p.as_ref(), "/" | "/work" | "/tmp" | "/home");
+        || matches!(
+            p.as_ref(),
+            "/" | "/work" | "/private" | "/private/tmp" | "/home"
+        );
     exists.then_some(real)
 }
 
@@ -316,6 +322,16 @@ fn a_link_to_a_folder_outside_the_project_is_followed() {
     assert!(refused("cd linked && rm -rf old"));
     // a `..` after the link is the link target's parent, not the project (CodeRabbit on #34)
     assert!(refused("rm -rf linked/../old"));
+    // so is the folder of a physical `cd -P linked/..`; a logical `cd linked/..` is the project
+    assert!(refused("cd -P linked/.. && rm -rf old"));
+    assert!(refused("cd -LP linked/.. && rm -rf old"));
+    assert!(allowed("cd linked/.. && rm -rf old"));
+    assert!(allowed("cd -PL linked/.. && rm -rf old"));
+    // a physical folder inside an allowed folder reached through a link stays inside
+    // (/tmp/scratch is /private/tmp/scratch here): CodeRabbit on #35
+    assert!(allowed("cd -P /tmp/scratch && rm -rf out"));
+    assert!(asked("cd -P /tmp/scratch && rm -rf *"));
+    assert!(refused("cd -P /tmp && rm -rf other"));
     assert!(refused("rm -rf /work/app/linked/../old"));
     assert!(allowed("rm -rf build/../dist"));
     // the link itself is in the project, and so is an ordinary folder
@@ -345,6 +361,15 @@ fn a_parent_step_after_a_link_is_resolved_on_the_real_file_system() {
     assert!(matches!(run("rm -rf linked/x"), CommandVerdict::Refuse(_)));
     assert_eq!(run("rm -rf linked"), CommandVerdict::Allow);
     assert_eq!(run("rm -rf build/../dist"), CommandVerdict::Allow);
+    // a physical cd through the link goes to the target's parent
+    assert!(matches!(
+        run("cd -P linked/.. && rm -rf old"),
+        CommandVerdict::Refuse(_)
+    ));
+    assert_eq!(run("cd linked/.. && rm -rf dist"), CommandVerdict::Allow);
+    // a physical cd to the project itself stays in it, even when the project is reached through a
+    // link (a macOS temporary folder is /private/var/…)
+    assert_eq!(run("cd -P . && rm -rf build"), CommandVerdict::Allow);
 }
 
 #[test]
@@ -573,6 +598,39 @@ fn live_output_holds_a_secret_until_its_value_ends() {
         "{}",
         &out[out.len().saturating_sub(120)..]
     );
+    // a long setting name with a secret word, cut before its `=` (CodeRabbit on #34)
+    let out = run(&[
+        &format!("{}DB_PASSWORD{}", " ".repeat(61_430), "x".repeat(4_100)),
+        "=s3cret\nnext\n",
+    ]);
+    assert!(
+        !out.contains("s3cret") && out.contains("next"),
+        "{}",
+        &out[out.len().saturating_sub(120)..]
+    );
+    // spaces between the long name and its `=` keep the value hidden; another word ends it
+    let out = run(&[
+        &format!("{}DB_PASSWORD{}", " ".repeat(61_430), "x".repeat(4_100)),
+        "  = s3cret\nnext\n",
+    ]);
+    assert!(
+        !out.contains("s3cret") && out.contains("next"),
+        "{}",
+        &out[out.len().saturating_sub(120)..]
+    );
+    let out = run(&[
+        &format!("{}DB_PASSWORD{}", " ".repeat(61_430), "x".repeat(4_100)),
+        " is not set\n",
+    ]);
+    assert!(
+        out.contains(" is not set"),
+        "{}",
+        &out[out.len().saturating_sub(120)..]
+    );
+    // a long ordinary name is shown whole
+    let name = "x".repeat(4_100);
+    let out = run(&[&format!("{}{name}", " ".repeat(61_430)), "=1\n"]);
+    assert!(out.contains(&format!("{name}=1")) && !out.contains("[redacted]"));
     // a long ordinary value is shown whole
     let body = "b".repeat(70_000);
     let out = run(&[&format!("{{\"body\": \"{body}"), "\", \"n\": 1}\n"]);
