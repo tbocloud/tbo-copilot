@@ -27,7 +27,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
 mod scrub;
-pub use scrub::{is_site_config, is_site_config_path, scrub_secrets, StreamScrubber};
+pub use scrub::{
+    is_site_config, is_site_config_path, looks_like_site_config, scrub_secrets, StreamScrubber,
+};
 
 /// What happens to a shell command before the permission decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +150,7 @@ fn assess_in(
 
         let words = words(text);
         let run = resolve_command(&words);
+        let negated = negated(&words);
         let changed: Option<Dirs> = match &run {
             Some(run) if run.program == "cd" || run.program == "pushd" => Some(
                 input
@@ -204,8 +207,15 @@ fn assess_in(
             ok = all.clone();
             failed = all;
         } else {
-            ok = both(changed.as_deref().unwrap_or(&input), &carry_ok);
-            failed = both(&input, &carry_failed);
+            // `!` swaps success and failure, not the folder: a negated cd that succeeded runs the
+            // `||` branch in the new folder
+            let mut succeeded = changed.clone().unwrap_or_else(|| input.clone());
+            let mut did_not = input.clone();
+            if negated {
+                std::mem::swap(&mut succeeded, &mut did_not);
+            }
+            ok = both(&succeeded, &carry_ok);
+            failed = both(&did_not, &carry_failed);
         }
         if next != Some(Op::Pipe) {
             pipeline = None;
@@ -874,6 +884,14 @@ const WRAPPERS: &[&str] = &[
 
 /// Shell words that come before a command (`if rm …`, `then rm …`, `! rm …`).
 const KEYWORDS: &[&str] = &["if", "then", "else", "elif", "do", "while", "until", "!"];
+
+/// Whether a part's status is negated (`! cmd`, `if ! cmd`).
+fn negated(words: &[String]) -> bool {
+    words
+        .iter()
+        .take_while(|w| KEYWORDS.contains(&w.as_str()))
+        .any(|w| w == "!")
+}
 
 /// The command a part runs, past variable assignments and wrappers (`env`, `nohup`, `nice -n 10`,
 /// `timeout 30`, `xargs -0`, `sudo -u root`…) with their own options: a wrapper's option is never

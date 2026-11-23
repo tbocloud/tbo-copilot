@@ -45,18 +45,21 @@ function tcpProbe(host, port, timeoutMs = 800) {
   });
 }
 
-// host and port of a redis:// or rediss:// address (with or without user:password@ and a database),
-// or { unsupported } for any other form, such as a unix socket or an address with no host. Never
-// the credentials: a host never holds an @ (CodeRabbit on #34).
+// host and port of a redis:// or rediss:// address (with or without user:password@, a database,
+// or the port as `?port=` when the address has none, as redis-py reads it), or { unsupported } for
+// any other form, such as a unix socket or an address with no host. Never the credentials: a host
+// never holds an @ (CodeRabbit on #34).
 function redisAddress(url) {
-  const m = /^(rediss?):\/\/(?:[^/]*@)?(\[[^\]@/]+\]|[^:/?#@[\]]+)(?::(\d+))?(?:[/?#].*)?$/i.exec(String(url || "").trim());
+  const m = /^(rediss?):\/\/(?:[^/]*@)?(\[[^\]@/]+\]|[^:/?#@[\]]+)(?::(\d+))?([/?#].*)?$/i.exec(String(url || "").trim());
   if (!m) {
     // only a plain scheme name is shown (unix, redis+sentinel…); anything else could be part of a
     // password, so it is never echoed (CodeRabbit on #34)
     const scheme = /^([a-z][a-z0-9+.-]{0,15}):\/\//i.exec(String(url || "").trim());
     return { unsupported: scheme ? scheme[1].toLowerCase() : "unrecognised" };
   }
-  return { host: m[2].replace(/^\[|\]$/g, ""), port: Number(m[3] || 6379) };
+  const query = /\?([^#]*)/.exec(m[4] || "");
+  const queryPort = query && /(?:^|&)port=(\d+)(?:&|$)/.exec(query[1]);
+  return { host: m[2].replace(/^\[|\]$/g, ""), port: Number(m[3] || (queryPort && queryPort[1]) || 6379) };
 }
 
 const validPort = (port) => Number.isInteger(port) && port > 0 && port < 65536;
@@ -104,8 +107,10 @@ function createReady({ runFn, env, probe = tcpProbe }) {
     let database = "";
     if (c.dbType === "mariadb" || c.dbType === "postgres") {
       database = c.dbType === "postgres" ? "PostgreSQL" : "MariaDB";
-      if (c.dbSocket) {
-        if (!(await answers(String(c.dbSocket)))) down.push(`${database} (socket ${c.dbSocket})`);
+      // PostgreSQL takes a host that is a folder as the folder of its socket (libpq)
+      const socket = c.dbSocket ? String(c.dbSocket) : c.dbType === "postgres" && c.dbHost.startsWith("/") && validPort(c.dbPort) ? path.join(c.dbHost, `.s.PGSQL.${c.dbPort}`) : "";
+      if (socket) {
+        if (!(await answers(socket))) down.push(`${database} (socket ${socket})`);
       } else if (!validPort(c.dbPort)) {
         down.push(`${database} (${c.dbHost}: the port is not a valid port number)`);
       } else if (!(await answers(c.dbHost === "localhost" ? "127.0.0.1" : c.dbHost, c.dbPort))) {

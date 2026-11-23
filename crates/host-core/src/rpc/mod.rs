@@ -8558,7 +8558,8 @@ mod tests {
         fs::create_dir_all(&site).unwrap();
         let config = site.join("site_config.json");
         // valid JSON with the value on the line after its key
-        let original = "{\n \"db_password\":\n  \"s3cretValue123\",\n \"x\": 1\n}\n";
+        let original =
+            "{\n \"db_name\": \"_x\",\n \"db_password\":\n  \"s3cretValue123\",\n \"x\": 1\n}\n";
         fs::write(&config, original).unwrap();
         let call = |name: &str, args: Value| json!({ "sessionId": session_id, "toolCallId": name, "toolName": name, "args": args, "mode": "agent" });
         let run = |name: &str, args: Value| {
@@ -8573,7 +8574,7 @@ mod tests {
         // a Read window that starts at the value's line
         let read = run(
             "Read",
-            json!({ "path": "sites/demo.localhost/site_config.json", "offset": 2, "limit": 1 }),
+            json!({ "path": "sites/demo.localhost/site_config.json", "offset": 3, "limit": 1 }),
         )
         .await
         .unwrap();
@@ -8594,6 +8595,33 @@ mod tests {
             text.contains("site_config.json") && !text.contains("s3cretValue123"),
             "{grep}"
         );
+
+        // the same file under another name (a hard link, a copy) is known by its content
+        fs::hard_link(&config, project.join("alias.txt")).unwrap();
+        fs::copy(&config, project.join("copy.txt")).unwrap();
+        for name in ["alias.txt", "copy.txt"] {
+            let read = run("Read", json!({ "path": name })).await.unwrap();
+            let content = read["content"]["content"].as_str().unwrap();
+            assert!(
+                !content.contains("s3cretValue123") && content.contains("[redacted]"),
+                "{read}"
+            );
+        }
+        let grep = run(
+            "Grep",
+            json!({ "pattern": "s3cret", "outputMode": "content" }),
+        )
+        .await
+        .unwrap();
+        let text = grep["content"].to_string();
+        assert!(
+            text.contains("alias.txt")
+                && text.contains("copy.txt")
+                && !text.contains("s3cretValue123"),
+            "{grep}"
+        );
+        fs::remove_file(project.join("alias.txt")).unwrap();
+        fs::remove_file(project.join("copy.txt")).unwrap();
 
         // a move onto a link named site_config.json writes nothing behind it
         let other = project.join("sites").join("other.localhost");

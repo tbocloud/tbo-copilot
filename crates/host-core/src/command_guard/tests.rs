@@ -275,6 +275,12 @@ fn a_relative_delete_is_placed_where_it_runs() {
     ));
     assert!(refused("(cd /home/user/Documents && rm -rf old)"));
     assert!(allowed("(cd /work/app/sub && rm -rf build) && rm -rf dist"));
+    // `!` swaps success and failure, not the folder: CodeRabbit on #34
+    assert!(refused("! cd /home/user/Documents || rm -rf old"));
+    assert!(allowed("! cd /home/user/Documents && rm -rf old"));
+    assert!(refused(
+        "if ! cd /home/user/Documents; then true; else rm -rf old; fi"
+    ));
     // a pipeline's last part may run in the shell itself (zsh), so its cd may last; a first part
     // runs in a subshell in every shell
     assert!(refused("true | cd /home/user/Documents; rm -rf old"));
@@ -520,6 +526,11 @@ fn live_output_holds_a_secret_until_its_value_ends() {
         "{}",
         &out[out.len() - 80..]
     );
+    // a whole key and value across a line end, the value's line not ended yet: passed on together
+    let mut s = StreamScrubber::default();
+    assert_eq!(s.push("{\n \"db_password\":\n  \"s3cret\""), "{\n");
+    let out = format!("{}{}", s.push(",\n \"x\": 1\n}\n"), s.finish());
+    assert!(!out.contains("s3cret") && out.contains("\"x\": 1"), "{out}");
     // a key longer than the tail, cut before its name ends (CodeRabbit on #34)
     let out = run(&[
         &format!("{}{{\"db_password{}", " ".repeat(61_430), "x".repeat(4_100)),

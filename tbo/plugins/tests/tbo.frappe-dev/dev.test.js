@@ -1450,6 +1450,17 @@ test("ready probes the services as Frappe connects to them: overrides, the site'
   const services = byId(await w.dev.runDev({ action: "ready" })).services;
   assert.equal(services.ok, true, services.detail);
   assert.ok(["probe db.internal:3307", "probe cache.internal:6380", "probe queue.internal:6381"].every((p) => w.readyCalls.includes(p)), w.readyCalls.join(" | "));
+  // a Redis port given as `?port=` when the address has none, as redis-py reads it (CodeRabbit on #34)
+  Object.assign(w.env, { FRAPPE_REDIS_CACHE: "redis://cache.internal?port=6390", FRAPPE_REDIS_QUEUE: "redis://queue.internal:6381?port=6391" });
+  w.readyCalls.length = 0;
+  await w.dev.runDev({ action: "ready" });
+  assert.ok(w.readyCalls.includes("probe cache.internal:6390") && w.readyCalls.includes("probe queue.internal:6381"), w.readyCalls.join(" | "));
+  // PostgreSQL with a host that is a folder: its socket there
+  Object.assign(w.env, { FRAPPE_DB_TYPE: "postgres", FRAPPE_DB_HOST: "/var/run/postgresql", FRAPPE_DB_PORT: "5432" });
+  w.readyCalls.length = 0;
+  await w.dev.runDev({ action: "ready" });
+  assert.ok(w.readyCalls.includes("probe /var/run/postgresql/.s.PGSQL.5432:undefined"), w.readyCalls.join(" | "));
+  Object.assign(w.env, { FRAPPE_DB_TYPE: "mariadb", FRAPPE_DB_HOST: "db.internal", FRAPPE_DB_PORT: "3307" });
   // a database socket is probed as a socket; SQLite has no server
   Object.assign(w.env, { FRAPPE_DB_SOCKET: "/tmp/mysql.sock" });
   w.readyCalls.length = 0;

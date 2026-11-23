@@ -119,6 +119,14 @@ pub fn is_site_config_path(path: &Path) -> bool {
     )
 }
 
+/// A Frappe site's configuration by its content, whatever its name (a copy, a hard link): a JSON
+/// object with the `db_name` and `db_password` settings Frappe writes.
+pub fn looks_like_site_config(text: &str) -> bool {
+    text.trim_start().starts_with('{')
+        && text.contains("\"db_name\"")
+        && text.contains("\"db_password\"")
+}
+
 /// What kind of secret runs on at the end of a text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenKind {
@@ -248,6 +256,23 @@ fn past_secrets(text: &str, mut cut: usize) -> usize {
     }
 }
 
+/// The last line end at or before `end` that no whole secret spans, so a JSON key on one line and
+/// its value on the next are passed on together; None when every line end before is inside one.
+fn line_end_outside_secrets(text: &str, mut end: usize) -> Option<usize> {
+    loop {
+        let spanning = rules()
+            .iter()
+            .flat_map(|(regex, _)| regex.find_iter(text))
+            .filter(|m| m.start() <= end && end < m.end())
+            .map(|m| m.start())
+            .min();
+        match spanning {
+            None => return Some(end),
+            Some(start) => end = text[..start].rfind(['\n', '\r'])?,
+        }
+    }
+}
+
 fn floor_char_boundary(text: &str, mut at: usize) -> usize {
     while at > 0 && !text.is_char_boundary(at) {
         at -= 1;
@@ -301,7 +326,10 @@ impl StreamScrubber {
             return out;
         }
         let hold_from = open_secret(&self.pending).map_or(self.pending.len(), |open| open.start);
-        if let Some(end) = self.pending[..hold_from].rfind(['\n', '\r']) {
+        let line_end = self.pending[..hold_from]
+            .rfind(['\n', '\r'])
+            .and_then(|end| line_end_outside_secrets(&self.pending, end));
+        if let Some(end) = line_end {
             let lines: String = self.pending.drain(..=end).collect();
             out.push_str(&self.emit(&lines));
         }
