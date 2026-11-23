@@ -44,6 +44,18 @@ pub enum CommandVerdict {
 /// followed through `cd` and `pushd`, so a relative delete is placed where it
 /// runs; when the folder cannot be known, the delete is asked.
 pub fn assess(command: &str, cwd: Option<&Path>, allowed_roots: &[PathBuf]) -> CommandVerdict {
+    assess_in(command, cwd, allowed_roots, &|path: &Path| path.is_dir())
+}
+
+/// `assess`, with the check whether a folder exists given (tests use a made-up file system). A `cd`
+/// to a folder that does not exist fails and leaves the shell where it was, which the guard cannot
+/// count on (`cd a && cd missing; rm -rf old` deletes in a): the folder is then unknown.
+fn assess_in(
+    command: &str,
+    cwd: Option<&Path>,
+    allowed_roots: &[PathBuf],
+    is_dir: &dyn Fn(&Path) -> bool,
+) -> CommandVerdict {
     let mut asks: Vec<String> = Vec::new();
     if let Some(reason) = destructive_sql(command) {
         return CommandVerdict::Refuse(reason);
@@ -59,7 +71,7 @@ pub fn assess(command: &str, cwd: Option<&Path>, allowed_roots: &[PathBuf]) -> C
         };
         match run.program.as_str() {
             "cd" | "pushd" => {
-                here = change_dir(here.as_deref(), &run.args);
+                here = change_dir(here.as_deref(), &run.args).filter(|dir| is_dir(dir));
                 continue;
             }
             "popd" => {
@@ -712,13 +724,14 @@ pub fn scrub_secrets(text: &str) -> Cow<'_, str> {
             ),
             (
                 // NAME=value inside a command line (`DB_PASSWORD='x' bench …`), quotes respected
-                Regex::new(r#"(?i)(^|[\s;&|(])((?:export\s+)?[a-z_][a-z0-9_]*(?:password|passwd|secret|token|api_?key|apikey|private_?key|access_?key|encryption_key|client_secret|auth_token)[a-z0-9_]*=)(?:'[^'\n]*'|"(?:[^"\\\n]|\\.)*"|[^\s'";&|]+)"#)
+                Regex::new(r#"(?i)(^|[\s;&|(])((?:export\s+)?[a-z_][a-z0-9_]*(?:password|passwd|secret|token|api_?key|apikey|private_?key|access_?key|encryption_key|client_secret|auth_token)[a-z0-9_]*=)(?:'[^'\n]*'|"(?:[^"\\\n]|\\.)*"|\\.|[^\s'"\\;&|])+"#)
                     .expect("inline"),
                 "${1}${2}[redacted]",
             ),
             (
-                // a password given as an argument, quoted values whole
-                Regex::new(r#"(?i)(--(?:mariadb-root-|db-root-|root-|admin-|db-)?password(?:=|\s+))(?:'[^'\n]*'|"(?:[^"\\\n]|\\.)*"|\S+)"#)
+                // a password given as an argument: the whole shell word, quoted and unquoted pieces and
+                // escaped spaces together (`'alpha beta'gamma`, `alpha\ beta`)
+                Regex::new(r#"(?i)(--(?:mariadb-root-|db-root-|root-|admin-|db-)?password(?:=|\s+))(?:'[^'\n]*'|"(?:[^"\\\n]|\\.)*"|\\.|[^\s'"\\])+"#)
                     .expect("flag"),
                 "${1}[redacted]",
             ),
@@ -769,6 +782,21 @@ const STREAM_HOLD_MAX: usize = 64 * 1024;
 pub struct StreamScrubber {
     pending: String,
     in_key: bool,
+    /// An overlong line was cut inside a secret value: the rest of that line is hidden.
+    hide_rest_of_line: bool,
+}
+
+/// The start of a secret value that may run past where an overlong line is cut: a JSON value, a
+/// NAME= assignment or a password argument, to the end of the text.
+fn dangling_secret() -> &'static Regex {
+    static DANGLING: OnceLock<Regex> = OnceLock::new();
+    DANGLING.get_or_init(|| {
+        let names = r"[a-z0-9_.\-]*(?:password|passwd|secret|token|api_?key|apikey|private_?key|access_?key|encryption_key|client_secret|auth_token|authorization)[a-z0-9_.\-]*";
+        Regex::new(&format!(
+            r#"(?i)("{names}"\s*:\s*"|(?:^|[\s;&|(]){names}\s*[=:]\s*|--(?:mariadb-root-|db-root-|root-|admin-|db-)?password(?:=|\s+))[^\n]*$"#
+        ))
+        .expect("dangling")
+    })
 }
 
 impl StreamScrubber {
@@ -776,13 +804,39 @@ impl StreamScrubber {
     pub fn push(&mut self, text: &str) -> String {
         self.pending.push_str(text);
         let mut out = String::new();
-        while let Some(end) = self.pending.find(['\n', '\r']) {
+        loop {
+            if self.hide_rest_of_line {
+                match self.pending.find(['\n', '\r']) {
+                    Some(end) => {
+                        self.pending.drain(..end);
+                        self.hide_rest_of_line = false;
+                    }
+                    None => {
+                        self.pending.clear();
+                        return out;
+                    }
+                }
+            }
+            let Some(end) = self.pending.find(['\n', '\r']) else {
+                break;
+            };
             let line: String = self.pending.drain(..=end).collect();
             out.push_str(&self.line(&line));
         }
         if self.pending.len() > STREAM_HOLD_MAX {
+            // a line longer than the hold is passed on in pieces; one cut inside a secret value hides
+            // the value and the rest of its line (CodeRabbit on #34)
             let rest = std::mem::take(&mut self.pending);
-            out.push_str(&self.line(&rest));
+            let scrubbed = self.line(&rest);
+            match dangling_secret().captures(&scrubbed) {
+                Some(found) => {
+                    let start = found.get(1).map(|m| m.end()).unwrap_or(scrubbed.len());
+                    out.push_str(&scrubbed[..start]);
+                    out.push_str(REDACTED);
+                    self.hide_rest_of_line = true;
+                }
+                None => out.push_str(&scrubbed),
+            }
         }
         out
     }

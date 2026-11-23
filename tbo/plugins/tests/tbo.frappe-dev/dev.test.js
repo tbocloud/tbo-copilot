@@ -1387,6 +1387,11 @@ test("ready reports a Redis address it cannot check, and never its password", as
   assert.match(services.detail, /Redis cache \(127\.0\.0\.1:13000\)/);
   assert.match(services.detail, /Redis queue \(a unix address this check cannot reach/);
   assert.doesNotMatch(JSON.stringify(services), /hunter2/);
+  // a malformed address that carries a password: only a fixed label is shown (CodeRabbit on #34)
+  commonConfig(w, { redis_cache: "hunter2@localhost:6379" });
+  const malformed = byId(await w.dev.runDev({ action: "ready" })).services;
+  assert.match(malformed.detail, /Redis cache \(a unrecognised address/);
+  assert.doesNotMatch(JSON.stringify(malformed), /hunter2|localhost/);
   // a rediss address that answers is fine
   w.servicesDown.clear();
   commonConfig(w, { redis_cache: "rediss://default:hunter2@127.0.0.1:13000/0" });

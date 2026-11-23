@@ -42,7 +42,12 @@ function tcpProbe(host, port, timeoutMs = 800) {
 // or { unsupported } for any other form, such as a unix socket. Never the credentials.
 function redisAddress(url) {
   const m = /^(rediss?):\/\/(?:[^/]*@)?(\[[^\]]+\]|[^:/?#]+)(?::(\d+))?(?:[/?#].*)?$/i.exec(String(url || "").trim());
-  if (!m) return { unsupported: String(url || "").split(":")[0] || "unknown" };
+  if (!m) {
+    // only a plain scheme name is shown (unix, redis+sentinel…); anything else could be part of a
+    // password, so it is never echoed (CodeRabbit on #34)
+    const scheme = /^([a-z][a-z0-9+.-]{0,15}):\/\//i.exec(String(url || "").trim());
+    return { unsupported: scheme ? scheme[1].toLowerCase() : "unrecognised" };
+  }
   return { host: m[2].replace(/^\[|\]$/g, ""), port: Number(m[3] || 6379) };
 }
 

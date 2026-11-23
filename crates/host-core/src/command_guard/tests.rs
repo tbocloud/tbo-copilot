@@ -5,8 +5,20 @@ use super::*;
 fn roots() -> Vec<PathBuf> {
     vec![PathBuf::from("/work/app"), PathBuf::from("/tmp/scratch")]
 }
+/// A made-up file system: the project, its scratch folder, /home/user and the real home exist; a
+/// folder named "missing" does not.
+fn fake_dir(path: &Path) -> bool {
+    let p = path.to_string_lossy();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let known = ["/work/app", "/tmp/scratch", "/home/user"]
+        .iter()
+        .any(|root| p.starts_with(root))
+        || (!home.is_empty() && p.starts_with(&home));
+    known && !p.contains("missing")
+}
+
 fn verdict(cmd: &str) -> CommandVerdict {
-    assess(cmd, Some(Path::new("/work/app")), &roots())
+    assess_in(cmd, Some(Path::new("/work/app")), &roots(), &fake_dir)
 }
 fn refused(cmd: &str) -> bool {
     matches!(verdict(cmd), CommandVerdict::Refuse(_))
@@ -199,6 +211,11 @@ fn a_relative_delete_is_placed_where_it_runs() {
     assert!(asked("cd $SOMEWHERE && rm -rf old"));
     assert!(asked("cd - && rm -rf old"));
     assert!(asked("pushd /work/app && popd && rm -rf old"));
+    // a cd that fails (no such folder) leaves the shell where it was: CodeRabbit on #34
+    assert!(!allowed(
+        "cd /home/user/Documents && cd /work/app/missing; rm -rf old"
+    ));
+    assert!(asked("cd /work/app/missing && rm -rf old"));
     // no starting folder known at all
     assert!(matches!(
         assess("rm -rf old", None, &roots()),
@@ -261,6 +278,17 @@ fn quoted_and_escaped_secrets_are_hidden_whole() {
     let out = scrub_secrets(flag);
     assert!(!out.contains("alpha") && !out.contains("beta"), "{out}");
     assert!(out.contains("--install-app erpnext"), "{out}");
+    // the whole shell word: quoted and unquoted pieces, escaped spaces (CodeRabbit on #34)
+    let out =
+        scrub_secrets("bench new-site x --admin-password 'alpha beta'gamma --install-app erpnext");
+    assert!(!out.contains("gamma") && !out.contains("beta"), "{out}");
+    assert!(out.contains("--install-app erpnext"), "{out}");
+    let out = scrub_secrets("x --admin-password alpha\\ beta y");
+    assert!(!out.contains("beta"), "{out}");
+    assert_eq!(
+        scrub_secrets("DB_PASSWORD='a b'c ./run"),
+        "DB_PASSWORD=[redacted] ./run"
+    );
     let out = scrub_secrets(r#"x --db-password "a \" b" y"#);
     assert!(!out.contains("a \\\" b") && out.ends_with(" y"), "{out}");
 }
@@ -292,6 +320,18 @@ fn streamed_output_is_scrubbed_across_chunks() {
         out.contains("-----BEGIN PRIVATE KEY----- [redacted]")
             && out.contains("-----END PRIVATE KEY-----")
     );
+    // a line longer than the hold, cut inside a secret value: the value and the rest of the line
+    // stay hidden, the next line is shown (CodeRabbit on #34)
+    let mut long = StreamScrubber::default();
+    let mut shown = long.push(&format!("{{\"db_password\": \"{}", "s".repeat(70_000)));
+    shown.push_str(&long.push("tail\", \"x\": 1}\nnext line\n"));
+    shown.push_str(&long.finish());
+    assert!(
+        !shown.contains("sss") && !shown.contains("tail"),
+        "{}",
+        &shown[..shown.len().min(200)]
+    );
+    assert!(shown.contains("next line"), "{shown}");
     // a partial line waits for its end
     let mut s = StreamScrubber::default();
     assert_eq!(s.push("DB_PASSWORD=hun"), "");
