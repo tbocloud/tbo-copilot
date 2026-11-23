@@ -15,21 +15,27 @@ function isBench(dir) {
   return Boolean(dir) && fs.existsSync(path.join(dir, "sites")) && fs.existsSync(path.join(dir, "apps", "frappe"));
 }
 
-// The bench: the setting, or the folder that holds the repository as apps/<app>. A configured bench
-// must hold this very checkout in its apps/ folder: the tests run the code the bench loads, and a
-// result counts only for the commit it ran on. The answer is the bench's real path, so one bench
-// reached two ways (a link, a trailing slash) is still one bench for the one-job-at-a-time rule.
+// A setting that may hold several values, separated by commas or new lines (a folder may hold
+// spaces, so spaces do not separate).
+function listOf(value) {
+  const items = Array.isArray(value) ? value : String(value || "").split(/[,\n]/);
+  return items.map((s) => String(s).trim()).filter(Boolean);
+}
+
+// The bench: the first bench of the "Frappe bench folder" list that holds this checkout in its apps/
+// folder, else the bench around the repository (<bench>/apps/<app>). A bench that does not hold this
+// very checkout is never used: the tests run the code the bench loads, and a result counts only for
+// the commit it ran on. One developer's projects may sit on several benches, so a listed bench that
+// does not hold this one is passed over. The answer is the bench's real path, so one bench reached
+// two ways (a link, a trailing slash) is still one bench for the one-job-at-a-time rule.
 function findBench(root, configured) {
-  if (configured) {
-    if (!isBench(configured)) throw fail("NO_BENCH", `"Frappe bench folder" (${configured}) is not a bench: it needs sites/ and apps/frappe.`);
-    if (!holds(configured, root)) {
-      throw fail("NO_BENCH", `The bench ${configured} runs the apps in its apps/ folder, and this repository (${root}) is not one of them: work in ${configured}/apps/<app>, or set the bench that holds it.`);
-    }
-    return fs.realpathSync(configured);
-  }
+  const listed = listOf(configured);
+  for (const dir of listed) if (isBench(dir) && holds(dir, root)) return fs.realpathSync(dir);
   const parent = path.dirname(root);
   if (path.basename(parent) === "apps" && isBench(path.dirname(parent))) return fs.realpathSync(path.dirname(parent));
-  return null;
+  if (!listed.length) return null;
+  const why = listed.map((dir) => (isBench(dir) ? `${dir} does not hold it in its apps/ folder` : `${dir} is not a bench (it needs sites/ and apps/frappe)`));
+  throw fail("NO_BENCH", `No bench runs this repository (${root}): ${why.join("; ")}. Work in <bench>/apps/<app>, or add the bench that holds it to "Frappe bench folder".`);
 }
 
 // The bench's apps/ folder holds this checkout: as a folder, or as a link to it.
@@ -137,4 +143,4 @@ function createTests({ runFn, env, log = () => {} }) {
   return { runModules };
 }
 
-module.exports = { createTests, checkModules, completedOk, findBench, findSite, testModules, isBench };
+module.exports = { createTests, checkModules, completedOk, findBench, findSite, testModules, isBench, holds, listOf, readText, SITE };

@@ -193,7 +193,10 @@ test("the bench is the setting or the folder that holds the repository in apps/;
   assert.equal(findBench(repo, bench), real);
   assert.equal(findBench(repo, `${bench}${path.sep}`), real);
   assert.equal(findBench(tempTree(t, { "x/y.py": "" }), ""), null);
-  assert.throws(() => findBench(repo, "/nowhere"), { code: "NO_BENCH" });
+  // a list: the listed bench that holds it, else the bench around it; never one that does not hold it
+  assert.equal(findBench(repo, `/nowhere, ${bench}`), real);
+  assert.equal(findBench(repo, "/nowhere"), real);
+  assert.throws(() => findBench(tempTree(t, { "x/y.py": "" }), `/nowhere,${bench}`), { code: "NO_BENCH", message: /\/nowhere is not a bench.*does not hold it/ });
   assert.equal(findSite(bench, ""), "dev.localhost");
   assert.equal(findSite(bench, "dev.localhost"), "dev.localhost");
   assert.throws(() => findSite(bench, "live.example.com"), { code: "NO_SITE" });

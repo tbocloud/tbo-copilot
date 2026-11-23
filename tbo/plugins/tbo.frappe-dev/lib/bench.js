@@ -43,7 +43,16 @@ function benchApp(bench, app) {
   return app;
 }
 
-// The command line for a call, checked before anything runs.
+// A call that runs on the project's test site: migrate or clear_cache with no site (and no app,
+// which benchCall refuses for them anyway) named.
+function takesSite(args) {
+  const command = String((args && args.command) || "");
+  const named = (v) => v !== undefined && v !== null && String(v).trim() !== "";
+  return Object.hasOwn(COMMANDS, command) && COMMANDS[command].takes === "site" && !named(args.site) && !named(args.app);
+}
+
+// The command line for a call, checked before anything runs. `testSite`: the project's test site
+// (lib/sites.js), for migrate and clear_cache when the call names none.
 function benchCall(bench, args, testSite) {
   const command = String((args && args.command) || "");
   if (!Object.hasOwn(COMMANDS, command)) {
@@ -83,4 +92,4 @@ async function runBench({ runFn, env, log = () => {} }, { bench, call, benchComm
   return result;
 }
 
-module.exports = { benchCall, runBench, BENCH_COMMANDS: NAMES };
+module.exports = { benchCall, runBench, takesSite, BENCH_COMMANDS: NAMES };

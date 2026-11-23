@@ -18,8 +18,9 @@ const path = require("node:path");
 const { run, tail, fail } = require("./run");
 const { createGit, taskId, taskOf, branchFor, checkBranchName } = require("./git");
 const { createLint, checkSkips } = require("./lint");
-const { createTests, checkModules, findBench, findSite, testModules } = require("./tests");
-const { benchCall, runBench, BENCH_COMMANDS } = require("./bench");
+const { createTests, checkModules, findBench, listOf, testModules } = require("./tests");
+const { benchCall, runBench, takesSite, BENCH_COMMANDS } = require("./bench");
+const { createSites, CHOSEN } = require("./sites");
 const pr = require("./pr");
 
 const MAX_JOBS = 20;
@@ -27,10 +28,11 @@ const LINKS = ["Closes", "Refs"];
 
 const TOOL_TEXT = [
   "Build a Frappe/ERPNext change from a TBO Support task, in the repository open in the workspace (or `repo`, a folder inside it). Choose an action:",
-  "- status: the repository, its branch and task, what is installed (git, gh and its login, uv, the bench and test site).",
+  "- status: the repository, its branch and task, what is installed (git, gh and its login, uv, the bench, and the test site with where it came from).",
   "- start_work: create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from the remote's default branch or `base` (the remote: origin, else upstream as bench get-app names it). Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.",
   "- check: run the linters the repository's CI runs (pre-commit on changed files, Semgrep with Frappe's rules, commit titles) on the committed branch. Runs in the background: answers with a job.",
   "- run_tests: run the test modules the branch touched (or `modules`) on the local bench's test site, one by one; never the whole suite. Runs in the background.",
+  "  The test site is chosen per project: the one chosen for it before, else the first site of the Test site setting on its bench with tests on and its app installed, else the bench's default site. `site` with run_tests or status chooses it for this project (checked, then remembered).",
   "- bench: on that same local bench, `command` migrate (the test site, or `site`), build (every app, or `app`) or clear_cache (the test site, or `site`). Runs in the background. Nothing else: never console, drop-site, reinstall, restore or --force.",
   "- job_status: the outcome of a check, run_tests or bench job (`job`, or the latest of `job_kind`).",
   "Commit with conventional titles (feat: …, fix(scope): …). Then open the PR with tbo_dev_pr.",
@@ -52,7 +54,10 @@ const DEV_TOOL = {
       base: { type: "string", description: "start_work: the branch to start from, when the repository's AGENTS.md names one; default the remote's default branch." },
       modules: { type: "array", items: { type: "string" }, description: "run_tests: test modules such as my_app.tests.test_invoices; default the ones the branch touched." },
       command: { type: "string", enum: BENCH_COMMANDS, description: "bench: what to run on your local bench. Nothing else is run." },
-      site: { type: "string", description: "bench migrate or clear_cache: a site of your local bench; default the test site." },
+      site: {
+        type: "string",
+        description: "run_tests or status: the test site for this project (on its bench, tests on, its app installed), remembered for it. bench migrate or clear_cache: a site for that call only; default the project's test site.",
+      },
       app: { type: "string", description: "bench build: one app of your local bench; default every app." },
       job: { type: "string", description: "job_status: the job id check, run_tests or bench answered." },
       job_kind: { type: "string", enum: ["check", "run_tests", "bench"], description: "job_status: the latest job of this kind, when no job id is given." },
@@ -122,6 +127,7 @@ function findUv({ configured, env, home = os.homedir(), platform = process.platf
 
 function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = process.env, log = () => {}, platform = process.platform }) {
   const git = createGit({ runFn, env });
+  const sites = createSites({ runFn, env, getDataPath, log });
   const jobs = new Map(); // id -> job
   // the latest finished check and test run of each commit (`${root}@${head}`): only the latest counts
   const lintRuns = new Map();
@@ -131,8 +137,8 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
   async function settings() {
     const s = (await getSettings()) || {};
     return {
-      benchPath: String(s.benchPath || "").trim(),
-      testSite: String(s.testSite || "").trim(),
+      benchPath: listOf(s.benchPath),
+      testSites: listOf(s.testSite),
       benchCommand: String(s.benchCommand || "").trim() || "bench",
       reviewers: String(s.reviewers || "")
         .split(/[\s,]+/)
@@ -156,6 +162,11 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     }
   }
 
+  // The project's test site (lib/sites.js): { site, from, remembered, note }.
+  function testSite(root, bench, conf, wanted) {
+    return sites.choose({ root, bench, listed: conf.testSites, wanted, benchCommand: conf.benchCommand });
+  }
+
   async function status(args) {
     const conf = await settings();
     const root = await repoOf(args);
@@ -166,9 +177,10 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     let site = null;
     try {
       bench = findBench(root, conf.benchPath);
-      if (bench) site = findSite(bench, conf.testSite);
+      if (bench) site = await testSite(root, bench, conf, args && args.site);
       else benchProblem = 'No bench found: set "Frappe bench folder", or work in <bench>/apps/<app>.';
     } catch (e) {
+      if (args && args.site && e.code === "NO_SITE") throw e; // the site asked for does not fit: say so
       benchProblem = e.message;
     }
     const uv = findUv({ configured: conf.uvPath, env, platform });
@@ -184,7 +196,9 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       gh: await ghLogin(root),
       uv: uv || "missing: install uv (https://docs.astral.sh/uv/) or set uv location",
       bench: bench || null,
-      test_site: site,
+      test_site: site ? site.site : null,
+      test_site_from: site ? `${site.from}${site.remembered && site.from !== CHOSEN ? " (remembered for this project)" : ""}` : undefined,
+      test_site_note: site && site.note ? site.note : undefined,
       bench_problem: benchProblem || undefined,
       last_check: lastOf("check", root),
       last_tests: lastOf("run_tests", root),
@@ -287,7 +301,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     const running = [...jobs.values()].find((j) => j.kind === kind && j.repo === root && j.state === "running");
     if (running) return { ...summaryOf(running), note: "already running; ask job_status for it" };
     counter += 1;
-    const job = { id: `${kind}-${counter}`, kind, repo: root, head, bench: more.bench, command: more.command, state: "running", started: new Date().toISOString() };
+    const job = { id: `${kind}-${counter}`, kind, repo: root, head, bench: more.bench, site: more.site, command: more.command, state: "running", started: new Date().toISOString() };
     jobs.set(job.id, job);
     // the history keeps MAX_JOBS; only finished jobs leave it: a running migrate must keep its bench busy
     while (jobs.size > MAX_JOBS) {
@@ -325,6 +339,24 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
   }
 
   const busyError = (job) => fail("BUSY", `${job.id} (${job.command || job.kind}) is still running on this bench; wait for it (job_status).`);
+
+  // One run_tests at a time chooses its site and starts on a bench: a second call waits for the first to
+  // start (or fail), then sees its job before it chooses or remembers any site (CodeRabbit on #32).
+  const benchTurns = new Map(); // bench -> the run_tests start under way there
+  function inTurn(bench, work) {
+    const before = benchTurns.get(bench);
+    if (before) log(`tbo_dev: run_tests waits for the run_tests starting on ${bench}`);
+    const turn = (before || Promise.resolve()).then(work);
+    const settled = turn.then(
+      () => {},
+      () => {},
+    );
+    benchTurns.set(bench, settled);
+    settled.then(() => {
+      if (benchTurns.get(bench) === settled) benchTurns.delete(bench);
+    });
+    return turn;
+  }
 
   // The committed state of a task branch: lint and test results belong to one commit.
   async function committedBranch(root) {
@@ -372,27 +404,44 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     const conf = await settings();
     const bench = findBench(root, conf.benchPath);
     if (!bench) throw fail("NO_BENCH", 'No bench found: set "Frappe bench folder" in the plugin settings, or work in <bench>/apps/<app>.');
-    const site = findSite(bench, conf.testSite);
     let modules = Array.isArray(args.modules) ? args.modules.map(String) : [];
     if (!modules.length) modules = testModules(root, await git.changedFiles(root, await git.mergeBase(root, base, info.remote, info.head), info.head));
     if (!modules.length) throw fail("NO_TESTS", "The branch changes no file that has tests beside it: name the test modules, or add tests.");
     checkModules(modules); // refused now, not later in the background
-    // tests share the bench's test site, so one test run at a time on a bench, whichever repository asks;
-    // the same repository asking again gets its running job back from startJob
-    const busy = busyOn(bench, ["bench", "run_tests"]);
-    if (busy && !(busy.kind === "run_tests" && busy.repo === root)) throw busyError(busy);
-    const tests = createTests({ runFn, env, log });
-    const key = `${root}@${info.head}`;
-    const started = startJob(
-      "run_tests",
-      root,
-      info.head,
-      () => tests.runModules({ bench, site, modules, benchCommand: conf.benchCommand }),
-      (result) => testRuns.set(key, result),
-      { bench },
-    );
-    if (started.state === "running" && !started.note) testRuns.delete(key);
-    return started;
+    return inTurn(bench, async () => {
+      // tests share the bench's test site, so one test run at a time on a bench, whichever repository asks;
+      // the same repository asking again gets its running job back, on the site it runs on, before any
+      // site is chosen or remembered (CodeRabbit on #32)
+      const running = () => {
+        const busy = busyOn(bench, ["bench", "run_tests"]);
+        if (!busy) return null;
+        if (!(busy.kind === "run_tests" && busy.repo === root)) throw busyError(busy);
+        const asked = String(args.site || "").trim();
+        if (asked && asked !== busy.site) {
+          throw fail("BUSY", `${busy.id} is still running this project's tests on ${busy.site}; choose ${asked} when it has finished (job_status).`);
+        }
+        return { ...summaryOf(busy), note: "already running; ask job_status for it", test_site: busy.site };
+      };
+      const already = running();
+      if (already) return already;
+      const chosen = await testSite(root, bench, conf, args.site);
+      const site = chosen.site;
+      // choosing can take a while (bench list-apps): a job may have started on the bench meanwhile
+      const meanwhile = running();
+      if (meanwhile) return meanwhile;
+      const tests = createTests({ runFn, env, log });
+      const key = `${root}@${info.head}`;
+      const started = startJob(
+        "run_tests",
+        root,
+        info.head,
+        () => tests.runModules({ bench, site, modules, benchCommand: conf.benchCommand }),
+        (result) => testRuns.set(key, result),
+        { bench, site },
+      );
+      if (started.state === "running" && !started.note) testRuns.delete(key);
+      return { ...started, test_site: site, test_site_from: chosen.from, ...(chosen.note ? { test_site_note: chosen.note } : {}) };
+    });
   }
 
   // migrate, build or clear_cache on the bench run_tests uses (lib/bench.js). It runs on the working tree
@@ -402,7 +451,9 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     const conf = await settings();
     const bench = findBench(root, conf.benchPath);
     if (!bench) throw fail("NO_BENCH", 'No bench found: set "Frappe bench folder" in the plugin settings, or work in <bench>/apps/<app>.');
-    const call = benchCall(bench, args, conf.testSite); // refused now, not later in the background
+    // migrate and clear_cache without a site run on the project's test site
+    const site = takesSite(args) ? (await testSite(root, bench, conf)).site : "";
+    const call = benchCall(bench, args, site); // refused now, not later in the background
     const busy = busyOn(bench, ["bench", "run_tests"]);
     if (busy) throw busyError(busy);
     return startJob("bench", root, null, () => runBench({ runFn, env, log }, { bench, call, benchCommand: conf.benchCommand }), () => {}, {

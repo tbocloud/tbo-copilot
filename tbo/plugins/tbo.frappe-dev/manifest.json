@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "tbo.frappe-dev",
   "name": "TBO Frappe Dev",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Builds Frappe and ERPNext features from a TBO Support task the way TBO does: a branch named after the task, TBO's Frappe conventions, module tests on your bench, the linters your CI runs, and a pull request that moves the task to Pending Review. Guides DocTypes, reports, print formats, patches, debugging, performance and Frappe 16 checks, and migrates or builds your own dev bench. Uses your own git, GitHub CLI login and bench; never pushes to shared branches or force-pushes.",
   "author": "Team Back Office",
   "main": "main.js",
@@ -10,7 +10,7 @@
     "agentTools": [
       {
         "name": "tbo_dev",
-        "description": "Build a Frappe/ERPNext change from a TBO Support task, in the repository open in the workspace (or `repo`, a folder inside it). Choose an action:\n- status: the repository, its branch and task, what is installed (git, gh and its login, uv, the bench and test site).\n- start_work: create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from the remote's default branch or `base` (the remote: origin, else upstream as bench get-app names it). Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.\n- check: run the linters the repository's CI runs (pre-commit on changed files, Semgrep with Frappe's rules, commit titles) on the committed branch. Runs in the background: answers with a job.\n- run_tests: run the test modules the branch touched (or `modules`) on the local bench's test site, one by one; never the whole suite. Runs in the background.\n- bench: on that same local bench, `command` migrate (the test site, or `site`), build (every app, or `app`) or clear_cache (the test site, or `site`). Runs in the background. Nothing else: never console, drop-site, reinstall, restore or --force.\n- job_status: the outcome of a check, run_tests or bench job (`job`, or the latest of `job_kind`).\nCommit with conventional titles (feat: …, fix(scope): …). Then open the PR with tbo_dev_pr.",
+        "description": "Build a Frappe/ERPNext change from a TBO Support task, in the repository open in the workspace (or `repo`, a folder inside it). Choose an action:\n- status: the repository, its branch and task, what is installed (git, gh and its login, uv, the bench, and the test site with where it came from).\n- start_work: create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from the remote's default branch or `base` (the remote: origin, else upstream as bench get-app names it). Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.\n- check: run the linters the repository's CI runs (pre-commit on changed files, Semgrep with Frappe's rules, commit titles) on the committed branch. Runs in the background: answers with a job.\n- run_tests: run the test modules the branch touched (or `modules`) on the local bench's test site, one by one; never the whole suite. Runs in the background.\n  The test site is chosen per project: the one chosen for it before, else the first site of the Test site setting on its bench with tests on and its app installed, else the bench's default site. `site` with run_tests or status chooses it for this project (checked, then remembered).\n- bench: on that same local bench, `command` migrate (the test site, or `site`), build (every app, or `app`) or clear_cache (the test site, or `site`). Runs in the background. Nothing else: never console, drop-site, reinstall, restore or --force.\n- job_status: the outcome of a check, run_tests or bench job (`job`, or the latest of `job_kind`).\nCommit with conventional titles (feat: …, fix(scope): …). Then open the PR with tbo_dev_pr.",
         "risk": "medium",
         "planSafeActions": [
           "status",
@@ -73,7 +73,7 @@
             },
             "site": {
               "type": "string",
-              "description": "bench migrate or clear_cache: a site of your local bench; default the test site."
+              "description": "run_tests or status: the test site for this project (on its bench, tests on, its app installed), remembered for it. bench migrate or clear_cache: a site for that call only; default the project's test site."
             },
             "app": {
               "type": "string",
@@ -188,14 +188,14 @@
       {
         "key": "benchPath",
         "title": "Frappe bench folder",
-        "description": "The bench that runs the tests, migrate and build, e.g. /Users/you/frappe-bench. Empty: the bench that holds the repository as apps/<app>.",
+        "description": "The bench that runs the tests, migrate and build, e.g. /Users/you/frappe-bench. Several, separated by commas, when your projects sit on different benches: each project uses the one that holds it in apps/. Empty: the bench that holds the repository as apps/<app>.",
         "type": "string",
         "default": ""
       },
       {
         "key": "testSite",
         "title": "Test site",
-        "description": "A local site with the app installed and allow_tests on, e.g. dev.localhost. Empty: the bench's current site. Never a live site.",
+        "description": "Local sites the tests run on, separated by commas, e.g. dev.localhost, erp.localhost. Each project uses the first one on its bench with allow_tests on and its app installed, and remembers it. Empty: the bench's default site (bench use), checked the same way. Never a live site.",
         "type": "string",
         "default": ""
       },
