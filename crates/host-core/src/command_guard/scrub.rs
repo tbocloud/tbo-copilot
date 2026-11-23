@@ -119,6 +119,17 @@ pub fn is_site_config_path(path: &Path) -> bool {
     )
 }
 
+/// What kind of secret runs on at the end of a text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenKind {
+    /// Inside a JSON string value (its opening quote is before `value`).
+    JsonValue,
+    /// A JSON key whose value has not started (`colon`: its `:` has arrived).
+    JsonKey { colon: bool },
+    /// A `NAME=` or `name:` setting, a password argument or an authorization header.
+    Other,
+}
+
 /// A secret at the very end of a text whose value may not have ended yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Open {
@@ -126,6 +137,7 @@ struct Open {
     start: usize,
     /// Where its value starts; the text's end when no value has arrived yet.
     value: usize,
+    kind: OpenKind,
 }
 
 /// The first secret at the end of `text` whose value may still be running on: a JSON key with no
@@ -148,15 +160,76 @@ fn open_secret(text: &str) -> Option<Open> {
     });
     patterns
         .iter()
-        .filter_map(|regex| {
+        .enumerate()
+        .filter_map(|(at, regex)| {
             let found = regex.captures(text)?;
             let head = found.get(1)?;
+            let kind = match at {
+                0 => OpenKind::JsonValue,
+                1 => OpenKind::JsonKey {
+                    colon: head.as_str().trim_end().ends_with(':'),
+                },
+                _ => OpenKind::Other,
+            };
             Some(Open {
                 start: head.start(),
                 value: head.end(),
+                kind,
             })
         })
         .min_by_key(|open| open.start)
+}
+
+/// A double-quoted string at a cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AtCut {
+    /// The cut is not inside a string, or inside a value's string (whose key is not secret: a
+    /// secret key's value is an open secret).
+    Clear,
+    /// The cut is inside a string that ends at this position: cut there instead.
+    Past(usize),
+    /// The cut is inside a string in a key's place that has not ended (`escaped`: it ends with a
+    /// backslash): it may be a secret key whose name has not arrived whole.
+    OpenKey { start: usize, escaped: bool },
+}
+
+fn string_at(text: &str, cut: usize) -> AtCut {
+    let bytes = text.as_bytes();
+    let from = text[..cut].rfind('\n').map_or(0, |i| i + 1);
+    let mut start: Option<usize> = None;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate().skip(from) {
+        match start {
+            Some(s) => {
+                if escaped {
+                    escaped = false;
+                } else if b == b'\\' {
+                    escaped = true;
+                } else if b == b'"' {
+                    if s < cut && cut <= i {
+                        return AtCut::Past(i + 1);
+                    }
+                    start = None;
+                } else if b == b'\n' {
+                    start = None;
+                }
+            }
+            None if i >= cut => return AtCut::Clear,
+            None if b == b'"' => start = Some(i),
+            None => {}
+        }
+    }
+    match start {
+        Some(s) if s < cut => {
+            let before = text[from..s].trim_end();
+            if before.is_empty() || before.ends_with('{') || before.ends_with(',') {
+                AtCut::OpenKey { start: s, escaped }
+            } else {
+                AtCut::Clear
+            }
+        }
+        _ => AtCut::Clear,
+    }
 }
 
 /// The cut moved to the end of any secret that spans it, so a secret is never scrubbed in halves.
@@ -188,16 +261,32 @@ const STREAM_HOLD_MAX: usize = 64 * 1024;
 /// edge is joined with what follows before it is scrubbed.
 const STREAM_TAIL: usize = 4 * 1024;
 
+/// What the stream scrubber is hiding, after a cut fell inside a secret.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Hiding {
+    #[default]
+    Nothing,
+    /// A key string cut by the hold, to its closing quote.
+    Key { escaped: bool },
+    /// After a hidden key: a `:` next makes the next value hidden too.
+    AfterKey,
+    /// A secret's value that has not started: the next value (a quoted string or a word) is hidden,
+    /// wherever it comes (on a later line, after any white space).
+    Value,
+    /// Inside that value.
+    ValueWord { quote: Option<char>, escaped: bool },
+}
+
 /// Scrubs output as it streams. Complete lines are passed on, scrubbed, except
 /// from a secret whose value may still be running on (held until it ends); a
 /// private key block is hidden from its BEGIN line to its END line even when it
-/// arrives in pieces.
+/// arrives in pieces. A line longer than the hold is passed on in pieces, never
+/// cutting a secret in two: a key or value cut there is hidden to its end.
 #[derive(Debug, Default)]
 pub struct StreamScrubber {
     pending: String,
     in_key: bool,
-    /// A secret value longer than the hold was cut: the rest of its line is hidden.
-    hide_rest_of_line: bool,
+    hiding: Hiding,
 }
 
 impl StreamScrubber {
@@ -207,8 +296,8 @@ impl StreamScrubber {
         if !text.contains(['\n', '\r']) && self.pending.len() <= STREAM_HOLD_MAX {
             return String::new();
         }
-        let mut out = String::new();
-        if self.hide_rest_of_line && !self.skip_hidden_line() {
+        let mut out = self.pass_hidden();
+        if self.hiding != Hiding::Nothing {
             return out;
         }
         let hold_from = open_secret(&self.pending).map_or(self.pending.len(), |open| open.start);
@@ -225,33 +314,103 @@ impl StreamScrubber {
     /// The scrubbed rest, at the end of the output (also after a timeout or an abort): a secret
     /// value that never ended is hidden.
     pub fn finish(&mut self) -> String {
-        if self.hide_rest_of_line && !self.skip_hidden_line() {
-            return String::new();
+        let mut out = self.pass_hidden();
+        if self.hiding != Hiding::Nothing {
+            self.pending.clear();
+            return out;
         }
         let rest = std::mem::take(&mut self.pending);
         match open_secret(&rest) {
             Some(open) if open.value < rest.len() => {
-                let mut out = self.emit(&rest[..open.value]);
+                out.push_str(&self.emit(&rest[..open.value]));
                 out.push_str(REDACTED);
-                out
             }
-            _ => self.emit(&rest),
+            _ => out.push_str(&self.emit(&rest)),
         }
+        out
     }
 
-    /// Drops the hidden rest of a line; false when its end has not arrived yet.
-    fn skip_hidden_line(&mut self) -> bool {
-        match self.pending.find(['\n', '\r']) {
-            Some(end) => {
-                self.pending.drain(..end);
-                self.hide_rest_of_line = false;
-                true
-            }
-            None => {
-                self.pending.clear();
-                false
+    /// Passes over what is being hidden at the start of `pending`. Only the white space and the
+    /// `:` between a hidden key and its value are shown, with `[redacted]` for a hidden value.
+    fn pass_hidden(&mut self) -> String {
+        let mut shown = String::new();
+        let mut end = self.pending.len();
+        for (i, c) in self.pending.char_indices() {
+            let ends_word =
+                |c: char| c.is_whitespace() || matches!(c, ',' | '}' | ']' | ';' | '&' | '|');
+            match self.hiding {
+                Hiding::Nothing => {
+                    end = i;
+                    break;
+                }
+                Hiding::Key { escaped } => {
+                    self.hiding = match c {
+                        _ if escaped => Hiding::Key { escaped: false },
+                        '\\' => Hiding::Key { escaped: true },
+                        '"' => Hiding::AfterKey,
+                        _ => Hiding::Key { escaped: false },
+                    };
+                }
+                Hiding::AfterKey if c.is_whitespace() => shown.push(c),
+                Hiding::AfterKey if c == ':' => {
+                    shown.push(c);
+                    self.hiding = Hiding::Value;
+                }
+                Hiding::AfterKey => {
+                    self.hiding = Hiding::Nothing;
+                    end = i;
+                    break;
+                }
+                Hiding::Value if c.is_whitespace() => shown.push(c),
+                Hiding::Value if ends_word(c) => {
+                    self.hiding = Hiding::Nothing;
+                    end = i;
+                    break;
+                }
+                Hiding::Value => {
+                    shown.push_str(REDACTED);
+                    self.hiding = Hiding::ValueWord {
+                        quote: matches!(c, '"' | '\'').then_some(c),
+                        escaped: false,
+                    };
+                }
+                Hiding::ValueWord { quote, escaped } => {
+                    self.hiding = match (quote, c) {
+                        _ if escaped => Hiding::ValueWord {
+                            quote,
+                            escaped: false,
+                        },
+                        (q, '\\') if q != Some('\'') => Hiding::ValueWord {
+                            quote,
+                            escaped: true,
+                        },
+                        (Some(q), c) if c == q => Hiding::ValueWord {
+                            quote: None,
+                            escaped: false,
+                        },
+                        (Some(_), _) => Hiding::ValueWord {
+                            quote,
+                            escaped: false,
+                        },
+                        (None, '"' | '\'') => Hiding::ValueWord {
+                            quote: Some(c),
+                            escaped: false,
+                        },
+                        (None, c) if ends_word(c) => {
+                            self.hiding = Hiding::Nothing;
+                            end = i;
+                            break;
+                        }
+                        (None, _) => Hiding::ValueWord {
+                            quote,
+                            escaped: false,
+                        },
+                    };
+                }
             }
         }
+        self.pending.drain(..end);
+        shown
     }
 
     /// A line longer than the hold, passed on in part.
@@ -263,16 +422,42 @@ impl StreamScrubber {
                 self.pending = text[open.start..].to_string();
                 self.emit(&text[..open.start])
             }
-            // a secret value longer than the tail: hidden, with the rest of its line
+            // a secret whose value is longer than the tail, or has not come after a long key or
+            // much white space: the key goes on, its value is hidden wherever it comes
             Some(open) => {
-                self.hide_rest_of_line = true;
                 let mut out = self.emit(&text[..open.value]);
-                out.push_str(REDACTED);
+                self.hiding = match open.kind {
+                    OpenKind::JsonValue => {
+                        out.push_str(REDACTED);
+                        Hiding::ValueWord {
+                            quote: Some('"'),
+                            escaped: false,
+                        }
+                    }
+                    OpenKind::JsonKey { colon: false } => Hiding::AfterKey,
+                    OpenKind::JsonKey { colon: true } | OpenKind::Other => Hiding::Value,
+                };
+                self.pending = text[open.value..].to_string();
+                out.push_str(&self.pass_hidden());
                 out
             }
-            // no secret running on: all but the tail goes on, never cutting a secret in two
+            // no secret running on: all but the tail goes on, never cutting a secret or a string
+            // in two; a long string in a key's place that has not ended is hidden, with its value
             None => {
-                let cut = past_secrets(&text, floor_char_boundary(&text, text.len() - STREAM_TAIL));
+                let mut cut = floor_char_boundary(&text, text.len() - STREAM_TAIL);
+                loop {
+                    cut = past_secrets(&text, cut);
+                    match string_at(&text, cut) {
+                        AtCut::Past(end) if end > cut => cut = end,
+                        AtCut::OpenKey { start, escaped } => {
+                            let mut out = self.emit(&text[..start]);
+                            out.push_str(REDACTED);
+                            self.hiding = Hiding::Key { escaped };
+                            return out;
+                        }
+                        _ => break,
+                    }
+                }
                 self.pending = text[cut..].to_string();
                 self.emit(&text[..cut])
             }

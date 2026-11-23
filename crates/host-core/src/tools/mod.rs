@@ -2940,7 +2940,7 @@ fn refuse_site_config(requested: &Path, resolved: &Path) -> Result<(), hashline:
 /// protected file, such as a Frappe site's configuration, that no name check can see.
 fn write_tool_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let meta = match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_file() && link_count(path, &meta) > 1 => meta,
+        Ok(meta) if meta.is_file() && must_replace(link_count(path, &meta)) => meta,
         _ => return std::fs::write(path, bytes),
     };
     let name = path
@@ -2959,36 +2959,36 @@ fn write_tool_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     })
 }
 
-/// How many names (hard links) a file has.
+/// Whether a write replaces the file instead of writing through it: it has other names, or how
+/// many names it has cannot be told.
+fn must_replace(names: Option<u64>) -> bool {
+    names.is_none_or(|n| n > 1)
+}
+
+/// How many names (hard links) a file has, when the system can tell.
 #[cfg(unix)]
-fn link_count(_path: &Path, meta: &std::fs::Metadata) -> u64 {
+fn link_count(_path: &Path, meta: &std::fs::Metadata) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
-    meta.nlink()
+    Some(meta.nlink())
 }
 
 #[cfg(windows)]
-fn link_count(path: &Path, _meta: &std::fs::Metadata) -> u64 {
+fn link_count(path: &Path, _meta: &std::fs::Metadata) -> Option<u64> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
     };
-    let Ok(file) = std::fs::File::open(path) else {
-        return 1;
-    };
+    let file = std::fs::File::open(path).ok()?;
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: `file` keeps the handle open for the call, and `info` is a valid, writable
     // BY_HANDLE_FILE_INFORMATION for the function to fill.
     let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
-    if ok == 0 {
-        1
-    } else {
-        u64::from(info.nNumberOfLinks)
-    }
+    (ok != 0).then_some(u64::from(info.nNumberOfLinks))
 }
 
 #[cfg(not(any(unix, windows)))]
-fn link_count(_path: &Path, _meta: &std::fs::Metadata) -> u64 {
-    1
+fn link_count(_path: &Path, _meta: &std::fs::Metadata) -> Option<u64> {
+    None
 }
 
 fn targets_site_config(args: &Value) -> bool {
@@ -4146,6 +4146,15 @@ mod tests {
         .await;
         assert!(excluded_file.ok);
         assert_eq!(excluded_file.content["count"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn a_file_with_other_names_or_an_unknown_count_is_replaced() {
+        // TBO Phase 27 (Q5), CodeRabbit on #34: a count the system cannot give (Windows, when the
+        // file cannot be opened or asked) is treated as other names, never written through
+        assert!(must_replace(None));
+        assert!(must_replace(Some(2)));
+        assert!(!must_replace(Some(1)));
     }
 
     #[tokio::test]

@@ -554,19 +554,19 @@ fn delete_target_from(t: &str, dir: Option<&Path>, place: &Place<'_>) -> Target 
 }
 
 /// Inside the allowed folders as written and as the file system resolves the folders on the way
-/// (a link in the project to a folder outside it). `follow_last` resolves the path itself too.
+/// (a link in the project to a folder outside it). The path is resolved as the system does, link
+/// by link before each `..` (`linked/../old` is next to the link's target, not in the project).
+/// `follow_last` resolves the path itself too.
 fn contained(path: &Path, follow_last: bool, place: &Place<'_>) -> Target {
-    let lexical = normalize(path);
-    if !inside(&lexical, place.roots) {
+    if !inside(&normalize(path), place.roots) {
         return Target::Outside;
     }
     let probe = if follow_last {
-        lexical.clone()
+        path.to_path_buf()
     } else {
-        lexical
-            .parent()
+        path.parent()
             .map(Path::to_path_buf)
-            .unwrap_or_else(|| lexical.clone())
+            .unwrap_or_else(|| path.to_path_buf())
     };
     let Some(real) = resolve_existing(&probe, place.world) else {
         return Target::Unknown;

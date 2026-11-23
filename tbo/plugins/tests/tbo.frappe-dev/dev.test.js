@@ -1410,11 +1410,17 @@ test("ready never shows a Redis credential, and an invalid port or a failing pro
   assert.match(noHost.detail, /Redis cache \(a redis address this check cannot reach/);
   assert.doesNotMatch(JSON.stringify(noHost), /hunter2/);
   // a port no service can have is a failed item, not an exception
-  commonConfig(w, { redis_cache: "redis://127.0.0.1:65536", redis_queue: "redis://127.0.0.1:11000", db_port: 0 });
+  commonConfig(w, { redis_cache: "redis://127.0.0.1:65536", redis_queue: "redis://127.0.0.1:11000", db_port: 70000 });
   const badPort = byId(await w.dev.runDev({ action: "ready" })).services;
   assert.equal(badPort.ok, false);
+  assert.match(badPort.detail, /MariaDB \(127\.0\.0\.1: the port is not a valid port number\)/);
   assert.match(badPort.detail, /Redis cache \(127\.0\.0\.1: the port is not a valid port number\)/);
-  assert.ok(!w.readyCalls.includes("probe 127.0.0.1:65536"), "never probed");
+  assert.ok(!w.readyCalls.includes("probe 127.0.0.1:65536") && !w.readyCalls.includes("probe 127.0.0.1:70000"), "never probed");
+  // db_port 0 is no port to Frappe (`config.get("db_port") or default`): it connects to 3306, so 3306 is probed
+  commonConfig(w, { db_port: 0 });
+  w.readyCalls.length = 0;
+  await w.dev.runDev({ action: "ready" });
+  assert.ok(w.readyCalls.includes("probe 127.0.0.1:3306"), w.readyCalls.join(" | "));
   // the real probe cannot throw on such a port either
   const { tcpProbe } = require("../../tbo.frappe-dev/lib/ready");
   assert.equal(await tcpProbe("127.0.0.1", 65536), false);

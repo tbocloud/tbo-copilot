@@ -9,14 +9,27 @@ fn roots() -> Vec<PathBuf> {
 
 /// A made-up file system: the project, its scratch folder, /home/user, the home /home/tester and
 /// /elsewhere exist; a folder named "missing" does not; /work/app/linked is a link to
-/// /elsewhere/cache, outside the project.
+/// /elsewhere/cache, outside the project. A path is resolved as the system does: link by link,
+/// before each `..`.
 fn fake_canonical(path: &Path) -> Option<PathBuf> {
-    let p = path.to_string_lossy();
+    let mut real = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                real.pop();
+            }
+            Component::CurDir => {}
+            other => {
+                real.push(other.as_os_str());
+                if real == Path::new("/work/app/linked") {
+                    real = PathBuf::from("/elsewhere/cache");
+                }
+            }
+        }
+    }
+    let p = real.to_string_lossy();
     if p.contains("missing") {
         return None;
-    }
-    if let Some(rest) = p.strip_prefix("/work/app/linked") {
-        return Some(PathBuf::from(format!("/elsewhere/cache{rest}")));
     }
     let exists = [
         "/work/app",
@@ -28,7 +41,7 @@ fn fake_canonical(path: &Path) -> Option<PathBuf> {
     .iter()
     .any(|root| p.starts_with(root))
         || matches!(p.as_ref(), "/" | "/work" | "/tmp" | "/home");
-    exists.then(|| path.to_path_buf())
+    exists.then_some(real)
 }
 
 fn verdict_with_home(cmd: &str, home: Option<&str>) -> CommandVerdict {
@@ -295,10 +308,37 @@ fn a_link_to_a_folder_outside_the_project_is_followed() {
     assert!(refused("rm -rf linked/*"));
     assert!(refused("cd linked && rm -rf *"));
     assert!(refused("cd linked && rm -rf old"));
+    // a `..` after the link is the link target's parent, not the project (CodeRabbit on #34)
+    assert!(refused("rm -rf linked/../old"));
+    assert!(refused("rm -rf /work/app/linked/../old"));
+    assert!(allowed("rm -rf build/../dist"));
     // the link itself is in the project, and so is an ordinary folder
     assert!(allowed("rm -rf linked"));
     assert!(allowed("rm -rf build/cache"));
     assert!(allowed("rm -rf missing/new"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parent_step_after_a_link_is_resolved_on_the_real_file_system() {
+    // CodeRabbit on #34: `linked/../old` was taken for the project's `old`
+    let top = tempfile::tempdir().unwrap();
+    let project = top.path().join("project");
+    let outside = top.path().join("outside");
+    std::fs::create_dir_all(project.join("build")).unwrap();
+    std::fs::create_dir_all(outside.join("cache")).unwrap();
+    std::fs::create_dir_all(outside.join("old")).unwrap();
+    std::os::unix::fs::symlink(outside.join("cache"), project.join("linked")).unwrap();
+    let roots = vec![project.clone()];
+    let run = |cmd: &str| assess(cmd, Some(&project), &roots);
+    assert!(
+        matches!(run("rm -rf linked/../old"), CommandVerdict::Refuse(_)),
+        "{:?}",
+        run("rm -rf linked/../old")
+    );
+    assert!(matches!(run("rm -rf linked/x"), CommandVerdict::Refuse(_)));
+    assert_eq!(run("rm -rf linked"), CommandVerdict::Allow);
+    assert_eq!(run("rm -rf build/../dist"), CommandVerdict::Allow);
 }
 
 #[test]
@@ -479,6 +519,56 @@ fn live_output_holds_a_secret_until_its_value_ends() {
         out.contains("end of the diagnostics") && out.contains("next line"),
         "{}",
         &out[out.len() - 80..]
+    );
+    // a key longer than the tail, cut before its name ends (CodeRabbit on #34)
+    let out = run(&[
+        &format!("{}{{\"db_password{}", " ".repeat(61_430), "x".repeat(4_100)),
+        "\": \"s3cret\"}\nnext\n",
+    ]);
+    assert!(
+        !out.contains("s3cret") && out.contains("next"),
+        "{}",
+        &out[out.len().saturating_sub(120)..]
+    );
+    let out = run(&[
+        &format!(
+            "{}{{\"db_password_{}",
+            " ".repeat(61_000),
+            "a".repeat(5_000)
+        ),
+        "\":\"s3cret\"}\nnext\n",
+    ]);
+    assert!(
+        !out.contains("s3cret") && out.contains("next"),
+        "{}",
+        &out[out.len().saturating_sub(120)..]
+    );
+    // a key, then more white space than the hold, then its value on a later line
+    let out = run(&[
+        &format!("{{\"db_password\":{}", " ".repeat(70_000)),
+        "\n  \"s3cret\"\n}\nafter\n",
+    ]);
+    assert!(
+        !out.contains("s3cret") && out.contains("after"),
+        "{}",
+        &out[out.len().saturating_sub(120)..]
+    );
+    let out = run(&[
+        &format!("{{\"db_password\"{}", " ".repeat(70_000)),
+        "\n : \"s3cret\", \"x\": 1}\n",
+    ]);
+    assert!(
+        !out.contains("s3cret") && out.contains("\"x\": 1"),
+        "{}",
+        &out[out.len().saturating_sub(120)..]
+    );
+    // a long ordinary value is shown whole
+    let body = "b".repeat(70_000);
+    let out = run(&[&format!("{{\"body\": \"{body}"), "\", \"n\": 1}\n"]);
+    assert!(
+        out.contains(&body) && !out.contains("[redacted]"),
+        "{}",
+        &out[..80]
     );
     // the output ends (a timeout, an abort) inside a secret value: the value is hidden
     let out = run(&["{\"db_password\": \"s3c"]);
