@@ -117,14 +117,19 @@ function checkModules(modules) {
 
 function createTests({ runFn, env, log = () => {} }) {
   // Runs each module in turn; stops at nothing, so every module's outcome is known.
-  async function runModules({ bench, site, modules, benchCommand = "bench" }) {
+  // `app`: the project's app. Its tests run as the repository's CI runs them, with `--app <app>`,
+  // so only that app's before_tests hooks run (Phase 27, Q4): without it every installed app's
+  // run too, and ERPNext's test setup stopped the run on a site whose setup was never finished,
+  // while the same tests passed with `--app`.
+  async function runModules({ bench, site, app, modules, benchCommand = "bench" }) {
     checkModules(modules);
     const results = [];
     for (const module of modules) {
       log(`tests: ${module}`);
       let res;
       try {
-        res = await runFn(benchCommand, ["--site", site, "run-tests", "--module", module], { cwd: bench, env, timeoutMs: 1200000 });
+        const argv = ["--site", site, "run-tests", ...(app ? ["--app", app] : []), "--module", module];
+        res = await runFn(benchCommand, argv, { cwd: bench, env, timeoutMs: 1200000 });
       } catch (e) {
         results.push({ module, status: "failed", detail: e.message });
         break; // bench itself is missing: the other modules would fail the same way

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "tbo.frappe-dev",
   "name": "TBO Frappe Dev",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Builds Frappe and ERPNext features from a TBO Support task the way TBO does: a branch named after the task, TBO's Frappe conventions, module tests on your bench, the linters your CI runs, and a pull request that moves the task to Pending Review. Guides DocTypes, reports, print formats, patches, debugging, performance and Frappe 16 checks, and migrates or builds your own dev bench. Uses your own git, GitHub CLI login and bench; never pushes to shared branches or force-pushes.",
   "author": "Team Back Office",
   "main": "main.js",
@@ -10,10 +10,11 @@
     "agentTools": [
       {
         "name": "tbo_dev",
-        "description": "Build a Frappe/ERPNext change from a TBO Support task, in the repository open in the workspace (or `repo`, a folder inside it). Choose an action:\n- status: the repository, its branch and task, what is installed (git, gh and its login, uv, the bench, and the test site with where it came from).\n- start_work: create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from the remote's default branch or `base` (the remote: origin, else upstream as bench get-app names it). Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.\n- check: run the linters the repository's CI runs (pre-commit on changed files, Semgrep with Frappe's rules, commit titles) on the committed branch. Runs in the background: answers with a job.\n- run_tests: run the test modules the branch touched (or `modules`) on the local bench's test site, one by one; never the whole suite. Runs in the background.\n  The test site is chosen per project: the one chosen for it before, else the first site of the Test site setting on its bench with tests on and its app installed, else the bench's default site. `site` with run_tests or status chooses it for this project (checked, then remembered).\n- bench: on that same local bench, `command` migrate (the test site, or `site`), build (every app, or `app`) or clear_cache (the test site, or `site`). Runs in the background. Nothing else: never console, drop-site, reinstall, restore or --force.\n- job_status: the outcome of a check, run_tests or bench job (`job`, or the latest of `job_kind`).\nCommit with conventional titles (feat: …, fix(scope): …). Then open the PR with tbo_dev_pr.",
+        "description": "Build a Frappe/ERPNext change from a TBO Support task, in the repository open in the workspace (or `repo`, a folder inside it). Choose an action:\n- status: the repository, its branch and task, what is installed (git, gh and its login, uv, the bench, and the test site with where it came from).\n- ready: everything the work needs, checked at once: the GitHub CLI and its login, uv, the bench and its command, the bench's services (MariaDB, Redis), the test site, maintenance mode, the site's setup. Each item that fails says how to fix it; tell the person all of them at once. Run it before start_work.\n- fix: one of the safe fixes `ready` offers, on your own dev site, after the person agrees: `fix` allow_tests (tests on, for `site`) or maintenance_off (the site, and the bench when it is bench-wide).\n- start_work: refuses until `ready` passes, listing what is missing (continue_anyway: true only when the person says to start anyway); then create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from the remote's default branch or `base` (the remote: origin, else upstream as bench get-app names it). Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.\n- check: run the linters the repository's CI runs (pre-commit on changed files, Semgrep with Frappe's rules, commit titles) on the committed branch. Runs in the background: answers with a job.\n- run_tests: run the test modules the branch touched (or `modules`) on the local bench's test site, one by one; never the whole suite. Runs in the background.\n  The test site is chosen per project: the one chosen for it before, else the first site of the Test site setting on its bench with tests on and its app installed, else the bench's default site. `site` with run_tests or status chooses it for this project (checked, then remembered).\n- bench: on that same local bench, `command` migrate (the test site, or `site`), build (every app, or `app`) or clear_cache (the test site, or `site`). Runs in the background. Nothing else: never console, drop-site, reinstall, restore or --force.\n- job_status: the outcome of a check, run_tests or bench job (`job`, or the latest of `job_kind`).\nCommit with conventional titles (feat: …, fix(scope): …). Then open the PR with tbo_dev_pr.",
         "risk": "medium",
         "planSafeActions": [
           "status",
+          "ready",
           "job_status"
         ],
         "schema": {
@@ -23,6 +24,8 @@
               "type": "string",
               "enum": [
                 "status",
+                "ready",
+                "fix",
                 "start_work",
                 "check",
                 "run_tests",
@@ -78,6 +81,18 @@
             "app": {
               "type": "string",
               "description": "bench build: one app of your local bench; default every app."
+            },
+            "fix": {
+              "type": "string",
+              "enum": [
+                "allow_tests",
+                "maintenance_off"
+              ],
+              "description": "fix: which of ready's safe fixes to do."
+            },
+            "continue_anyway": {
+              "type": "boolean",
+              "description": "start_work: start although ready lists something missing; only when the person said so."
             },
             "job": {
               "type": "string",
@@ -217,6 +232,13 @@
         "key": "uvPath",
         "title": "uv location",
         "description": "Where uv is, if the app does not find it (the linters run through uv).",
+        "type": "string",
+        "default": ""
+      },
+      {
+        "key": "ghPath",
+        "title": "GitHub CLI location",
+        "description": "Where gh is, if the app does not find it (the app searches your login shell PATH first).",
         "type": "string",
         "default": ""
       }

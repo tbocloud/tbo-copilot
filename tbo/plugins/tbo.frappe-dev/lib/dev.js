@@ -18,9 +18,10 @@ const path = require("node:path");
 const { run, tail, fail } = require("./run");
 const { createGit, taskId, taskOf, branchFor, checkBranchName } = require("./git");
 const { createLint, checkSkips } = require("./lint");
-const { createTests, checkModules, findBench, listOf, testModules } = require("./tests");
+const { createTests, checkModules, findBench, listOf, testModules, SITE: SITE_NAME } = require("./tests");
 const { benchCall, runBench, takesSite, BENCH_COMMANDS } = require("./bench");
-const { createSites, CHOSEN } = require("./sites");
+const { createSites, appOf, CHOSEN } = require("./sites");
+const { createReady, describe } = require("./ready");
 const pr = require("./pr");
 
 const MAX_JOBS = 20;
@@ -29,7 +30,9 @@ const LINKS = ["Closes", "Refs"];
 const TOOL_TEXT = [
   "Build a Frappe/ERPNext change from a TBO Support task, in the repository open in the workspace (or `repo`, a folder inside it). Choose an action:",
   "- status: the repository, its branch and task, what is installed (git, gh and its login, uv, the bench, and the test site with where it came from).",
-  "- start_work: create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from the remote's default branch or `base` (the remote: origin, else upstream as bench get-app names it). Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.",
+  "- ready: everything the work needs, checked at once: the GitHub CLI and its login, uv, the bench and its command, the bench's services (MariaDB, Redis), the test site, maintenance mode, the site's setup. Each item that fails says how to fix it; tell the person all of them at once. Run it before start_work.",
+  "- fix: one of the safe fixes `ready` offers, on your own dev site, after the person agrees: `fix` allow_tests (tests on, for `site`) or maintenance_off (the site, and the bench when it is bench-wide).",
+  "- start_work: refuses until `ready` passes, listing what is missing (continue_anyway: true only when the person says to start anyway); then create or switch to the task's branch (feature/TASK-…-short-name, or fix/… with kind fix) from the remote's default branch or `base` (the remote: origin, else upstream as bench get-app names it). Needs task and subject (tbo_support get_task's branch_subject). Refuses a dirty working tree.",
   "- check: run the linters the repository's CI runs (pre-commit on changed files, Semgrep with Frappe's rules, commit titles) on the committed branch. Runs in the background: answers with a job.",
   "- run_tests: run the test modules the branch touched (or `modules`) on the local bench's test site, one by one; never the whole suite. Runs in the background.",
   "  The test site is chosen per project: the one chosen for it before, else the first site of the Test site setting on its bench with tests on and its app installed, else the bench's default site. `site` with run_tests or status chooses it for this project (checked, then remembered).",
@@ -42,11 +45,11 @@ const DEV_TOOL = {
   name: "tbo_dev",
   description: TOOL_TEXT,
   risk: "medium",
-  planSafeActions: ["status", "job_status"],
+  planSafeActions: ["status", "ready", "job_status"],
   schema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["status", "start_work", "check", "run_tests", "bench", "job_status"], description: "What to do." },
+      action: { type: "string", enum: ["status", "ready", "fix", "start_work", "check", "run_tests", "bench", "job_status"], description: "What to do." },
       repo: { type: "string", description: "The repository folder, relative to the workspace, when the workspace is not the repository itself (e.g. apps/my_app)." },
       task: { type: "string", description: "start_work: the TBO Support task, e.g. TASK-2026-00021." },
       subject: { type: "string", description: "start_work: the task's subject; it becomes the branch's short name." },
@@ -59,6 +62,8 @@ const DEV_TOOL = {
         description: "run_tests or status: the test site for this project (on its bench, tests on, its app installed), remembered for it. bench migrate or clear_cache: a site for that call only; default the project's test site.",
       },
       app: { type: "string", description: "bench build: one app of your local bench; default every app." },
+      fix: { type: "string", enum: ["allow_tests", "maintenance_off"], description: "fix: which of ready's safe fixes to do." },
+      continue_anyway: { type: "boolean", description: "start_work: start although ready lists something missing; only when the person said so." },
       job: { type: "string", description: "job_status: the job id check, run_tests or bench answered." },
       job_kind: { type: "string", enum: ["check", "run_tests", "bench"], description: "job_status: the latest job of this kind, when no job id is given." },
       skip_hooks: {
@@ -125,9 +130,10 @@ function findUv({ configured, env, home = os.homedir(), platform = process.platf
   return onPath("uv", env, platform) || uvCandidates(home, platform).find((p) => fs.existsSync(p)) || null;
 }
 
-function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = process.env, log = () => {}, platform = process.platform }) {
+function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = process.env, log = () => {}, platform = process.platform, probe }) {
   const git = createGit({ runFn, env });
   const sites = createSites({ runFn, env, getDataPath, log });
+  const ready = createReady({ runFn, env, ...(probe ? { probe } : {}) });
   const jobs = new Map(); // id -> job
   // the latest finished check and test run of each commit (`${root}@${head}`): only the latest counts
   const lintRuns = new Map();
@@ -140,6 +146,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       benchPath: listOf(s.benchPath),
       testSites: listOf(s.testSite),
       benchCommand: String(s.benchCommand || "").trim() || "bench",
+      gh: String(s.ghPath || "").trim() || "gh",
       reviewers: String(s.reviewers || "")
         .split(/[\s,]+/)
         .filter(Boolean),
@@ -152,9 +159,9 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     return git.resolve(ws && ws.path, args && args.repo);
   }
 
-  async function ghLogin(root) {
+  async function ghLogin(root, gh = "gh") {
     try {
-      const res = await runFn("gh", ["auth", "status", "--hostname", "github.com"], { cwd: root, env, timeoutMs: 20000 });
+      const res = await runFn(gh, ["auth", "status", "--hostname", "github.com"], { cwd: root, env, timeoutMs: 20000 });
       const who = /account ([A-Za-z0-9-]+)/.exec(`${res.stdout}\n${res.stderr}`);
       return res.code === 0 ? { ok: true, login: who ? who[1] : null } : { ok: false, hint: "Run `gh auth login` once (GitHub CLI)." };
     } catch {
@@ -193,7 +200,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       base,
       default_branch: info.defaultBranch,
       uncommitted: info.dirty.slice(0, 20),
-      gh: await ghLogin(root),
+      gh: await ghLogin(root, conf.gh),
       uv: uv || "missing: install uv (https://docs.astral.sh/uv/) or set uv location",
       bench: bench || null,
       test_site: site ? site.site : null,
@@ -224,6 +231,67 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     await git.git(root, ["remote", "set-branches", "--add", remote, branch]);
   }
 
+  // Everything the work needs, at once (lib/ready.js, Phase 27 Q3).
+  async function readiness(args) {
+    const conf = await settings();
+    const root = await repoOf(args);
+    let bench = null;
+    let benchProblem = "";
+    try {
+      bench = findBench(root, conf.benchPath);
+    } catch (e) {
+      benchProblem = e.message;
+    }
+    const result = await ready.check({
+      bench,
+      benchProblem,
+      conf,
+      gh: await ghLogin(root, conf.gh),
+      uv: findUv({ configured: conf.uvPath, env, platform }),
+      chooseSite: () => testSite(root, bench, conf, args && args.site),
+    });
+    return { repo: root, ...result };
+  }
+
+  // The safe fixes `ready` offers, on a site of the developer's own bench: tests on, maintenance off.
+  async function fixSetup(args) {
+    const which = String(args.fix || "");
+    if (!["allow_tests", "maintenance_off"].includes(which)) throw fail("INVALID_ARGUMENT", '"fix" is allow_tests or maintenance_off.');
+    const conf = await settings();
+    const root = await repoOf(args);
+    const bench = findBench(root, conf.benchPath);
+    if (!bench) throw fail("NO_BENCH", 'No bench found: set "Frappe bench folder", or work in <bench>/apps/<app>.');
+    const busy = busyOn(bench, ["bench", "run_tests"]);
+    if (busy) throw busyError(busy);
+    const site = String(args.site || "").trim();
+    const isSite = (name) => SITE_NAME.test(name) && fs.existsSync(path.join(bench, "sites", name, "site_config.json"));
+    const calls = [];
+    if (which === "allow_tests") {
+      if (!isSite(site)) throw fail("NO_SITE", `"${site}" is not a site of ${bench}: name the site ready offered.`);
+      calls.push(["--site", site, "set-config", "allow_tests", "true"]);
+    } else {
+      if (site && !isSite(site)) throw fail("NO_SITE", `"${site}" is not a site of ${bench}.`);
+      if (site) calls.push(["--site", site, "set-maintenance-mode", "off"]);
+      const common = (() => {
+        try {
+          return JSON.parse(fs.readFileSync(path.join(bench, "sites", "common_site_config.json"), "utf8"));
+        } catch {
+          return {};
+        }
+      })();
+      if (Number(common.maintenance_mode) === 1) calls.push(["set-config", "-g", "maintenance_mode", "0"]);
+      if (!calls.length) return { fixed: [], note: "Nothing is in maintenance." };
+    }
+    const done = [];
+    for (const argv of calls) {
+      log(`bench: ${argv.join(" ")}`);
+      const res = await runFn(conf.benchCommand, argv, { cwd: bench, env, timeoutMs: 120000 });
+      if (res.code !== 0 || res.timedOut) throw fail("BENCH_FAILED", `\`bench ${argv.join(" ")}\` failed: ${tail(`${res.stdout}\n${res.stderr}`, 8)}`);
+      done.push(`bench ${argv.join(" ")}`);
+    }
+    return { fixed: done, next: "Check again with tbo_dev ready." };
+  }
+
   async function startWork(args) {
     const task = taskId(args.task);
     const subject = String(args.subject || "").trim();
@@ -231,6 +299,14 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     const root = await repoOf(args);
     const info = await git.info(root);
     if (info.task === task) return { branch: info.branch, task, base: await git.baseOf(root, info.branch), state: "already on it" };
+    // nothing starts until everything the work needs is in place, all of it said at once (Phase 27, Q3)
+    const checked = args.continue_anyway === true ? null : await readiness(args);
+    if (checked && !checked.ready) {
+      throw fail(
+        "NOT_READY",
+        `Work does not start yet. Put these right first (all of them):\n${describe(checked)}\nTell the person; tbo_dev fix does the ones marked "tbo_dev fix" after they agree. Pass continue_anyway: true only if the person says to start anyway.`,
+      );
+    }
     if (info.dirty.length) {
       throw fail("DIRTY", `The working tree has uncommitted changes; commit or put them aside first (nothing is stashed for you):\n${info.dirty.slice(0, 10).join("\n")}`);
     }
@@ -263,6 +339,8 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       base: (await git.baseOf(root, branch)) || base,
       state,
       next: "Read the repository's AGENTS.md, write the change and its tests, commit with conventional titles, then tbo_dev run_tests and check.",
+      ...(checked && checked.items.some((i) => !i.ok) ? { warnings: describe(checked) } : {}),
+      ...(checked ? {} : { not_checked: "Started without the readiness check, as the person asked." }),
     };
   }
 
@@ -435,7 +513,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
         "run_tests",
         root,
         info.head,
-        () => tests.runModules({ bench, site, modules, benchCommand: conf.benchCommand }),
+        () => tests.runModules({ bench, site, app: appOf(bench, root), modules, benchCommand: conf.benchCommand }),
         (result) => testRuns.set(key, result),
         { bench, site },
       );
@@ -476,7 +554,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
   // --- the pull request -----------------------------------------------------------
 
   async function gh(root, argv, timeoutMs) {
-    const res = await runFn("gh", argv, { cwd: root, env, timeoutMs });
+    const res = await runFn((await settings()).gh, argv, { cwd: root, env, timeoutMs });
     if (res.timedOut) throw fail("TIMEOUT", `gh ${argv[0]} ${argv[1]} took too long.`);
     if (res.code !== 0) throw fail("GITHUB_ERROR", `gh ${argv[0]} ${argv[1]} failed: ${tail(res.stderr || res.stdout, 8)}`);
     return res.stdout.trim();
@@ -502,7 +580,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     const conf = await settings();
     const reviewers = (Array.isArray(args.reviewers) ? args.reviewers : conf.reviewers).map(String).filter(Boolean);
     for (const r of reviewers) if (!GITHUB_LOGIN.test(r)) throw fail("INVALID_ARGUMENT", `"${r}" is not a GitHub login.`);
-    const login = await ghLogin(root);
+    const login = await ghLogin(root, conf.gh);
     if (!login.ok) throw fail("GH_LOGIN", login.hint);
     if (!info.github) throw fail("NOT_GITHUB", `${info.remote} is not a GitHub repository.`);
 
@@ -526,7 +604,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
     await mapBranch(root, info.remote, branch);
     await git.git(root, ["branch", `--set-upstream-to=${info.remote}/${branch}`, branch], { allowFail: true });
 
-    const existing = await runFn("gh", ["pr", "view", branch, "--repo", info.github, "--json", "url,state,isDraft"], { cwd: root, env, timeoutMs: 20000 });
+    const existing = await runFn(conf.gh, ["pr", "view", branch, "--repo", info.github, "--json", "url,state,isDraft"], { cwd: root, env, timeoutMs: 20000 });
     let url;
     let state;
     let isDraft = true;
@@ -593,6 +671,8 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
   async function runDev(args) {
     const action = args && args.action;
     if (action === "status") return status(args);
+    if (action === "ready") return readiness(args);
+    if (action === "fix") return fixSetup(args);
     if (action === "start_work") return startWork(args);
     if (action === "check") return check(args);
     if (action === "run_tests") return runTests(args);

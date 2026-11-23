@@ -81,6 +81,9 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
   const bodies = [];
   const benchRuns = []; // every bench call but list-apps: its arguments, folder and time limit
   const logs = []; // what the plugin logged
+  const ghPrograms = []; // the program each gh call ran
+  const readyCalls = []; // the readiness check's own bench calls (--version, is_setup_complete) and probes
+  const servicesDown = new Set(); // host:port the probe finds closed
   const listApps = []; // the sites whose apps were listed (bench --site <site> list-apps)
   const installed = {}; // site -> its apps, for list-apps; default frappe and my_app
   const answers = {
@@ -98,6 +101,7 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
   const hooks = { beforeSemgrep: null, beforeAuth: null, beforePreCommit: null, holdBench: null, holdListApps: null, holdListAppsFor: {} };
   const runFn = async (cmd, args, opts) => {
     calls.push([cmd === uv ? "uv" : path.basename(cmd), ...args]);
+    if (path.basename(cmd) === "gh") ghPrograms.push(cmd);
     if (cmd === "git") return run(cmd, args, opts);
     if (cmd === uv) {
       if (args.includes("pre-commit")) {
@@ -106,6 +110,11 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
       }
       if (hooks.beforeSemgrep) hooks.beforeSemgrep();
       return answers.semgrep;
+    }
+    if (cmd === "bench" && (args[0] === "--version" || (args[2] === "execute" && args[3] === "frappe.is_setup_complete"))) {
+      readyCalls.push(args.join(" "));
+      if (args[0] === "--version") return { code: 0, stdout: "5.25.9\n", stderr: "" };
+      return { code: 0, stdout: hooks.setupIncomplete ? "" : "true\n", stderr: "" };
     }
     if (cmd === "bench" && args[2] === "list-apps") {
       listApps.push(args[1]);
@@ -120,7 +129,7 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
       if (hooks.holdBench) await hooks.holdBench;
       return args.includes("run-tests") ? { ...answers.tests, cwd: opts.cwd } : answers.bench;
     }
-    if (cmd === "gh") {
+    if (cmd === "gh" || path.basename(cmd) === "gh") {
       const [a, b] = args;
       if (a === "auth") {
         if (hooks.beforeAuth) hooks.beforeAuth();
@@ -146,6 +155,10 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
       runFn,
       env,
       log: (message) => logs.push(message),
+      probe: async (host, port) => {
+        readyCalls.push(`probe ${host}:${port}`);
+        return !servicesDown.has(`${host}:${port}`);
+      },
     });
   const dev = makeDev();
   const commit = (rel, text, message) => {
@@ -154,7 +167,7 @@ function world(t, { settings = {}, workflow = LINT_WORKFLOW, workspace } = {}) {
     git(repo, "commit", "-q", "-m", message);
     return git(repo, "rev-parse", "HEAD");
   };
-  return { dev, makeDev, repo, origin, bench, top, git, write, commit, calls, bodies, benchRuns, listApps, installed, logs, answers, hooks, env, dataDir };
+  return { dev, makeDev, repo, origin, bench, top, git, write, commit, calls, bodies, benchRuns, listApps, installed, logs, ghPrograms, readyCalls, servicesDown, answers, hooks, env, dataDir };
 }
 
 // A site of the bench: its folder with its site_config.json, tests on unless `tests` is false.
@@ -173,8 +186,9 @@ async function finished(dev, job, repo) {
   throw new Error(`${job} never finished`);
 }
 
+// waits for a condition, up to 10 seconds (git work in a busy test run can take a few seconds)
 async function waitUntil(check) {
-  for (let i = 0; i < 200; i += 1) {
+  for (let i = 0; i < 1000; i += 1) {
     if (check()) return;
     await new Promise((r) => setTimeout(r, 10));
   }
@@ -188,8 +202,9 @@ const neverForced = (calls) => {
   }
 };
 
-async function readyBranch(w, message = "feat(selling): cap the discount per tier") {
-  await w.dev.runDev({ action: "start_work", task: TASK, subject: "Cap the discount per tier" });
+// `continueAnyway`: for a test that breaks the setup first on purpose (the readiness check would stop it)
+async function readyBranch(w, message = "feat(selling): cap the discount per tier", { continueAnyway = false } = {}) {
+  await w.dev.runDev({ action: "start_work", task: TASK, subject: "Cap the discount per tier", ...(continueAnyway ? { continue_anyway: true } : {}) });
   w.commit("my_app/selling/discounts.py", "def cap(x):\n    return min(x, 10)\n", message);
 }
 
@@ -201,7 +216,7 @@ test("the manifest declares exactly the code's two tools, its skills and its set
   assert.match(manifest.id, /^tbo\./);
   assert.equal(PR_TOOL.risk, "high", "the push always asks");
   assert.equal(PR_TOOL.planSafeActions, undefined);
-  assert.deepEqual(DEV_TOOL.planSafeActions, ["status", "job_status"]);
+  assert.deepEqual(DEV_TOOL.planSafeActions, ["status", "ready", "job_status"]);
   // bench changes the dev bench: the app asks first (risk medium), and Plan mode never runs it
   assert.ok(DEV_TOOL.schema.properties.action.enum.includes("bench"));
   assert.equal(DEV_TOOL.risk, "medium");
@@ -410,9 +425,11 @@ test("run_tests runs the touched modules one by one on the bench's test site, ne
   const done = await finished(w.dev, (await w.dev.runDev({ action: "run_tests" })).job);
   assert.equal(done.state, "passed");
   assert.deepEqual(done.result.results.map((r) => [r.module, r.status, r.detail]), [["my_app.selling.test_discounts", "passed", "3 test(s), OK"]]);
-  const benchCalls = w.calls.filter((c) => c[0] === "bench" && c[3] !== "list-apps");
-  assert.deepEqual(benchCalls, [["bench", "--site", "dev.localhost", "run-tests", "--module", "my_app.selling.test_discounts"]]);
-  assert.ok(!w.calls.some((c) => c[0] === "bench" && c[3] !== "list-apps" && (c.includes("--app") || !c.includes("--module"))));
+  const benchCalls = w.calls.filter((c) => c[0] === "bench" && c.includes("run-tests"));
+  // as the repository's CI runs them: --app, so only this app's before_tests hooks run (Phase 27, Q4)
+  assert.deepEqual(benchCalls, [["bench", "--site", "dev.localhost", "run-tests", "--app", "my_app", "--module", "my_app.selling.test_discounts"]]);
+  // never the whole suite: every test run names its module
+  assert.ok(!w.calls.some((c) => c[0] === "bench" && c.includes("run-tests") && !c.includes("--module")));
   await assert.rejects(w.dev.runDev({ action: "run_tests", modules: ["my_app.tests; rm -rf ~"] }), { code: "INVALID_ARGUMENT" });
 });
 
@@ -930,7 +947,7 @@ test("a configured bench must hold this checkout in its apps/ folder", async (t)
   makeSite(other, "dev.localhost");
   // a clone in no bench: a listed bench that does not hold it is never used
   const loose = world(t, { settings: { benchPath: other }, workspace: "loose" });
-  await readyBranch(loose);
+  await readyBranch(loose, undefined, { continueAnyway: true });
   await assert.rejects(loose.dev.runDev({ action: "run_tests" }), { code: "NO_BENCH", message: /does not hold it/ });
   // the same checkout linked into the bench's apps/ is one of them
   fs.symlinkSync(loose.repo, path.join(other, "apps", "my_app"));
@@ -941,7 +958,7 @@ test("a configured bench must hold this checkout in its apps/ folder", async (t)
   assert.equal(loose.benchRuns.at(-1).cwd, fs.realpathSync(other));
   // another checkout is not: a clone in its own bench runs on that bench, never on the listed one
   const third = world(t, { settings: { benchPath: other } });
-  await readyBranch(third);
+  await readyBranch(third, undefined, { continueAnyway: true });
   await finished(third.dev, (await third.dev.runDev({ action: "run_tests" })).job);
   assert.equal(third.benchRuns.at(-1).cwd, third.bench);
 });
@@ -996,7 +1013,7 @@ test("a site with tests off or without the app is passed over and named, with wh
   makeSite(w.bench, "bare.localhost");
   w.installed["bare.localhost"] = ["frappe"];
   w.installed["dev.localhost"] = ["frappe", "erpnext"];
-  await readyBranch(w);
+  await readyBranch(w, undefined, { continueAnyway: true });
   const reasons = [
     /elsewhere\.localhost: not on this bench/,
     /off\.localhost: tests are off \(bench --site off\.localhost set-config allow_tests true\)/,
@@ -1079,14 +1096,15 @@ test("the developer chooses a project's test site: checked, then remembered; mig
   for (const site of ["--force", "all", "assets", "../dev.localhost", "live.example.com"]) {
     await assert.rejects(w.dev.runDev({ action: "status", site }), { code: "NO_SITE" }, site);
   }
-  assert.deepEqual([...new Set(w.listApps)].sort(), ["bare.localhost", "second.localhost"]);
+  // the readiness check at start_work looked at the default site too; nothing odd ever reached bench
+  assert.deepEqual([...new Set(w.listApps)].sort(), ["bare.localhost", "dev.localhost", "second.localhost"]);
   assert.equal((await w.dev.runDev({ action: "status" })).test_site, "second.localhost");
 });
 
 test("the bench's default site is checked like a listed one", async (t) => {
   const w = world(t);
   w.installed["dev.localhost"] = ["frappe"];
-  await readyBranch(w);
+  await readyBranch(w, undefined, { continueAnyway: true });
   const s = await w.dev.runDev({ action: "status" });
   assert.equal(s.test_site, null);
   assert.match(s.bench_problem, /dev\.localhost: my_app is not installed/);
@@ -1106,8 +1124,11 @@ test("a bench job that starts while the test site is checked stops the tests: no
   w.hooks.holdListApps = new Promise((r) => {
     checked = r;
   });
+  // start_work's readiness check chose the site already: forget it, so run_tests checks it again
+  fs.rmSync(path.join(w.dataDir, "test-sites.json"), { force: true });
+  const checksBefore = w.listApps.length;
   const tests = w.dev.runDev({ action: "run_tests" });
-  await waitUntil(() => w.listApps.length === 1); // the site's check is under way
+  await waitUntil(() => w.listApps.length > checksBefore); // the site's check is under way
   let migrated;
   w.hooks.holdBench = new Promise((r) => {
     migrated = r;
@@ -1152,6 +1173,8 @@ test("two run_tests at once for one project: the second waits its turn, is refus
   const w = world(t);
   makeSite(w.bench, "second.localhost");
   await readyBranch(w);
+  // start_work's readiness check chose the site already: forget it, so the first call checks it again
+  fs.rmSync(path.join(w.dataDir, "test-sites.json"), { force: true });
   let checked;
   w.hooks.holdListAppsFor["dev.localhost"] = new Promise((r) => {
     checked = r;
@@ -1160,8 +1183,9 @@ test("two run_tests at once for one project: the second waits its turn, is refus
   w.hooks.holdBench = new Promise((r) => {
     release = r;
   });
+  const checksBefore = w.listApps.filter((site) => site === "dev.localhost").length; // start_work's readiness check made one
   const first = w.dev.runDev({ action: "run_tests" }); // its site's check is held
-  await waitUntil(() => w.listApps.includes("dev.localhost"));
+  await waitUntil(() => w.listApps.filter((site) => site === "dev.localhost").length > checksBefore);
   const second = w.dev.runDev({ action: "run_tests", site: "second.localhost" });
   // the second call has reached the bench while the first is still checking its site: it waits its turn
   // (without a turn per bench it would check and keep its own site now, and never log this)
@@ -1224,6 +1248,108 @@ test("two projects choosing their test sites at once both keep their choice", as
   assert.equal(b.site, "dev.localhost");
   const kept = JSON.parse(fs.readFileSync(path.join(dataDir, "test-sites.json"), "utf8"));
   assert.deepEqual(Object.keys(kept).sort(), [path.join(bench, "apps", "app_a"), path.join(bench, "apps", "app_b")]);
+});
+
+test("the GitHub CLI location setting is used for every gh call (Phase 27, Q4)", async (t) => {
+  const w = world(t, { settings: { ghPath: "/opt/tools/bin/gh" } });
+  const seen = [];
+  const original = w.dev;
+  // record the program each gh call used
+  const s = await original.runDev({ action: "status" });
+  assert.deepEqual(s.gh, { ok: true, login: "dev-user" });
+  for (const c of w.calls.filter((c) => c[0] === "gh")) seen.push(c);
+  assert.ok(seen.length > 0);
+  assert.ok(w.ghPrograms.every((p) => p === "/opt/tools/bin/gh"), JSON.stringify(w.ghPrograms));
+});
+
+// --- the readiness check (Phase 27, Q3) ------------------------------------------------------
+
+const byId = (r) => Object.fromEntries(r.items.map((i) => [i.id, i]));
+const commonConfig = (w, value) => fs.writeFileSync(path.join(w.bench, "sites", "common_site_config.json"), JSON.stringify(value));
+
+test("ready lists everything missing at once, each with its fix", async (t) => {
+  const w = world(t, { settings: { uvPath: "/nowhere/uv" } });
+  w.answers.ghAuth = { code: 1, stdout: "", stderr: "You are not logged into any GitHub hosts." };
+  commonConfig(w, { maintenance_mode: 1, redis_cache: "redis://127.0.0.1:13000", redis_queue: "redis://127.0.0.1:11000" });
+  w.servicesDown.add("127.0.0.1:3306");
+  w.servicesDown.add("127.0.0.1:13000");
+  fs.writeFileSync(path.join(w.bench, "sites", "dev.localhost", "site_config.json"), "{}\n"); // tests off
+  const r = await w.dev.runDev({ action: "ready" });
+  assert.equal(r.ready, false);
+  const items = byId(r);
+  assert.equal(items.github.ok, false);
+  assert.match(items.github.fix.steps, /gh auth login/);
+  assert.equal(items.uv.ok, false);
+  assert.match(items.uv.fix.steps, /uv location/);
+  assert.equal(items.bench_command.ok, true);
+  assert.equal(items.services.ok, false);
+  assert.match(items.services.detail, /MariaDB \(127\.0\.0\.1:3306\).*Redis cache \(127\.0\.0\.1:13000\)/);
+  assert.match(items.services.fix.steps, /bench start/);
+  assert.equal(items.test_site.ok, false);
+  assert.deepEqual(items.test_site.fix, { kind: "tbo_dev fix", fix: "allow_tests", site: "dev.localhost", steps: items.test_site.fix.steps });
+  assert.equal(items.maintenance.ok, false);
+  assert.equal(items.maintenance.blocking, false, "a warning: it only blocks a browser");
+  assert.equal(items.maintenance.fix.fix, "maintenance_off");
+  assert.ok(!w.readyCalls.includes("--site dev.localhost execute frappe.is_setup_complete"), "no site: its setup is not asked");
+  assert.match(r.next, /must be put right before work starts/);
+});
+
+test("ready passes when everything is in place; an unfinished site setup is a warning", async (t) => {
+  const w = world(t);
+  commonConfig(w, { redis_cache: "redis://127.0.0.1:13000", redis_queue: "redis://127.0.0.1:11000" });
+  const r = await w.dev.runDev({ action: "ready" });
+  assert.equal(r.ready, true, JSON.stringify(r.items.filter((i) => !i.ok)));
+  assert.ok(r.items.every((i) => i.ok));
+  assert.ok(w.readyCalls.includes("probe 127.0.0.1:3306") && w.readyCalls.includes("probe 127.0.0.1:13000") && w.readyCalls.includes("probe 127.0.0.1:11000"));
+  w.hooks.setupIncomplete = true;
+  const warned = await w.dev.runDev({ action: "ready" });
+  assert.equal(warned.ready, true);
+  const setup = byId(warned).site_setup;
+  assert.equal(setup.ok, false);
+  assert.equal(setup.blocking, false);
+  assert.match(setup.fix.steps, /setup wizard/);
+});
+
+test("start_work refuses until ready passes, saying everything at once; the person may start anyway", async (t) => {
+  const w = world(t);
+  w.servicesDown.add("127.0.0.1:3306");
+  w.answers.ghAuth = { code: 1, stdout: "", stderr: "not logged in" };
+  await assert.rejects(w.dev.runDev({ action: "start_work", task: TASK, subject: "Cap the discount per tier" }), (e) => {
+    assert.equal(e.code, "NOT_READY");
+    assert.match(e.message, /- github: /);
+    assert.match(e.message, /- services: Not answering: MariaDB/);
+    assert.match(e.message, /continue_anyway: true only if the person says/);
+    return true;
+  });
+  assert.equal(w.git(w.repo, "branch", "--show-current"), "main", "no branch was made");
+  const started = await w.dev.runDev({ action: "start_work", task: TASK, subject: "Cap the discount per tier", continue_anyway: true });
+  assert.equal(started.state, "created");
+  assert.match(started.not_checked, /as the person asked/);
+  // with everything in place it starts, and says the warnings
+  const ok = world(t);
+  ok.hooks.setupIncomplete = true;
+  const fine = await ok.dev.runDev({ action: "start_work", task: TASK, subject: "Cap the discount per tier" });
+  assert.equal(fine.state, "created");
+  assert.match(fine.warnings, /site_setup \(warning\)/);
+});
+
+test("fix does only its own bench commands, on a site of this bench", async (t) => {
+  const w = world(t);
+  fs.writeFileSync(path.join(w.bench, "sites", "dev.localhost", "site_config.json"), "{}\n");
+  const fixed = await w.dev.runDev({ action: "fix", fix: "allow_tests", site: "dev.localhost" });
+  assert.deepEqual(fixed.fixed, ["bench --site dev.localhost set-config allow_tests true"]);
+  for (const site of ["", "--force", "live.example.com", "../dev.localhost", "assets"]) {
+    await assert.rejects(w.dev.runDev({ action: "fix", fix: "allow_tests", site }), { code: "NO_SITE" }, site);
+  }
+  await assert.rejects(w.dev.runDev({ action: "fix", fix: "drop_site", site: "dev.localhost" }), { code: "INVALID_ARGUMENT" });
+  commonConfig(w, { maintenance_mode: 1 });
+  const off = await w.dev.runDev({ action: "fix", fix: "maintenance_off", site: "dev.localhost" });
+  assert.deepEqual(off.fixed, ["bench --site dev.localhost set-maintenance-mode off", "bench set-config -g maintenance_mode 0"]);
+  assert.deepEqual(benchArgs(w), [
+    ["--site", "dev.localhost", "set-config", "allow_tests", "true"],
+    ["--site", "dev.localhost", "set-maintenance-mode", "off"],
+    ["set-config", "-g", "maintenance_mode", "0"],
+  ]);
 });
 
 test("a folder inside a larger repository is not taken for a repository", async (t) => {
