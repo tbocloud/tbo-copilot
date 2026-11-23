@@ -38,10 +38,12 @@ function tcpProbe(host, port, timeoutMs = 800) {
   });
 }
 
-// host and port of a redis://host:port address, or null.
+// host and port of a redis:// or rediss:// address (with or without user:password@ and a database),
+// or { unsupported } for any other form, such as a unix socket. Never the credentials.
 function redisAddress(url) {
-  const m = /^redis:\/\/([^:/]+):(\d+)/.exec(String(url || ""));
-  return m ? { host: m[1], port: Number(m[2]) } : null;
+  const m = /^(rediss?):\/\/(?:[^/]*@)?(\[[^\]]+\]|[^:/?#]+)(?::(\d+))?(?:[/?#].*)?$/i.exec(String(url || "").trim());
+  if (!m) return { unsupported: String(url || "").split(":")[0] || "unknown" };
+  return { host: m[2].replace(/^\[|\]$/g, ""), port: Number(m[3] || 6379) };
 }
 
 const item = (id, ok, detail, extra = {}) => ({ id, ok, detail, blocking: extra.blocking !== false, ...(extra.fix ? { fix: extra.fix } : {}) });
@@ -60,8 +62,12 @@ function createReady({ runFn, env, probe = tcpProbe }) {
     const down = [];
     if (!(await probe(host, dbPort))) down.push(`MariaDB (${dbHost}:${dbPort})`);
     for (const key of ["redis_cache", "redis_queue"]) {
+      if (!common[key]) continue;
       const at = redisAddress(common[key]);
-      if (at && !(await probe(at.host, at.port))) down.push(`Redis ${key.replace("redis_", "")} (${at.host}:${at.port})`);
+      const name = `Redis ${key.replace("redis_", "")}`;
+      // an address the check cannot reach is said, never taken as answering (CodeRabbit on #34)
+      if (at.unsupported) down.push(`${name} (a ${at.unsupported} address this check cannot reach; check it yourself)`);
+      else if (!(await probe(at.host, at.port))) down.push(`${name} (${at.host}:${at.port})`);
     }
     if (!down.length) return item("services", true, "MariaDB and the bench's Redis answer");
     return item("services", false, `Not answering: ${down.join(", ")}`, {
@@ -169,7 +175,8 @@ function createReady({ runFn, env, probe = tcpProbe }) {
       site = chosen.site;
       items.push(item("test_site", true, `${site} (${chosen.from})`));
     } catch (e) {
-      const off = testsOffSite(bench, conf.testSites);
+      // the remembered site that no longer fits, else a listed or default one with tests off
+      const off = e.site && !testsOn(bench, e.site) ? e.site : testsOffSite(bench, conf.testSites);
       items.push(
         item("test_site", false, e.message, {
           fix: off ? auto("allow_tests", off, `tbo_dev fix allow_tests turns tests on for ${off} (the app asks first).`) : manual(e.message.split("\n").pop()),

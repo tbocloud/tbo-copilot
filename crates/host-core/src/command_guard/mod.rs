@@ -38,9 +38,12 @@ pub enum CommandVerdict {
     Refuse(String),
 }
 
-/// Assess a shell command. `allowed_roots` are the folders a recursive delete
-/// may target (the session's workspace, its scratch folder, the temp folder).
-pub fn assess(command: &str, allowed_roots: &[PathBuf]) -> CommandVerdict {
+/// Assess a shell command. `cwd` is the folder it starts in (the session's
+/// workspace); `allowed_roots` are the folders a recursive delete may target
+/// (the workspace, its scratch folder, the temp folder). The working folder is
+/// followed through `cd` and `pushd`, so a relative delete is placed where it
+/// runs; when the folder cannot be known, the delete is asked.
+pub fn assess(command: &str, cwd: Option<&Path>, allowed_roots: &[PathBuf]) -> CommandVerdict {
     let mut asks: Vec<String> = Vec::new();
     if let Some(reason) = destructive_sql(command) {
         return CommandVerdict::Refuse(reason);
@@ -48,19 +51,44 @@ pub fn assess(command: &str, allowed_roots: &[PathBuf]) -> CommandVerdict {
     if pipes_download_into_shell(command) {
         asks.push("runs a script downloaded from the internet".into());
     }
+    let mut here: Option<PathBuf> = cwd.map(normalize);
     for segment in segments(command) {
         let words = words(&segment);
-        let Some((program, rest)) = program_and_args(&words) else {
+        let Some(run) = resolve_command(&words) else {
             continue;
         };
-        match assess_one(&program, &rest, allowed_roots) {
-            CommandVerdict::Refuse(reason) => return CommandVerdict::Refuse(reason),
-            CommandVerdict::Ask(reason) => {
-                if !asks.contains(&reason) {
-                    asks.push(reason);
-                }
+        match run.program.as_str() {
+            "cd" | "pushd" => {
+                here = change_dir(here.as_deref(), &run.args);
+                continue;
             }
-            CommandVerdict::Allow => {}
+            "popd" => {
+                here = None;
+                continue;
+            }
+            _ => {}
+        }
+        let place = Place {
+            roots: allowed_roots,
+            cwd: here.as_deref(),
+            from_input: run.from_input,
+        };
+        let mut verdicts = vec![assess_one(&run.program, &run.args, &place)];
+        if run.admin {
+            verdicts.push(CommandVerdict::Ask(
+                "runs a command as the administrator".into(),
+            ));
+        }
+        for verdict in verdicts {
+            match verdict {
+                CommandVerdict::Refuse(reason) => return CommandVerdict::Refuse(reason),
+                CommandVerdict::Ask(reason) => {
+                    if !asks.contains(&reason) {
+                        asks.push(reason);
+                    }
+                }
+                CommandVerdict::Allow => {}
+            }
         }
     }
     if asks.is_empty() {
@@ -124,7 +152,15 @@ const PASSWORD_FLAGS: &[&str] = &[
     "--password",
 ];
 
-fn assess_one(program: &str, args: &[String], roots: &[PathBuf]) -> CommandVerdict {
+/// Where a command runs: the allowed roots, its working folder (None: unknown),
+/// and whether it takes its operands from its input (`xargs`).
+struct Place<'a> {
+    roots: &'a [PathBuf],
+    cwd: Option<&'a Path>,
+    from_input: bool,
+}
+
+fn assess_one(program: &str, args: &[String], place: &Place<'_>) -> CommandVerdict {
     let lower: Vec<String> = args.iter().map(|a| a.to_ascii_lowercase()).collect();
     let has = |word: &str| lower.iter().any(|a| a == word);
     let mut ask: Option<String> = None;
@@ -169,8 +205,11 @@ fn assess_one(program: &str, args: &[String], roots: &[PathBuf]) -> CommandVerdi
                         && (a.contains('r') || a.contains('R')))
             });
             if recursive {
+                if place.from_input {
+                    ask_for("deletes paths it reads from its input");
+                }
                 for target in args.iter().filter(|a| !a.starts_with('-')) {
-                    match delete_target(target, roots) {
+                    match delete_target(target, place) {
                         Target::Outside => {
                             return CommandVerdict::Refuse(format!(
                                 "`rm -r {target}` deletes outside the project. The agent only deletes inside the \
@@ -178,16 +217,33 @@ fn assess_one(program: &str, args: &[String], roots: &[PathBuf]) -> CommandVerdi
                             ))
                         }
                         Target::Broad => ask_for("deletes everything in a folder"),
+                        Target::Unknown => {
+                            ask_for("deletes in a folder the guard cannot place (after a cd it cannot follow)")
+                        }
                         Target::Inside => {}
                     }
                 }
             }
         }
         "git" => {
-            let sub = lower
-                .iter()
-                .find(|a| !a.starts_with('-'))
-                .map(String::as_str);
+            // past git's own options (`-C <dir>`, `-c <name=value>`, `--git-dir <dir>`…) to the subcommand
+            let mut at = 0;
+            while at < args.len() {
+                let a = args[at].as_str();
+                if GIT_OPTIONS_WITH_VALUE.contains(&a) {
+                    at += 2;
+                } else if a.starts_with('-') {
+                    at += 1;
+                } else {
+                    break;
+                }
+            }
+            let sub = lower.get(at).map(String::as_str);
+            let sub_args: Vec<String> = args.iter().skip(at + 1).cloned().collect();
+            let sub_lower: Vec<String> = lower.iter().skip(at + 1).cloned().collect();
+            let has = |word: &str| sub_lower.iter().any(|a| a == word);
+            let args = &sub_args;
+            let lower = &sub_lower;
             match sub {
                 Some("push") => {
                     if lower.iter().any(|a| {
@@ -195,7 +251,7 @@ fn assess_one(program: &str, args: &[String], roots: &[PathBuf]) -> CommandVerdi
                             || a == "--force"
                             || a.starts_with("--force-with-lease")
                             || a == "--mirror"
-                    }) || args.iter().skip(1).any(|a| a.starts_with('+'))
+                    }) || args.iter().any(|a| a.starts_with('+'))
                     {
                         return CommandVerdict::Refuse(
                             "a force-push rewrites history others may have. Push normally; if the branch moved, \
@@ -229,20 +285,6 @@ fn assess_one(program: &str, args: &[String], roots: &[PathBuf]) -> CommandVerdi
                 }
                 _ => {}
             }
-        }
-        "sudo" | "doas" => {
-            // the command it runs is assessed too: `sudo shutdown` is refused, not only asked
-            let inner: Vec<String> = args
-                .iter()
-                .skip_while(|a| a.starts_with('-'))
-                .cloned()
-                .collect();
-            if let Some((program, rest)) = program_and_args(&inner) {
-                if let CommandVerdict::Refuse(reason) = assess_one(&program, &rest, roots) {
-                    return CommandVerdict::Refuse(reason);
-                }
-            }
-            ask_for("runs a command as the administrator")
         }
         "su" => ask_for("runs a command as the administrator"),
         "brew" => {
@@ -313,13 +355,30 @@ fn assess_one(program: &str, args: &[String], roots: &[PathBuf]) -> CommandVerdi
     }
 }
 
+const GIT_OPTIONS_WITH_VALUE: &[&str] = &[
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--super-prefix",
+    "--config-env",
+];
+
 enum Target {
     Inside,
     Broad,
     Outside,
+    Unknown,
 }
 
-fn delete_target(target: &str, roots: &[PathBuf]) -> Target {
+fn inside(path: &Path, roots: &[PathBuf]) -> bool {
+    let normal = normalize(path);
+    roots.iter().any(|root| normal.starts_with(normalize(root)))
+}
+
+fn delete_target(target: &str, place: &Place<'_>) -> Target {
+    let roots = place.roots;
     let t = target.trim_matches(|c| c == '"' || c == '\'');
     if matches!(
         t,
@@ -329,7 +388,10 @@ fn delete_target(target: &str, roots: &[PathBuf]) -> Target {
         return Target::Outside;
     }
     if matches!(t, "." | "./" | "*" | "./*" | ".*") {
-        return Target::Broad;
+        return match place.cwd {
+            Some(dir) if !inside(dir, roots) => Target::Outside,
+            _ => Target::Broad,
+        };
     }
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let expanded: Option<PathBuf> = if let Some(rest) = t.strip_prefix("~/") {
@@ -344,27 +406,40 @@ fn delete_target(target: &str, roots: &[PathBuf]) -> Target {
     } else {
         None
     };
-    match expanded {
-        Some(path) => {
-            let normal = normalize(&path);
-            if roots.iter().any(|root| normal.starts_with(normalize(root))) {
-                Target::Inside
-            } else {
-                Target::Outside
-            }
-        }
-        // relative: inside the working folder unless it climbs out of it
-        None => {
-            if Path::new(t)
-                .components()
-                .any(|c| matches!(c, Component::ParentDir))
-            {
-                Target::Outside
-            } else {
-                Target::Inside
-            }
-        }
+    // a relative target is placed in the folder the command runs in
+    let path = match expanded {
+        Some(path) => path,
+        None if t.contains('$') || t.contains('`') => return Target::Unknown,
+        None => match place.cwd {
+            Some(dir) => dir.join(t),
+            None => return Target::Unknown,
+        },
+    };
+    if inside(&path, roots) {
+        Target::Inside
+    } else {
+        Target::Outside
     }
+}
+
+/// The folder after `cd <target>` (or `pushd`) from `from`; None when it cannot be known.
+fn change_dir(from: Option<&Path>, args: &[String]) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let target = args
+        .iter()
+        .find(|a| !(a.starts_with('-') && a.len() > 1))
+        .map(String::as_str)
+        .unwrap_or("~");
+    let path = match target {
+        "~" | "$HOME" | "${HOME}" => home?,
+        "-" => return None,
+        t if t.contains('$') || t.contains('`') || t.contains('*') => return None,
+        t if t.starts_with("~/") => home?.join(&t[2..]),
+        t if t.starts_with('/') => PathBuf::from(t),
+        t if t.starts_with('~') => return None,
+        t => from?.join(t),
+    };
+    Some(normalize(&path))
 }
 
 fn normalize(path: &Path) -> PathBuf {
@@ -479,10 +554,81 @@ fn words(segment: &str) -> Vec<String> {
     out
 }
 
-/// The program a part runs (its file name: `/x/bin/bench` is `bench`) and its
-/// arguments, past variable assignments and wrappers such as `env` or `nohup`.
-fn program_and_args(words: &[String]) -> Option<(String, Vec<String>)> {
+/// The command a part really runs.
+struct Run {
+    /// Its file name: `/x/bin/bench` is `bench`.
+    program: String,
+    args: Vec<String>,
+    /// Run through `sudo` or `doas`.
+    admin: bool,
+    /// Run through `xargs`: its operands come from its input.
+    from_input: bool,
+}
+
+/// Each wrapper's options that take a value as the next word.
+fn wrapper_options(wrapper: &str) -> &'static [&'static str] {
+    match wrapper {
+        "env" => &["-u", "-C", "-S", "--unset", "--chdir", "--split-string"],
+        "nice" => &["-n", "--adjustment"],
+        "time" => &["-f", "-o", "--format", "--output"],
+        "exec" => &["-a"],
+        "timeout" => &["-s", "-k", "--signal", "--kill-after"],
+        "xargs" => &[
+            "-I",
+            "-i",
+            "-n",
+            "-P",
+            "-L",
+            "-l",
+            "-s",
+            "-E",
+            "-e",
+            "-d",
+            "-a",
+            "--max-args",
+            "--max-procs",
+            "--max-lines",
+            "--max-chars",
+            "--eof",
+            "--delimiter",
+            "--arg-file",
+            "--replace",
+        ],
+        "sudo" | "doas" => &[
+            "-u",
+            "-g",
+            "-h",
+            "-p",
+            "-C",
+            "-r",
+            "-t",
+            "-U",
+            "-D",
+            "--user",
+            "--group",
+            "--host",
+            "--prompt",
+            "--close-from",
+            "--role",
+            "--type",
+            "--other-user",
+            "--chdir",
+        ],
+        _ => &[],
+    }
+}
+
+const WRAPPERS: &[&str] = &[
+    "env", "nohup", "time", "command", "exec", "nice", "timeout", "xargs", "stdbuf", "sudo", "doas",
+];
+
+/// The command a part runs, past variable assignments and wrappers (`env`, `nohup`, `nice -n 10`,
+/// `timeout 30`, `xargs -0`, `sudo -u root`…) with their own options: a wrapper's option is never
+/// taken for the program (`nice -n 10 bench drop-site` is a bench command).
+fn resolve_command(words: &[String]) -> Option<Run> {
     let mut i = 0;
+    let mut admin = false;
+    let mut from_input = false;
     while i < words.len() {
         let w = &words[i];
         let is_assignment = w
@@ -491,20 +637,49 @@ fn program_and_args(words: &[String]) -> Option<(String, Vec<String>)> {
                 !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             })
             .unwrap_or(false);
+        if is_assignment {
+            i += 1;
+            continue;
+        }
         let base = Path::new(w)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| w.clone());
-        if is_assignment
-            || matches!(
-                base.as_str(),
-                "env" | "nohup" | "time" | "command" | "exec" | "nice"
-            )
-        {
-            i += 1;
-            continue;
+        if !WRAPPERS.contains(&base.as_str()) {
+            return Some(Run {
+                program: base,
+                args: words[i + 1..].to_vec(),
+                admin,
+                from_input,
+            });
         }
-        return Some((base, words[i + 1..].to_vec()));
+        admin |= matches!(base.as_str(), "sudo" | "doas");
+        from_input |= base == "xargs";
+        let with_value = wrapper_options(&base);
+        i += 1;
+        while i < words.len() {
+            let a = words[i].as_str();
+            if a == "--" {
+                i += 1;
+                break;
+            }
+            if base == "env" && a.contains('=') && !a.starts_with('-') {
+                i += 1;
+                continue;
+            }
+            if !a.starts_with('-') || a == "-" {
+                break;
+            }
+            // `command -v x` only says where x is; it runs nothing
+            if base == "command" && (a.contains('v') || a.contains('V')) {
+                return None;
+            }
+            i += if with_value.contains(&a) { 2 } else { 1 };
+        }
+        // `timeout <duration> <command>`
+        if base == "timeout" {
+            i += 1;
+        }
     }
     None
 }
@@ -526,16 +701,25 @@ pub fn scrub_secrets(text: &str) -> Cow<'_, str> {
                 "-----BEGIN PRIVATE KEY----- [redacted] -----END PRIVATE KEY-----",
             ),
             (
-                Regex::new(&format!(r#"(?i)("{names}"\s*:\s*")[^"]+(")"#)).expect("json"),
+                // the whole string, escaped quotes and all
+                Regex::new(&format!(r#"(?i)("{names}"\s*:\s*")(?:[^"\\]|\\.)+(")"#)).expect("json"),
                 "${1}[redacted]${2}",
             ),
             (
-                Regex::new(&format!(r#"(?im)^(\s*(?:export\s+)?{names}\s*[=:]\s*)(?:"[^"\n]+"|'[^'\n]+'|[^\s"'\n]+)\s*$"#))
+                Regex::new(&format!(r#"(?im)^(\s*(?:export\s+)?{names}\s*[=:]\s*)(?:"(?:[^"\\\n]|\\.)+"|'[^'\n]+'|[^\s"'\n]+)[ \t]*$"#))
                     .expect("env"),
                 "${1}[redacted]",
             ),
             (
-                Regex::new(r"(?i)(--(?:mariadb-root-|db-root-|root-|admin-|db-)?password[= ])\S+").expect("flag"),
+                // NAME=value inside a command line (`DB_PASSWORD='x' bench …`), quotes respected
+                Regex::new(r#"(?i)(^|[\s;&|(])((?:export\s+)?[a-z_][a-z0-9_]*(?:password|passwd|secret|token|api_?key|apikey|private_?key|access_?key|encryption_key|client_secret|auth_token)[a-z0-9_]*=)(?:'[^'\n]*'|"(?:[^"\\\n]|\\.)*"|[^\s'";&|]+)"#)
+                    .expect("inline"),
+                "${1}${2}[redacted]",
+            ),
+            (
+                // a password given as an argument, quoted values whole
+                Regex::new(r#"(?i)(--(?:mariadb-root-|db-root-|root-|admin-|db-)?password(?:=|\s+))(?:'[^'\n]*'|"(?:[^"\\\n]|\\.)*"|\S+)"#)
+                    .expect("flag"),
                 "${1}[redacted]",
             ),
             (
@@ -564,186 +748,71 @@ pub fn scrub_secrets(text: &str) -> Cow<'_, str> {
 
 /// A Frappe site's configuration files hold its database password and keys.
 pub fn is_site_config(path: &str) -> bool {
+    is_site_config_path(Path::new(path))
+}
+
+pub fn is_site_config_path(path: &Path) -> bool {
     matches!(
-        Path::new(path).file_name().and_then(|n| n.to_str()),
+        path.file_name().and_then(|n| n.to_str()),
         Some("site_config.json") | Some("common_site_config.json")
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// The longest partial line held back before it is scrubbed and passed on anyway.
+const STREAM_HOLD_MAX: usize = 64 * 1024;
 
-    fn roots() -> Vec<PathBuf> {
-        vec![PathBuf::from("/work/app"), PathBuf::from("/tmp/scratch")]
-    }
-    fn refused(cmd: &str) -> bool {
-        matches!(assess(cmd, &roots()), CommandVerdict::Refuse(_))
-    }
-    fn asked(cmd: &str) -> bool {
-        matches!(assess(cmd, &roots()), CommandVerdict::Ask(_))
-    }
-    fn allowed(cmd: &str) -> bool {
-        assess(cmd, &roots()) == CommandVerdict::Allow
+/// Scrubs output as it streams, before it is captured, clipped or sent to the
+/// app as a live notification: whole lines are scrubbed (a partial line waits
+/// for its end), and a private key block is hidden from its BEGIN line to its
+/// END line even when it arrives in pieces.
+#[derive(Debug, Default)]
+pub struct StreamScrubber {
+    pending: String,
+    in_key: bool,
+}
+
+impl StreamScrubber {
+    /// The scrubbed complete lines of what has arrived so far.
+    pub fn push(&mut self, text: &str) -> String {
+        self.pending.push_str(text);
+        let mut out = String::new();
+        while let Some(end) = self.pending.find(['\n', '\r']) {
+            let line: String = self.pending.drain(..=end).collect();
+            out.push_str(&self.line(&line));
+        }
+        if self.pending.len() > STREAM_HOLD_MAX {
+            let rest = std::mem::take(&mut self.pending);
+            out.push_str(&self.line(&rest));
+        }
+        out
     }
 
-    #[test]
-    fn the_21_nov_commands_are_stopped() {
-        // the drop-site the agent ran, through a PATH assignment and the full bench path
-        assert!(refused(
-            "cd /Users/x/frappe-bench && PATH=\"/Users/x/.pyenv/versions/3.10.15/bin:$PATH\" bench drop-site demo-alpha.localhost --mariadb-root-password 2303 --no-backup --force && bench new-site demo-alpha.localhost"
-        ));
-        assert!(refused(
-            "/Users/x/.pyenv/versions/3.10.15/bin/bench --site a.localhost reinstall --yes"
-        ));
-        // a new site with the root password on the command line: asked, with both reasons
-        match assess(
-            "bench new-site demo-alpha.localhost --mariadb-root-password 2001 --admin-password 2001 --install-app erpnext",
-            &roots(),
-        ) {
-            CommandVerdict::Ask(reason) => {
-                assert!(reason.contains("password on the command line"), "{reason}");
+    /// The scrubbed rest, at the end of the output.
+    pub fn finish(&mut self) -> String {
+        let rest = std::mem::take(&mut self.pending);
+        if rest.is_empty() {
+            return rest;
+        }
+        self.line(&rest)
+    }
+
+    fn line(&mut self, line: &str) -> String {
+        let is_begin = line.contains("-----BEGIN") && line.contains("PRIVATE KEY-----");
+        let is_end = line.contains("-----END") && line.contains("PRIVATE KEY-----");
+        if self.in_key {
+            if is_end {
+                self.in_key = false;
+                return "-----END PRIVATE KEY-----\n".into();
             }
-            other => panic!("{other:?}"),
+            return String::new();
         }
-        // running code against a site's data, and starting the bench's Redis
-        assert!(asked(
-            "bench --site demo-alpha.localhost console <<'PY'\nimport frappe\nPY"
-        ));
-        assert!(asked(
-            "cd /b && (redis-server config/redis_cache.conf > logs/x.out 2>&1 &)"
-        ));
-        assert!(asked("bench set-config -g maintenance_mode 0"));
-    }
-
-    #[test]
-    fn ordinary_development_runs_as_usual() {
-        for cmd in [
-            "git status --short --branch",
-            "git commit -m \"feat(sales): require a sales person\"",
-            "git push origin feature/TASK-2026-00011-x",
-            "bench --site demo-alpha.localhost migrate",
-            "bench --site demo-alpha.localhost run-tests --app alpha_trading --module alpha_trading.tests.test_x",
-            "bench --site demo-alpha.localhost list-apps",
-            "bench build --app alpha_trading",
-            "bench --site x set-config allow_tests true",
-            "npm install && npm test",
-            "pip install -e .",
-            "rm -rf node_modules dist",
-            "rm -rf /work/app/build",
-            "rm -rf /tmp/scratch/out",
-            "rm file.txt",
-            "uv run pytest",
-            "grep -rn \"DROP TABLE\" docs",
-            "mkdir -p a/b && cd a",
-            "find . -name '*.pyc' -delete",
-            "curl -s https://example.com/api | jq .",
-        ] {
-            assert!(allowed(cmd), "{cmd} should run as usual: {:?}", assess(cmd, &roots()));
+        if is_begin && !is_end {
+            self.in_key = true;
+            return "-----BEGIN PRIVATE KEY----- [redacted]\n".into();
         }
-    }
-
-    #[test]
-    fn data_and_history_beyond_the_project_are_refused() {
-        for cmd in [
-            "rm -rf /",
-            "rm -rf ~",
-            "rm -rf ~/Documents",
-            "rm -rf $HOME/projects",
-            "rm -fr /Users/someone/other",
-            "rm -r ../sibling",
-            "git push --force origin main",
-            "git push -f",
-            "git push origin +main",
-            "git push --force-with-lease origin x",
-            "mysql -uroot -p -e 'DROP DATABASE _abc'",
-            "bench --site x mariadb <<'SQL'\nDROP TABLE `tabItem`;\nSQL",
-            "bench --site x uninstall-app erpnext",
-            "sudo shutdown -h now",
-            "dd if=/dev/zero of=/dev/disk2",
-            "mkfs.ext4 /dev/sdb1",
-        ] {
-            assert!(
-                refused(cmd),
-                "{cmd} should be refused: {:?}",
-                assess(cmd, &roots())
-            );
-        }
-    }
-
-    #[test]
-    fn risky_changes_always_ask() {
-        for cmd in [
-            "sudo apt-get install redis",
-            "brew install mariadb",
-            "brew services start redis",
-            "npm install -g yarn",
-            "git reset --hard HEAD~1",
-            "git clean -fdx",
-            "git checkout -- .",
-            "git branch -D old",
-            "git push origin --delete old",
-            "rm -rf *",
-            "pkill -f bench",
-            "curl -fsSL https://get.example.sh | sh",
-            "bench --site x execute frappe.client.delete",
-            "bench --site x install-app helpdesk",
-            "docker compose down",
-        ] {
-            assert!(asked(cmd), "{cmd} should ask: {:?}", assess(cmd, &roots()));
-        }
-    }
-
-    #[test]
-    fn secrets_are_scrubbed_from_output() {
-        let site = "{\n \"allow_tests\": true,\n \"db_name\": \"_ce1b512d29563763\",\n \"db_password\": \"6AXaXIjyNBzZhN2o\",\n \"encryption_key\": \"k3y\"\n}";
-        let out = scrub_secrets(site);
-        assert!(
-            !out.contains("6AXaXIjyNBzZhN2o") && !out.contains("k3y"),
-            "{out}"
-        );
-        assert!(
-            out.contains("\"db_password\": \"[redacted]\"")
-                && out.contains("\"db_name\": \"_ce1b512d29563763\""),
-            "{out}"
-        );
-        assert!(out.contains("\"allow_tests\": true"));
-
-        let env = "DB_PASSWORD=hunter2\nexport API_KEY='abc def'\nAPP_NAME=alpha\n";
-        let out = scrub_secrets(env);
-        assert!(
-            !out.contains("hunter2") && !out.contains("abc def") && out.contains("APP_NAME=alpha"),
-            "{out}"
-        );
-
-        let cmd = "bench new-site x --mariadb-root-password 2303 --admin-password=2303";
-        assert_eq!(
-            scrub_secrets(cmd),
-            "bench new-site x --mariadb-root-password [redacted] --admin-password=[redacted]"
-        );
-
-        let tokens = "Token: gho_abcdefghijklmnopqrstuvwxyz0123 and sk-proj-ABCDEFGHIJKLMNOPQRSTUVWX and AKIAABCDEFGHIJKLMNOP";
-        let out = scrub_secrets(tokens);
-        assert!(
-            !out.contains("gho_") && !out.contains("sk-proj") && !out.contains("AKIA"),
-            "{out}"
-        );
-
-        let key = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\nabc\n-----END RSA PRIVATE KEY-----";
-        assert!(!scrub_secrets(key).contains("MIIEow"));
-
-        assert!(!scrub_secrets("Authorization: token abc123:def456").contains("abc123"));
-        // ordinary text stays as it is, and borrowed
-        let plain = "Ran 4 tests in 0.081s\n\nOK\nauthor = \"Team Back Office\"";
-        assert!(matches!(scrub_secrets(plain), Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn site_configs_are_known() {
-        assert!(is_site_config(
-            "sites/demo-alpha.localhost/site_config.json"
-        ));
-        assert!(is_site_config("/b/sites/common_site_config.json"));
-        assert!(!is_site_config("app/config.json"));
+        scrub_secrets(line).into_owned()
     }
 }
+
+#[cfg(test)]
+mod tests;

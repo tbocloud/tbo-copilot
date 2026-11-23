@@ -140,7 +140,7 @@ function createSites({ runFn, env, getDataPath, log = () => {} }) {
   }
 
   // { site, from, remembered, note }: the test site for the repository `root` on `bench`.
-  async function choose({ root, bench, listed = [], wanted = "", benchCommand = "bench" }) {
+  async function choose({ root, bench, listed = [], wanted = "", benchCommand = "bench", revalidate = false }) {
     const key = fs.realpathSync(root);
     const app = appOf(bench, root);
     const asked = String(wanted || "").trim();
@@ -158,6 +158,15 @@ function createSites({ runFn, env, getDataPath, log = () => {} }) {
     if (before && before.bench === bench) {
       const stillThere = onBench(bench, before.site);
       if (stillThere && (before.basis === null || before.basis === basis)) {
+        if (revalidate) {
+          // the readiness check looks again: tests may have been turned off or the app removed since
+          const why = await misfit(bench, before.site, app, benchCommand);
+          if (why) {
+            const error = fail("NO_SITE", `${before.site}, ${before.from}, cannot be the test site now: ${why}.`);
+            error.site = before.site;
+            throw error;
+          }
+        }
         return { site: before.site, from: before.from, remembered: true };
       }
       if (!stillThere) note = `${before.site}, the test site before, is no longer a site of this bench; chose again.`;

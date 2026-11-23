@@ -170,8 +170,9 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
   }
 
   // The project's test site (lib/sites.js): { site, from, remembered, note }.
-  function testSite(root, bench, conf, wanted) {
-    return sites.choose({ root, bench, listed: conf.testSites, wanted, benchCommand: conf.benchCommand });
+  // `revalidate`: a remembered site is checked again (the readiness check), not taken as it was
+  function testSite(root, bench, conf, wanted, { revalidate = false } = {}) {
+    return sites.choose({ root, bench, listed: conf.testSites, wanted, benchCommand: conf.benchCommand, revalidate });
   }
 
   async function status(args) {
@@ -248,7 +249,7 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       conf,
       gh: await ghLogin(root, conf.gh),
       uv: findUv({ configured: conf.uvPath, env, platform }),
-      chooseSite: () => testSite(root, bench, conf, args && args.site),
+      chooseSite: () => testSite(root, bench, conf, args && args.site, { revalidate: true }),
     });
     return { repo: root, ...result };
   }
@@ -282,12 +283,27 @@ function createDev({ getSettings, getDataPath, getWorkspace, runFn = run, env = 
       if (Number(common.maintenance_mode) === 1) calls.push(["set-config", "-g", "maintenance_mode", "0"]);
       if (!calls.length) return { fixed: [], note: "Nothing is in maintenance." };
     }
+    // the fix holds the bench while it runs, as a bench job does: a migrate, a test run or another
+    // fix waits for it, even when one of its commands fails (CodeRabbit on #34)
+    counter += 1;
+    const hold = { id: `fix-${counter}`, kind: "bench", repo: root, head: null, bench, command: `fix ${which}`, state: "running", started: new Date().toISOString() };
+    jobs.set(hold.id, hold);
     const done = [];
-    for (const argv of calls) {
-      log(`bench: ${argv.join(" ")}`);
-      const res = await runFn(conf.benchCommand, argv, { cwd: bench, env, timeoutMs: 120000 });
-      if (res.code !== 0 || res.timedOut) throw fail("BENCH_FAILED", `\`bench ${argv.join(" ")}\` failed: ${tail(`${res.stdout}\n${res.stderr}`, 8)}`);
-      done.push(`bench ${argv.join(" ")}`);
+    try {
+      for (const argv of calls) {
+        log(`bench: ${argv.join(" ")}`);
+        const res = await runFn(conf.benchCommand, argv, { cwd: bench, env, timeoutMs: 120000 });
+        if (res.code !== 0 || res.timedOut) throw fail("BENCH_FAILED", `\`bench ${argv.join(" ")}\` failed: ${tail(`${res.stdout}\n${res.stderr}`, 8)}`);
+        done.push(`bench ${argv.join(" ")}`);
+      }
+      hold.state = "passed";
+      hold.result = { passed: true, fixed: done };
+    } catch (e) {
+      hold.state = "failed";
+      hold.error = e.message;
+      throw e;
+    } finally {
+      hold.finished = new Date().toISOString();
     }
     return { fixed: done, next: "Check again with tbo_dev ready." };
   }

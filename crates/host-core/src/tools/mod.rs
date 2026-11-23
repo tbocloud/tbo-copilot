@@ -1093,6 +1093,7 @@ pub async fn execute_tool_with_path_access(
             allow_external_paths,
             hashline.as_ref(),
         )
+        .map(scrub_site_config_grep)
         .map_err(Into::into),
         "Write" => tool_write(
             workspace,
@@ -1462,6 +1463,9 @@ fn tool_write(
     let (resolved, root_kind) =
         resolve_tool_path_with_external(root, scratch, path, allow_external_paths)
             .map_err(|e| (e.clone(), e))?;
+    if let Some(refusal) = site_config_refusal(&resolved) {
+        return Err(refusal);
+    }
     if ignore_rules::is_sensitive_path(&resolved) {
         return Err(ignore_rules::denied_error(path));
     }
@@ -1506,6 +1510,7 @@ fn tool_edit(
     let (resolved, root_kind) =
         resolve_tool_path_with_external(root, scratch, path, allow_external_paths)
             .map_err(|e| hashline::ToolError::new(e.clone(), e))?;
+    refuse_site_config(&resolved)?;
     if ignore_rules::is_sensitive_path(&resolved) {
         let (code, message) = ignore_rules::denied_error(path);
         return Err(hashline::ToolError::new(code, message));
@@ -1602,6 +1607,7 @@ fn tool_edit(
         let (dest_resolved, dest_root) =
             resolve_tool_path_with_external(root, scratch, dest, allow_external_paths)
                 .map_err(|e| hashline::ToolError::new(e.clone(), e))?;
+        refuse_site_config(&dest_resolved)?;
         if ignore_rules::is_sensitive_path(&dest_resolved) {
             let (code, message) = ignore_rules::denied_error(dest);
             return Err(hashline::ToolError::new(code, message));
@@ -2212,6 +2218,9 @@ impl Utf8Decoder {
 struct CapturedOutput {
     bytes: Vec<u8>,
     decoder: Utf8Decoder,
+    // TBO Phase 27 (Q5): secrets are hidden as the output streams, before it is
+    // clipped, captured or sent to the app as a live notification
+    scrubber: crate::command_guard::StreamScrubber,
     retained_lines: usize,
     omitted_bytes: u64,
     omitted_lines: u64,
@@ -2221,14 +2230,17 @@ struct CapturedOutput {
 impl CapturedOutput {
     fn push(&mut self, bytes: &[u8]) -> String {
         let decoded = self.decoder.push(bytes);
-        self.retain(&decoded);
-        decoded
+        let scrubbed = self.scrubber.push(&decoded);
+        self.retain(&scrubbed);
+        scrubbed
     }
 
     fn finish(&mut self) -> String {
         let decoded = self.decoder.finish();
-        self.retain(&decoded);
-        decoded
+        let mut scrubbed = self.scrubber.push(&decoded);
+        scrubbed.push_str(&self.scrubber.finish());
+        self.retain(&scrubbed);
+        scrubbed
     }
 
     fn retain(&mut self, text: &str) {
@@ -2849,6 +2861,52 @@ fn scrub_site_config_read(mut value: Value) -> Value {
         }
     }
     value
+}
+
+/// TBO Phase 27 (Q5): a search hit in a Frappe site's configuration shows its
+/// secret values hidden, as a Read of the file does.
+fn scrub_site_config_grep(mut value: Value) -> Value {
+    if let Some(hits) = value.get_mut("matches").and_then(Value::as_array_mut) {
+        for hit in hits {
+            let is_config = hit
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(crate::command_guard::is_site_config);
+            if !is_config {
+                continue;
+            }
+            if let Some(text) = hit.get("text").and_then(Value::as_str) {
+                let scrubbed = crate::command_guard::scrub_secrets(text).into_owned();
+                hit["text"] = json!(scrubbed);
+            }
+        }
+    }
+    value
+}
+
+/// TBO Phase 27 (Q5): a Frappe site's configuration is never written by Write
+/// or Edit, whatever path names it (a link to it, a move onto it).
+fn site_config_refusal(resolved: &Path) -> Option<(String, String)> {
+    let target = std::fs::canonicalize(resolved).unwrap_or_else(|_| resolved.to_path_buf());
+    if crate::command_guard::is_site_config_path(resolved)
+        || crate::command_guard::is_site_config_path(&target)
+    {
+        return Some((
+            "USE_BENCH_SET_CONFIG".into(),
+            "A Frappe site's configuration holds its database password and keys: it is changed with \
+             `bench --site <site> set-config <key> <value>` (or `bench set-config -g` for every site), \
+             never by writing the file"
+                .into(),
+        ));
+    }
+    None
+}
+
+fn refuse_site_config(resolved: &Path) -> Result<(), hashline::ToolError> {
+    match site_config_refusal(resolved) {
+        Some((code, message)) => Err(hashline::ToolError::new(code, message)),
+        None => Ok(()),
+    }
 }
 
 fn targets_site_config(args: &Value) -> bool {

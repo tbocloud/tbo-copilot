@@ -3795,7 +3795,11 @@ async fn handle_request(
                             roots.push(std::path::PathBuf::from(dir));
                         }
                         roots.push(std::env::temp_dir());
-                        crate::command_guard::assess(command, &roots)
+                        crate::command_guard::assess(
+                            command,
+                            ws.as_deref().map(std::path::Path::new),
+                            &roots,
+                        )
                     } else {
                         crate::command_guard::CommandVerdict::Allow
                     };
@@ -8439,6 +8443,110 @@ mod tests {
                 .contains("s3cretValue123"),
             "the file itself is untouched"
         );
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn site_configs_stay_hidden_in_live_output_search_links_and_moves() {
+        // CodeRabbit on #34
+        let Some(shell_id) = available_test_shell_id() else {
+            return;
+        };
+        let (_data, project, state, session_id) = guarded_session("Secrets 2", "auto");
+        let site = project.join("sites").join("demo.localhost");
+        fs::create_dir_all(&site).unwrap();
+        let config = site.join("site_config.json");
+        let original = "{\n \"allow_tests\": true,\n \"db_password\": \"s3cretValue123\"\n}\n";
+        fs::write(&config, original).unwrap();
+        let call = |name: &str, args: Value| json!({ "sessionId": session_id, "toolCallId": name, "toolName": name, "args": args, "mode": "agent" });
+
+        // live output: no tools.output notification carries the password
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_request(
+            state.clone(),
+            "tools.execute",
+            bash_call(
+                &session_id,
+                "cat-live",
+                &shell_id,
+                format!("cat '{}'", config.display()),
+            ),
+            tx,
+        )
+        .await
+        .unwrap();
+        let mut streamed = String::new();
+        while let Ok(raw) = rx.try_recv() {
+            let notification: Value = serde_json::from_str(&raw).unwrap();
+            if notification["method"] == "tools.output" {
+                streamed.push_str(notification["params"]["chunk"].as_str().unwrap_or_default());
+            }
+        }
+        assert!(
+            streamed.contains("db_password"),
+            "the output was streamed: {streamed}"
+        );
+        assert!(!streamed.contains("s3cretValue123"), "{streamed}");
+
+        // a search hit in the file
+        let grep = handle_request(
+            state.clone(),
+            "tools.execute",
+            call(
+                "Grep",
+                json!({ "pattern": "db_password", "outputMode": "content" }),
+            ),
+            mpsc::unbounded_channel().0,
+        )
+        .await
+        .unwrap();
+        let text = grep["content"].to_string();
+        assert!(
+            text.contains("db_password") && !text.contains("s3cretValue123"),
+            "{grep}"
+        );
+
+        // a link to the file is not a way to write it
+        std::os::unix::fs::symlink(&config, project.join("alias.json")).unwrap();
+        let linked = handle_request(
+            state.clone(),
+            "tools.execute",
+            call("Write", json!({ "path": "alias.json", "content": "{}" })),
+            mpsc::unbounded_channel().0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(linked["errorCode"], "USE_BENCH_SET_CONFIG", "{linked}");
+
+        // nor is moving another file onto it
+        fs::write(project.join("notes.txt"), "hello\n").unwrap();
+        let read = handle_request(
+            state.clone(),
+            "tools.execute",
+            call("Read", json!({ "path": "notes.txt" })),
+            mpsc::unbounded_channel().0,
+        )
+        .await
+        .unwrap();
+        let tag = read["content"]["tag"].as_str().unwrap().to_string();
+        let moved = handle_request(
+            state.clone(),
+            "tools.execute",
+            call(
+                "Edit",
+                json!({ "path": "notes.txt", "tag": tag, "ops": "MV sites/demo.localhost/site_config.json" }),
+            ),
+            mpsc::unbounded_channel().0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(moved["errorCode"], "USE_BENCH_SET_CONFIG", "{moved}");
+        assert_eq!(
+            fs::read_to_string(&config).unwrap(),
+            original,
+            "the configuration is untouched"
+        );
+        assert!(project.join("notes.txt").exists());
     }
 
     #[tokio::test]

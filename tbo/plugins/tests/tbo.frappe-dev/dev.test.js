@@ -990,8 +990,9 @@ test("projects on two benches each run on the listed test site of their own benc
     assert.equal(started.test_site, site);
     await finished(w.dev, started.job);
     assert.deepEqual(testRunSite(w), [[site, w.bench]]);
-    // the other bench's site is never asked about; the choice is checked once
-    assert.deepEqual(w.listApps, [site]);
+    // the other bench's site is never asked about; the choice is checked when made and again by
+    // start_work's readiness check, never by run_tests
+    assert.deepEqual(w.listApps, [site, site]);
   }
 });
 
@@ -1350,6 +1351,61 @@ test("fix does only its own bench commands, on a site of this bench", async (t) 
     ["--site", "dev.localhost", "set-maintenance-mode", "off"],
     ["set-config", "-g", "maintenance_mode", "0"],
   ]);
+});
+
+// --- CodeRabbit on #34 -----------------------------------------------------------------------
+
+test("a fix holds the bench while it runs: no migrate, test run or other fix starts beside it", async (t) => {
+  const w = world(t);
+  await readyBranch(w);
+  fs.writeFileSync(path.join(w.bench, "sites", "dev.localhost", "site_config.json"), '{"allow_tests": true, "maintenance_mode": 1}\n');
+  let release;
+  w.hooks.holdBench = new Promise((r) => {
+    release = r;
+  });
+  const fixing = w.dev.runDev({ action: "fix", fix: "maintenance_off", site: "dev.localhost" });
+  await waitUntil(() => w.benchRuns.some((r) => r.args.includes("set-maintenance-mode")));
+  await assert.rejects(w.dev.runDev({ action: "bench", command: "migrate" }), { code: "BUSY", message: /fix maintenance_off/ });
+  await assert.rejects(w.dev.runDev({ action: "run_tests" }), { code: "BUSY", message: /fix maintenance_off/ });
+  await assert.rejects(w.dev.runDev({ action: "fix", fix: "allow_tests", site: "dev.localhost" }), { code: "BUSY" });
+  w.hooks.holdBench = null;
+  release();
+  assert.deepEqual((await fixing).fixed, ["bench --site dev.localhost set-maintenance-mode off"]);
+  // released afterwards, also when a fix fails
+  w.answers.bench = { code: 1, stdout: "", stderr: "boom" };
+  await assert.rejects(w.dev.runDev({ action: "fix", fix: "allow_tests", site: "dev.localhost" }), { code: "BENCH_FAILED" });
+  w.answers.bench = { code: 0, stdout: "ok\n", stderr: "" };
+  assert.ok((await w.dev.runDev({ action: "bench", command: "migrate" })).job);
+});
+
+test("ready reports a Redis address it cannot check, and never its password", async (t) => {
+  const w = world(t);
+  commonConfig(w, { redis_cache: "rediss://default:hunter2@127.0.0.1:13000/0", redis_queue: "unix:///tmp/redis.sock" });
+  w.servicesDown.add("127.0.0.1:13000");
+  const services = byId(await w.dev.runDev({ action: "ready" })).services;
+  assert.equal(services.ok, false);
+  assert.match(services.detail, /Redis cache \(127\.0\.0\.1:13000\)/);
+  assert.match(services.detail, /Redis queue \(a unix address this check cannot reach/);
+  assert.doesNotMatch(JSON.stringify(services), /hunter2/);
+  // a rediss address that answers is fine
+  w.servicesDown.clear();
+  commonConfig(w, { redis_cache: "rediss://default:hunter2@127.0.0.1:13000/0" });
+  assert.equal(byId(await w.dev.runDev({ action: "ready" })).services.ok, true);
+});
+
+test("ready checks a remembered test site again", async (t) => {
+  const w = world(t);
+  assert.equal((await w.dev.runDev({ action: "status" })).test_site, "dev.localhost"); // remembered
+  fs.writeFileSync(path.join(w.bench, "sites", "dev.localhost", "site_config.json"), "{}\n"); // tests turned off since
+  const site = byId(await w.dev.runDev({ action: "ready" })).test_site;
+  assert.equal(site.ok, false);
+  assert.match(site.detail, /dev\.localhost, the bench's default site, cannot be the test site now: tests are off/);
+  assert.equal(site.fix.fix, "allow_tests");
+  assert.equal(site.fix.site, "dev.localhost");
+  // the app removed since
+  fs.writeFileSync(path.join(w.bench, "sites", "dev.localhost", "site_config.json"), '{"allow_tests": true}\n');
+  w.installed["dev.localhost"] = ["frappe"];
+  assert.match(byId(await w.dev.runDev({ action: "ready" })).test_site.detail, /my_app is not installed/);
 });
 
 test("a folder inside a larger repository is not taken for a repository", async (t) => {
