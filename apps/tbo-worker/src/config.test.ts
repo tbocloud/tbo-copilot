@@ -60,7 +60,7 @@ describe("loadConfig", () => {
       expect(error).toBeInstanceOf(ConfigError);
       expect((error as Error).message).toContain("TBO_HUB_URL");
       expect((error as Error).message).toContain("TBO_WORKER_API_KEY");
-      expect((error as Error).message).toContain("TBO_PROVIDER_OPENAI_API_KEY (or TBO_PROVIDER_MOONSHOT_API_KEY, or the older TBO_MODEL_API_KEY)");
+      expect((error as Error).message).toContain("TBO_PROVIDER_OPENAI_API_KEY (or TBO_PROVIDER_MOONSHOT_API_KEY, another TBO_PROVIDER_*_API_KEY, or the older TBO_MODEL_API_KEY)");
       expect((error as Error).message).not.toContain("secret-value");
     }
   });
@@ -95,6 +95,25 @@ describe("loadConfig", () => {
     ]);
     // the older single model keeps working beside them
     expect(both.model).toMatchObject({ modelId: "kimi-k2.6", apiKey: "m" });
+  });
+
+  it("knows the provider accounts TBO Support can name, each by its own key", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
+    const cfg = loadConfig({
+      dir,
+      env: { ...required, TBO_PROVIDER_DEEPSEEK_API_KEY: "sk-d", TBO_PROVIDER_QWEN_API_KEY: "sk-q", TBO_PROVIDER_CLAUDE_API_KEY: "sk-c" },
+    });
+    expect(cfg.providers.map((provider) => [provider.section, provider.baseUrl, provider.apiStyle, provider.supportsImages])).toEqual([
+      ["DeepSeek", "https://api.deepseek.com", "chat_completions", false],
+      ["Qwen", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "chat_completions", false],
+      ["Claude", "https://api.anthropic.com", "anthropic_messages", true],
+    ]);
+    // a Qwen key from another region goes to that region's address
+    const beijing = loadConfig({
+      dir,
+      env: { ...required, TBO_PROVIDER_QWEN_API_KEY: "sk-q", TBO_PROVIDER_QWEN_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+    });
+    expect(beijing.providers[0]!.baseUrl).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1");
   });
 
   it("keeps the older model's provider name apart from the providers'", () => {
