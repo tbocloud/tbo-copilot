@@ -42,6 +42,8 @@ export const PROVIDERS = [
   { prefix: "TBO_PROVIDER_QWEN", section: "Qwen", providerName: "TBO Worker · Qwen", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", apiStyle: "chat_completions", images: false },
   { prefix: "TBO_PROVIDER_CLAUDE", section: "Claude", providerName: "TBO Worker · Claude", baseUrl: "https://api.anthropic.com", apiStyle: "anthropic_messages", images: true },
   { prefix: "TBO_PROVIDER_GPT", section: "GPT", providerName: "TBO Worker · GPT", baseUrl: "https://api.openai.com/v1", apiStyle: "responses", images: true },
+  // every model through the TBO AI gateway (Phase 37), on this same machine: TBO Support names the gateway's models
+  { prefix: "TBO_PROVIDER_GATEWAY", section: "TBO AI gateway", providerName: "TBO Worker · TBO AI gateway", baseUrl: "http://127.0.0.1:4100/v1", apiStyle: "chat_completions", images: true },
 ] as const;
 
 export type Limits = {

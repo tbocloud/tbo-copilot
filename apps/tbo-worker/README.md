@@ -135,6 +135,9 @@ TBO_PROVIDER_MOONSHOT_API_KEY=...     # TBO Support's Anthropic-compatible secti
 # TBO_PROVIDER_CLAUDE_API_KEY=...     # "Claude"    https://api.anthropic.com
 # TBO_PROVIDER_GPT_API_KEY=...        # "GPT"       https://api.openai.com/v1
 # A job whose model is on a provider this worker has no key for goes to its backup.
+# Every model through the TBO AI gateway (Phase 37), on this machine:
+# TBO_PROVIDER_GATEWAY_API_KEY=...    # "TBO AI gateway"  http://127.0.0.1:4100/v1 (the worker's gateway key)
+#                                     # then the direct keys above can go
 # Optional, with these defaults:
 # TBO_PROVIDER_OPENAI_BASE_URL=https://api.openai.com/v1
 # TBO_PROVIDER_OPENAI_API_STYLE=responses

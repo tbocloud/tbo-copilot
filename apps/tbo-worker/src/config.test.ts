@@ -116,6 +116,14 @@ describe("loadConfig", () => {
     expect(beijing.providers[0]!.baseUrl).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1");
   });
 
+  it("reaches the TBO AI gateway on this machine with its own gateway key", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
+    const cfg = loadConfig({ dir, env: { ...required, TBO_PROVIDER_GATEWAY_API_KEY: "sk-worker-gateway" } });
+    expect(cfg.providers.map((provider) => [provider.section, provider.baseUrl, provider.apiStyle])).toEqual([
+      ["TBO AI gateway", "http://127.0.0.1:4100/v1", "chat_completions"],
+    ]);
+  });
+
   it("keeps the older model's provider name apart from the providers'", () => {
     const dir = mkdtempSync(join(tmpdir(), "tbo-worker-config-"));
     expect(() => loadConfig({ dir, env: { ...required, TBO_MODEL_PROVIDER_NAME: "TBO Worker · OpenAI" } })).toThrow("TBO_MODEL_PROVIDER_NAME must not be");
