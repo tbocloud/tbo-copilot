@@ -13,6 +13,7 @@ import { runInfraTool, type InfraTools } from "./infra-tools.js";
 import type { Logger } from "./log.js";
 import { StageModels, noModelReason, stageModels, type StageModel } from "./models.js";
 import { RunBudget, smallestCap } from "./policy.js";
+import { siteAppNames } from "./references.js";
 import { runPrFixJob, type PrFixReport } from "./pr-fix.js";
 import { runPrFixTool, type PrFixToolState } from "./pr-fix-tools.js";
 import { runReleaseCheck, type ReleaseCheckReport } from "./release-check.js";
@@ -308,6 +309,7 @@ export class Worker {
       const tools: RunTools = {
         runToken: `${job.run}:${job.lease_token}`,
         apps: Object.fromEntries(workspace.apps.map((app) => [app.app, app.dir])),
+        installedApps: siteAppNames(job.context),
         homeDir: this.cfg.homeDir,
         cost: () => budget.cost(),
         beforeSubmit: () => outbox.flush(),

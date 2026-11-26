@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { checkReferences, citedDoctypes, citedFiles } from "./references.js";
+import { checkReferences, citedDoctypes, citedFiles, siteAppNames } from "./references.js";
 
 let root = "";
 let apps: Record<string, string> = {};
@@ -94,6 +94,13 @@ describe("checking them against the code", () => {
     expect(checkReferences(cites, apps)).toEqual({ checked: 0, missing: [] });
     expect(checkReferences(cites, apps, ["frappe", "erpnext", "acme"])).toEqual({ checked: 0, missing: [] });
     expect(checkReferences(cites, apps, ["acme"])).toEqual({ checked: 1, missing: [{ kind: "doctype", value: "Sales Invoice" }] });
+  });
+
+  it("takes the site's apps from the run context's site card, once each", () => {
+    expect(siteAppNames({ site: { apps: [{ app: "frappe" }, { app: "erpnext" }, { app: "frappe" }, { app: " " }] } })).toEqual(["frappe", "erpnext"]);
+    expect(siteAppNames({ site: { apps: [] } })).toBeUndefined();
+    expect(siteAppNames({ site: null })).toBeUndefined();
+    expect(siteAppNames({})).toBeUndefined();
   });
 
   it("never leaves the checkout, and checks nothing without one", () => {

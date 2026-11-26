@@ -39,6 +39,15 @@ export function citedFiles(report: Record<string, unknown>): { path: string; lin
   return [...found.values()];
 }
 
+/**
+ * The site's apps from the run context: the site card's list, which TBO Support refreshes from the
+ * site itself before a run. Unknown (no card, or an empty list): undefined, and doctypes go unchecked.
+ */
+export function siteAppNames(context: { site?: { apps?: Array<{ app?: string | null }> } | null }): string[] | undefined {
+  const names = (context.site?.apps ?? []).map((row) => (row.app ?? "").trim()).filter(Boolean);
+  return names.length ? [...new Set(names)] : undefined;
+}
+
 /** The doctypes the evidence names as such: [{type: "doctype", ref: "Sales Invoice"}]. */
 export function citedDoctypes(report: Record<string, unknown>): string[] {
   const names = new Set<string>();

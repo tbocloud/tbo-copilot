@@ -194,6 +194,11 @@ export const TOOL_DEFINITIONS: PluginToolDef[] = [
 export type RunTools = {
   runToken: string;
   apps: Record<string, string>;
+  /**
+   * The site's apps as its card lists them (TBO Support refreshes the card from the site before the
+   * run). Cited doctypes are checked only when every one of them is checked out; unknown: never.
+   */
+  installedApps?: string[];
   homeDir: string;
   /** Tokens, dollars and the model so far; replaces whatever cost the model reports. */
   cost: () => Record<string, unknown>;
@@ -333,7 +338,7 @@ export async function runTool(hub: HubClient, tools: RunTools, name: string, inp
         // and never a reason to hold the report back
         let references: ReferenceCheck | undefined;
         try {
-          references = checkReferences(args, tools.apps);
+          references = checkReferences(args, tools.apps, tools.installedApps);
         } catch {
           references = undefined;
         }
