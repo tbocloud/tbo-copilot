@@ -37,6 +37,13 @@ export const PROVIDERS = [
   { prefix: "TBO_PROVIDER_OPENAI", section: "OpenAI", providerName: "TBO Worker · OpenAI", baseUrl: "https://api.openai.com/v1", apiStyle: "responses", images: true },
   // Kimi: TBO Support reaches it through its Anthropic-compatible section, the engine through Moonshot's OpenAI-compatible address
   { prefix: "TBO_PROVIDER_MOONSHOT", section: "Anthropic-compatible", providerName: "TBO Worker · Moonshot", baseUrl: "https://api.moonshot.ai/v1", apiStyle: "chat_completions", images: false },
+  // provider accounts added under AI models → Model settings, by the same names as its presets
+  { prefix: "TBO_PROVIDER_DEEPSEEK", section: "DeepSeek", providerName: "TBO Worker · DeepSeek", baseUrl: "https://api.deepseek.com", apiStyle: "chat_completions", images: false },
+  { prefix: "TBO_PROVIDER_QWEN", section: "Qwen", providerName: "TBO Worker · Qwen", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", apiStyle: "chat_completions", images: false },
+  { prefix: "TBO_PROVIDER_CLAUDE", section: "Claude", providerName: "TBO Worker · Claude", baseUrl: "https://api.anthropic.com", apiStyle: "anthropic_messages", images: true },
+  { prefix: "TBO_PROVIDER_GPT", section: "GPT", providerName: "TBO Worker · GPT", baseUrl: "https://api.openai.com/v1", apiStyle: "responses", images: true },
+  // every model through the TBO AI gateway (Phase 37), on this same machine: TBO Support names the gateway's models
+  { prefix: "TBO_PROVIDER_GATEWAY", section: "TBO AI gateway", providerName: "TBO Worker · TBO AI gateway", baseUrl: "http://127.0.0.1:4100/v1", apiStyle: "chat_completions", images: true },
 ] as const;
 
 export type Limits = {
@@ -244,7 +251,7 @@ export function loadConfig(options: { env?: NodeJS.ProcessEnv; dir?: string } = 
   if (apiKey && PROVIDERS.some((provider) => provider.providerName === modelProviderName)) {
     throw new ConfigError(`TBO_MODEL_PROVIDER_NAME must not be "${modelProviderName}": that name belongs to a TBO_PROVIDER_* provider`);
   }
-  if (!apiKey && !providers.length) missing.push("TBO_PROVIDER_OPENAI_API_KEY (or TBO_PROVIDER_MOONSHOT_API_KEY, or the older TBO_MODEL_API_KEY)");
+  if (!apiKey && !providers.length) missing.push("TBO_PROVIDER_OPENAI_API_KEY (or TBO_PROVIDER_MOONSHOT_API_KEY, another TBO_PROVIDER_*_API_KEY, or the older TBO_MODEL_API_KEY)");
   const hostCoreBinary = env.TBO_HOST_CORE_BIN?.trim() || findHostCore() || "";
   const sidecarEntry = env.TBO_SIDECAR?.trim() || findSidecar() || "";
   if (!hostCoreBinary) missing.push("TBO_HOST_CORE_BIN (no built pi-desktop-host-core found)");

@@ -177,3 +177,47 @@ export function reportMarkdown(results: EvalResult[], meta: { model: string; dat
   lines.push("");
   return lines.join("\n");
 }
+
+/** One case's score for TBO Support's AI models page: its number and figures, nothing else. */
+export type EvalScore = {
+  case: string;
+  right: boolean;
+  confidence: number | null;
+  filesFound: number;
+  tokens: number;
+  costUsd: number;
+  minutes: number;
+  outcome: string;
+};
+
+/**
+ * What a run of the test set sends to the hub: per case, its id and its scores. The case's
+ * ticket, repository, expected answer and Copilot's own summary stay on this machine.
+ */
+export function evalScores(results: EvalResult[]): EvalScore[] {
+  return results.map((result) => ({
+    case: result.case.id,
+    right: result.right,
+    confidence: result.confidence,
+    filesFound: result.filesFound.length,
+    tokens: result.tokens,
+    costUsd: result.costUsd,
+    minutes: result.minutes,
+    outcome: result.outcome,
+  }));
+}
+
+/** The file written beside a report for TBO Support's "Bring in a report": each model's scores only. */
+export type ScoresFile = { ranOn: string; job: "investigate"; models: Record<string, EvalScore[]> };
+
+/**
+ * Each model's cases (a case answered by two models, after a fallback, counts for both), as scores
+ * only. This file may leave the machine; the report beside it may not.
+ */
+export function scoresByModel(results: EvalResult[], ranOn: string): ScoresFile {
+  const models: Record<string, EvalScore[]> = {};
+  for (const model of new Set(results.flatMap((result) => result.model.split(", ")).filter(Boolean))) {
+    models[model] = evalScores(results.filter((result) => result.model.split(", ").includes(model)));
+  }
+  return { ranOn, job: "investigate", models };
+}

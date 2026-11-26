@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { WorkerConfig } from "./config.js";
-import { filesNamed, reportMarkdown, runEvaluation, score, type EvalCase, type EvalResult } from "./evaluate.js";
+import { evalScores, filesNamed, reportMarkdown, runEvaluation, score, scoresByModel, type EvalCase, type EvalResult } from "./evaluate.js";
 import type { HubClient } from "./hub.js";
 import type { Worker } from "./supervisor.js";
 
@@ -108,5 +108,54 @@ describe("reportMarkdown", () => {
     expect(markdown).toContain("| Share of tokens served from the provider's cache | 75% |");
     expect(markdown).toContain("| A6 | 0001 | bug | bug | 0.8 | yes | 1 of 2 | 12 | 40000 | 3.5 | submitted |");
     expect(markdown).toContain("The margin / formula");
+  });
+});
+
+describe("scoresByModel", () => {
+  it("files each case under every model that answered it, as scores only", () => {
+    const base = { run: "CPR-1", outcome: "submitted", rootCause: "bug", confidence: 0.8, right: true, filesFound: [], summary: "A private diagnosis", toolCalls: 3, tokens: 10, tokensCached: 0, costUsd: 0.01, minutes: 1 } as const;
+    const results = [
+      { ...base, case: bug, model: "kimi-k2.6" },
+      { ...base, case: { ...bug, id: "A7" }, model: "kimi-k2.6, gpt-5.6-luna", right: false },
+      { ...base, case: { ...bug, id: "A8" }, model: "", outcome: "not_started" },
+    ] as EvalResult[];
+
+    const file = scoresByModel(results, "2026-11-26");
+
+    expect(file.ranOn).toBe("2026-11-26");
+    expect(Object.keys(file.models)).toEqual(["kimi-k2.6", "gpt-5.6-luna"]);
+    expect(file.models["kimi-k2.6"].map((s) => s.case)).toEqual(["A6", "A7"]);
+    expect(file.models["gpt-5.6-luna"].map((s) => [s.case, s.right])).toEqual([["A7", false]]);
+    const text = JSON.stringify(file);
+    for (const secret of ["private diagnosis", "acme/billing-app", "0001", "expected_root_cause", "fix_files"]) expect(text).not.toContain(secret);
+  });
+});
+
+describe("evalScores", () => {
+  it("sends each case's number and scores, and nothing of the case or the summary", () => {
+    const result = {
+      case: bug,
+      run: "CPR-1",
+      outcome: "submitted",
+      rootCause: "bug",
+      confidence: 0.8,
+      right: true,
+      filesFound: ["billing_app/hooks.py"],
+      summary: "A private diagnosis",
+      toolCalls: 12,
+      tokens: 40_000,
+      tokensCached: 30_000,
+      costUsd: 0.05,
+      model: "kimi-k2.6",
+      minutes: 3.5,
+    } as EvalResult;
+    const scores = evalScores([result]);
+    expect(scores).toEqual([
+      { case: bug.id, right: true, confidence: 0.8, filesFound: 1, tokens: 40_000, costUsd: 0.05, minutes: 3.5, outcome: "submitted" },
+    ]);
+    const sent = JSON.stringify(scores);
+    for (const secret of ["A private diagnosis", bug.ticket, bug.repository, bug.base_commit, "billing_app/hooks.py"]) {
+      expect(sent).not.toContain(secret);
+    }
   });
 });

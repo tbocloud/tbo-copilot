@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { HubError, type HubClient } from "./hub.js";
@@ -61,6 +64,33 @@ describe("the run's tools", () => {
     const signatures = ["alpha_trading | alpha_trading.accounts.margin.validate | AttributeError: no get_minimum_margin"];
     await runTool(hub, runTools(), "hub_submit_investigation", { ...report, error_signatures: signatures });
     expect(calls[0]!.args.error_signatures).toEqual(signatures);
+  });
+
+  it("check cited doctypes only when every app of the site is checked out", async () => {
+    const root = mkdtempSync(join(tmpdir(), "tools-refs-"));
+    try {
+      const app = join(root, "acme");
+      mkdirSync(join(app, "acme", "doctype", "acme_order"), { recursive: true });
+      const cites = { ...report, evidence: [{ type: "doctype", ref: "Acme Ghost" }, { type: "doctype", ref: "Acme Order" }] };
+
+      const complete = fakeHub(() => ({ text: "ok", isError: false }));
+      await runTool(complete.hub, runTools({ apps: { acme: app }, installedApps: ["acme"] }), "hub_submit_investigation", cites);
+      expect(complete.calls[0]!.args.references).toEqual({ checked: 2, missing: [{ kind: "doctype", value: "Acme Ghost" }] });
+
+      // a site app without a checkout: a missing doctype could be in it, so none is checked
+      const partial = fakeHub(() => ({ text: "ok", isError: false }));
+      await runTool(partial.hub, runTools({ apps: { acme: app }, installedApps: ["frappe", "acme"] }), "hub_submit_investigation", cites);
+      expect(partial.calls[0]!.args).not.toHaveProperty("references");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never pass on a references field the model wrote itself", async () => {
+    const { hub, calls } = fakeHub(() => ({ text: "Run CPR-1 is now Preparing Fix.", isError: false }));
+    const forged = { checked: 9, missing: [] };
+    await runTool(hub, runTools(), "hub_submit_investigation", { ...report, references: forged });
+    expect(calls[0]!.args).not.toHaveProperty("references");
   });
 
   it("tell the model what to fix in a report before sending it", async () => {

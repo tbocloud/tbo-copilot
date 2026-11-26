@@ -128,6 +128,16 @@ TBO_WORKER_API_SECRET=...
 # (Settings → AI providers → Models per job) and its price; the key only goes to the address here.
 TBO_PROVIDER_OPENAI_API_KEY=...       # TBO Support's OpenAI section
 TBO_PROVIDER_MOONSHOT_API_KEY=...     # TBO Support's Anthropic-compatible section (Kimi)
+# Provider accounts added in TBO Support (AI models → Model settings), by the same names:
+# TBO_PROVIDER_DEEPSEEK_API_KEY=...   # "DeepSeek"  https://api.deepseek.com
+# TBO_PROVIDER_QWEN_API_KEY=...       # "Qwen"      https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+#                                     #             (a key works only in its own region: set _BASE_URL for another)
+# TBO_PROVIDER_CLAUDE_API_KEY=...     # "Claude"    https://api.anthropic.com
+# TBO_PROVIDER_GPT_API_KEY=...        # "GPT"       https://api.openai.com/v1
+# A job whose model is on a provider this worker has no key for goes to its backup.
+# Every model through the TBO AI gateway (Phase 37), on this machine:
+# TBO_PROVIDER_GATEWAY_API_KEY=...    # "TBO AI gateway"  http://127.0.0.1:4100/v1 (the worker's gateway key)
+#                                     # then the direct keys above can go
 # Optional, with these defaults:
 # TBO_PROVIDER_OPENAI_BASE_URL=https://api.openai.com/v1
 # TBO_PROVIDER_OPENAI_API_STYLE=responses

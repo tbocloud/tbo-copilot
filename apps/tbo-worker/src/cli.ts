@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { ConfigError, envFilePath, envFileWarning, githubTokenFromGh, loadConfig, type WorkerConfig } from "./config.js";
 import { Engine } from "./engine.js";
-import { loadCases, reportMarkdown, runEvaluation } from "./evaluate.js";
+import { loadCases, reportMarkdown, runEvaluation, scoresByModel } from "./evaluate.js";
 import { BUILD_PERSONA, BUILD_RULES, FIX_PERSONA, FIX_RULES, REVIEW_PERSONA, REVIEW_RULES } from "./fix-prompt.js";
 import { FIX_TOOL_DEFINITIONS, REVIEW_TOOL_DEFINITIONS } from "./fix-tools.js";
 import { HubClient } from "./hub.js";
@@ -24,8 +24,9 @@ const USAGE = `tbo-worker <command>
   start                 claim Copilot runs from TBO Support and investigate them until stopped (Ctrl-C)
   once [--run NAME]     investigate one queued run (the named one, if given) and exit
   check                 check the settings, the hub key and the engine; the model is not called
-  eval --cases FILE [--only A1,A2] [--report FILE]
-                        run the evaluation cases (needs an agent's key) and write a report
+  eval --cases FILE [--only A1,A2] [--report FILE] [--to-hub] [--request NAME]
+                        run the evaluation cases (needs an agent's key) and write a report, plus a
+                        scores-only file for TBO Support (--to-hub sends those scores itself)
 
 Settings come from ~/.tbo-worker/env (set TBO_WORKER_DIR for another folder);
 see apps/tbo-worker/README.md.`;
@@ -148,7 +149,18 @@ export async function main(argv: string[]): Promise<number> {
         await mkdir(join(reportFile, ".."), { recursive: true });
         await writeFile(reportFile, markdown);
         await writeFile(reportFile.replace(/\.md$/, "") + ".json", JSON.stringify(results, null, 1));
-        process.stdout.write(`${markdown}\nReport written to ${reportFile}\n`);
+        // scores per case number only: the cases and Copilot's summaries stay in the report
+        const scores = scoresByModel(results, date.slice(0, 10));
+        const scoresFile = reportFile.replace(/\.md$/, "") + ".scores.json";
+        await writeFile(scoresFile, JSON.stringify(scores, null, 1));
+        process.stdout.write(`${markdown}\nReport written to ${reportFile}\nScores only, for TBO Support's "Bring in a report": ${scoresFile}\n`);
+        if (args.includes("--to-hub")) {
+          for (const [model, mine] of Object.entries(scores.models)) {
+            const sent = await hub.reportEval(model, mine, "investigate", option(args, "--request"));
+            process.stdout.write(`Sent ${mine.length} scores for ${model} to TBO Support (${sent.eval_run}).\n`);
+          }
+          if (!used) process.stdout.write("Nothing sent to TBO Support: no model answered.\n");
+        }
         return 0;
       }
       default:
