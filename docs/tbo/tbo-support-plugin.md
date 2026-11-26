@@ -213,7 +213,6 @@ their role allows.
      `copilot-gateway.tbocloud.in`, is listed for that and is never accepted as a TBO Support address).
    - The model picker refreshes as soon as the key is set. The row offers the gateway's model names:
      - `tbo-default` (**TBO AI**);
-     - `tbo-deepseek` (**TBO AI · DeepSeek**, text only);
      - the four levels `tbo-simple`, `tbo-medium`, `tbo-hard` and `tbo-very-hard` (**TBO AI · Simple** …
        **Very hard**, text only).
 

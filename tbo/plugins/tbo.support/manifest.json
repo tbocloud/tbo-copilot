@@ -425,11 +425,6 @@
             "supportsImages": true
           },
           {
-            "id": "tbo-deepseek",
-            "name": "TBO AI · DeepSeek",
-            "supportsImages": false
-          },
-          {
             "id": "tbo-simple",
             "name": "TBO AI · Simple",
             "supportsImages": false

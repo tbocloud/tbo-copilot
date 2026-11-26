@@ -14,13 +14,12 @@ test("the manifest's three tools match the code's tools exactly", () => {
   assert.deepEqual(manifest.contributes.agentTools.map(pick), [pick(TOOL), pick(CHANGE_TOOL), pick(AWS_TOOL)]);
 });
 
-test("TBO AI's models: the two first names and the four levels set on TBO Support's AI models page", () => {
+test("TBO AI's models: TBO AI and the four levels set on TBO Support's AI models page", () => {
   const ai = manifest.contributes.providers.find((p) => p.id === "tbo-ai");
   assert.deepEqual(
     ai.models.map((m) => [m.id, m.name]),
     [
       ["tbo-default", "TBO AI"],
-      ["tbo-deepseek", "TBO AI · DeepSeek"],
       ["tbo-simple", "TBO AI · Simple"],
       ["tbo-medium", "TBO AI · Medium"],
       ["tbo-hard", "TBO AI · Hard"],
@@ -88,13 +87,10 @@ test("TBO AI is declared without an address: the sign-in sets it", () => {
   assert.equal(provider.id, "tbo-ai");
   assert.equal(provider.baseUrl, undefined);
   assert.equal(provider.authKind, "api_key");
-  assert.deepEqual(provider.models.map((m) => m.id).slice(0, 2), ["tbo-default", "tbo-deepseek"]);
+  assert.equal(provider.models[0].id, "tbo-default");
 });
 
-test("TBO AI offers the gateway's two models; DeepSeek reads text only (Phase 23, C17)", () => {
+test("TBO AI no longer offers tbo-deepseek: Bedrock is off (the owner, 26 Nov 2026)", () => {
   const [provider] = manifest.contributes.providers;
-  const deepseek = provider.models.find((m) => m.id === "tbo-deepseek");
-  assert.ok(deepseek, "tbo-deepseek is listed next to tbo-default");
-  assert.match(deepseek.name, /DeepSeek/);
-  assert.equal(deepseek.supportsImages, false);
+  assert.equal(provider.models.find((m) => m.id === "tbo-deepseek"), undefined);
 });
