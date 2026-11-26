@@ -13,7 +13,17 @@ import { normalizeChangelogVersion } from "./changelog-runtime.js";
  * (docs/tbo/README.md, "Releasing a version"). Keep each highlight to one idea
  * that a TBO engineer would notice; leave out customer names.
  */
-export const tboEntries: readonly ChangelogEntry[] = [];
+export const tboEntries: readonly ChangelogEntry[] = [
+  {
+    version: "0.16.2",
+    date: "2026-11-26",
+    highlights: [
+      "TBO AI offers four levels, Simple, Medium, Hard and Very hard: pick the one that fits the question. Their models are chosen on TBO Support's AI models page.",
+      "TBO AI · DeepSeek is gone. When DeepSeek is wanted, it is one of the levels' models.",
+      "File search gives the right results when a file changes during the search, and in folders reached through links.",
+    ],
+  },
+];
 
 /** TBO Copilot's notes for a version, if it has any. */
 export function getTboChangelogEntry(

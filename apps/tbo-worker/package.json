@@ -1,6 +1,6 @@
 {
   "name": "@tbo/worker",
-  "version": "0.1.0",
+  "version": "0.16.2",
   "private": true,
   "type": "module",
   "description": "TBO Copilot worker: claims Copilot runs from TBO Support and investigates them read-only with the pi engine",
