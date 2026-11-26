@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { WorkerConfig } from "./config.js";
-import { filesNamed, reportMarkdown, runEvaluation, score, type EvalCase, type EvalResult } from "./evaluate.js";
+import { evalScores, filesNamed, reportMarkdown, runEvaluation, score, type EvalCase, type EvalResult } from "./evaluate.js";
 import type { HubClient } from "./hub.js";
 import type { Worker } from "./supervisor.js";
 
@@ -108,5 +108,34 @@ describe("reportMarkdown", () => {
     expect(markdown).toContain("| Share of tokens served from the provider's cache | 75% |");
     expect(markdown).toContain("| A6 | 0001 | bug | bug | 0.8 | yes | 1 of 2 | 12 | 40000 | 3.5 | submitted |");
     expect(markdown).toContain("The margin / formula");
+  });
+});
+
+describe("evalScores", () => {
+  it("sends each case's number and scores, and nothing of the case or the summary", () => {
+    const result = {
+      case: bug,
+      run: "CPR-1",
+      outcome: "submitted",
+      rootCause: "bug",
+      confidence: 0.8,
+      right: true,
+      filesFound: ["billing_app/hooks.py"],
+      summary: "A private diagnosis",
+      toolCalls: 12,
+      tokens: 40_000,
+      tokensCached: 30_000,
+      costUsd: 0.05,
+      model: "kimi-k2.6",
+      minutes: 3.5,
+    } as EvalResult;
+    const scores = evalScores([result]);
+    expect(scores).toEqual([
+      { case: bug.id, right: true, confidence: 0.8, filesFound: 1, tokens: 40_000, costUsd: 0.05, minutes: 3.5, outcome: "submitted" },
+    ]);
+    const sent = JSON.stringify(scores);
+    for (const secret of ["A private diagnosis", bug.ticket, bug.repository, bug.base_commit, "billing_app/hooks.py"]) {
+      expect(sent).not.toContain(secret);
+    }
   });
 });

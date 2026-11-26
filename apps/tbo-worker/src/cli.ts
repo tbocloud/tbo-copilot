@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { ConfigError, envFilePath, envFileWarning, githubTokenFromGh, loadConfig, type WorkerConfig } from "./config.js";
 import { Engine } from "./engine.js";
-import { loadCases, reportMarkdown, runEvaluation } from "./evaluate.js";
+import { evalScores, loadCases, reportMarkdown, runEvaluation } from "./evaluate.js";
 import { BUILD_PERSONA, BUILD_RULES, FIX_PERSONA, FIX_RULES, REVIEW_PERSONA, REVIEW_RULES } from "./fix-prompt.js";
 import { FIX_TOOL_DEFINITIONS, REVIEW_TOOL_DEFINITIONS } from "./fix-tools.js";
 import { HubClient } from "./hub.js";
@@ -24,7 +24,7 @@ const USAGE = `tbo-worker <command>
   start                 claim Copilot runs from TBO Support and investigate them until stopped (Ctrl-C)
   once [--run NAME]     investigate one queued run (the named one, if given) and exit
   check                 check the settings, the hub key and the engine; the model is not called
-  eval --cases FILE [--only A1,A2] [--report FILE]
+  eval --cases FILE [--only A1,A2] [--report FILE] [--to-hub]
                         run the evaluation cases (needs an agent's key) and write a report
 
 Settings come from ~/.tbo-worker/env (set TBO_WORKER_DIR for another folder);
@@ -149,6 +149,15 @@ export async function main(argv: string[]): Promise<number> {
         await writeFile(reportFile, markdown);
         await writeFile(reportFile.replace(/\.md$/, "") + ".json", JSON.stringify(results, null, 1));
         process.stdout.write(`${markdown}\nReport written to ${reportFile}\n`);
+        if (args.includes("--to-hub")) {
+          // scores per case number only: the cases and Copilot's summaries stay here
+          for (const model of used ? used.split(", ") : []) {
+            const mine = results.filter((result) => result.model.split(", ").includes(model));
+            const sent = await hub.reportEval(model, evalScores(mine), "investigate", option(args, "--request"));
+            process.stdout.write(`Sent ${mine.length} scores for ${model} to TBO Support (${sent.eval_run}).\n`);
+          }
+          if (!used) process.stdout.write("Nothing sent to TBO Support: no model answered.\n");
+        }
         return 0;
       }
       default:

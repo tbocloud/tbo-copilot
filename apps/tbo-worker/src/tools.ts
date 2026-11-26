@@ -1,4 +1,5 @@
 import type { PluginToolDef } from "@pi-desktop/agent-runtime";
+import { checkReferences, type ReferenceCheck } from "./references.js";
 import type { LocalToolResult } from "@pi-desktop/host-runtime";
 
 import { HubError, type HubClient } from "./hub.js";
@@ -328,7 +329,19 @@ export async function runTool(hub: HubClient, tools: RunTools, name: string, inp
         const problem = checkReport(args, tools.prepareCorrection === true);
         if (problem) return result(false, `Not submitted: ${problem}. Fix it and call hub_submit_investigation again.`);
         await tools.beforeSubmit();
-        const reply = await hub.callTool(tools.runToken, "submit_investigation", { ...args, cost: tools.cost() });
+        // which cited files, lines and doctypes exist: checked by the worker, never by the model,
+        // and never a reason to hold the report back
+        let references: ReferenceCheck | undefined;
+        try {
+          references = checkReferences(args, tools.apps);
+        } catch {
+          references = undefined;
+        }
+        const reply = await hub.callTool(tools.runToken, "submit_investigation", {
+          ...args,
+          cost: tools.cost(),
+          ...(references && references.checked ? { references } : {}),
+        });
         if (reply.isError) return result(false, `TBO Support refused the report: ${reply.text}`);
         tools.submitted(reply.text);
         return result(true, `Submitted. ${reply.text}\nReply with one short sentence and stop.`);

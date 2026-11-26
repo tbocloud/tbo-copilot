@@ -414,6 +414,15 @@ export class HubClient {
   }
 
   /** A fix job's one-hour key to clone and push one of the site's repositories (the hub's GitHub App). */
+  /** A run of the test set, as scores per case number, for the AI models page (Phase 31). */
+  async reportEval(model: string, results: unknown[], job = "investigate", request?: string): Promise<{ eval_run: string }> {
+    return this.method(
+      "helpdesk.api.copilot_worker.report_eval",
+      { model, results, job, ...(request ? { request } : {}) },
+      this.worker,
+    );
+  }
+
   async repoToken(run: string, leaseToken: string, repository: string): Promise<{ token: string; expires_at: string; repository: string }> {
     return this.method("helpdesk.api.copilot_worker.repo_token", { run, lease_token: leaseToken, repository }, this.worker);
   }
