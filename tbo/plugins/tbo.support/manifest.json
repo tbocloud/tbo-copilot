@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "tbo.support",
   "name": "TBO Support",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Signs TBO Copilot in with your Microsoft account through TBO Support, gives it TBO AI, lets the agent read TBO Support tickets and TBO's Press, and checks TBO's AWS with your own AWS login. The app asks you before every change, and Press actions and AWS changes then wait for an approver in Teams; Press deletes are never offered, and AWS delete and terminate operations are blocked.",
   "author": "Team Back Office",
   "main": "main.js",
@@ -427,6 +427,26 @@
           {
             "id": "tbo-deepseek",
             "name": "TBO AI · DeepSeek",
+            "supportsImages": false
+          },
+          {
+            "id": "tbo-simple",
+            "name": "TBO AI · Simple",
+            "supportsImages": false
+          },
+          {
+            "id": "tbo-medium",
+            "name": "TBO AI · Medium",
+            "supportsImages": false
+          },
+          {
+            "id": "tbo-hard",
+            "name": "TBO AI · Hard",
+            "supportsImages": false
+          },
+          {
+            "id": "tbo-very-hard",
+            "name": "TBO AI · Very hard",
             "supportsImages": false
           }
         ]

@@ -14,6 +14,23 @@ test("the manifest's three tools match the code's tools exactly", () => {
   assert.deepEqual(manifest.contributes.agentTools.map(pick), [pick(TOOL), pick(CHANGE_TOOL), pick(AWS_TOOL)]);
 });
 
+test("TBO AI's models: the two first names and the four levels set on TBO Support's AI models page", () => {
+  const ai = manifest.contributes.providers.find((p) => p.id === "tbo-ai");
+  assert.deepEqual(
+    ai.models.map((m) => [m.id, m.name]),
+    [
+      ["tbo-default", "TBO AI"],
+      ["tbo-deepseek", "TBO AI · DeepSeek"],
+      ["tbo-simple", "TBO AI · Simple"],
+      ["tbo-medium", "TBO AI · Medium"],
+      ["tbo-hard", "TBO AI · Hard"],
+      ["tbo-very-hard", "TBO AI · Very hard"],
+    ],
+  );
+  // a level's model is chosen on TBO Support and may not read pictures: pictures go with TBO AI
+  for (const m of ai.models.slice(2)) assert.equal(m.supportsImages, false, m.id);
+});
+
 test("every skill exists with a name and a short description", () => {
   assert.equal(manifest.contributes.skills.length, 5); // four AWS skills and the task skill (Phase 22)
   for (const file of manifest.contributes.skills) {
@@ -71,7 +88,7 @@ test("TBO AI is declared without an address: the sign-in sets it", () => {
   assert.equal(provider.id, "tbo-ai");
   assert.equal(provider.baseUrl, undefined);
   assert.equal(provider.authKind, "api_key");
-  assert.deepEqual(provider.models.map((m) => m.id), ["tbo-default", "tbo-deepseek"]);
+  assert.deepEqual(provider.models.map((m) => m.id).slice(0, 2), ["tbo-default", "tbo-deepseek"]);
 });
 
 test("TBO AI offers the gateway's two models; DeepSeek reads text only (Phase 23, C17)", () => {

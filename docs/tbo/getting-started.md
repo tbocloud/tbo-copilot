@@ -40,7 +40,9 @@ ask a System Manager, then press **Allow**.
 The app is then ready, with nothing to type:
 - pick **TBO AI** as the model (the panel says when it is ready). **TBO AI · DeepSeek** (DeepSeek V3.2, run in TBO's
   own AWS account) is the second choice; it reads text only, and works once TBO Support's settings list `tbo-deepseek`
-  for your key;
+  for your key. **TBO AI · Simple**, **Medium**, **Hard** and **Very hard** are the levels set on TBO Support's AI
+  models page: pick the one that fits the question. They read text only, and each works once its level has a model;
+  for pictures, use **TBO AI**;
 - TBO Support is connected as you.
 
 **Signing in again:** the sign-in lasts 30 days. If it ends, a notice says why, the TBO Support panel keeps the reason,
