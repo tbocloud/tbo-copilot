@@ -337,8 +337,10 @@ export async function runTool(hub: HubClient, tools: RunTools, name: string, inp
         } catch {
           references = undefined;
         }
+        // "references" is the worker's own check: one the model wrote into its report never goes on
+        const { references: _fromTheModel, ...report } = args;
         const reply = await hub.callTool(tools.runToken, "submit_investigation", {
-          ...args,
+          ...report,
           cost: tools.cost(),
           ...(references && references.checked ? { references } : {}),
         });

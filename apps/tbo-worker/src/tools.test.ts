@@ -63,6 +63,13 @@ describe("the run's tools", () => {
     expect(calls[0]!.args.error_signatures).toEqual(signatures);
   });
 
+  it("never pass on a references field the model wrote itself", async () => {
+    const { hub, calls } = fakeHub(() => ({ text: "Run CPR-1 is now Preparing Fix.", isError: false }));
+    const forged = { checked: 9, missing: [] };
+    await runTool(hub, runTools(), "hub_submit_investigation", { ...report, references: forged });
+    expect(calls[0]!.args).not.toHaveProperty("references");
+  });
+
   it("tell the model what to fix in a report before sending it", async () => {
     const { hub, calls } = fakeHub(() => ({ text: "", isError: false }));
     const result = await runTool(hub, runTools(), "hub_submit_investigation", { ...report, root_cause_category: "maybe" });
