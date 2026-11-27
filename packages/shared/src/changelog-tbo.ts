@@ -15,6 +15,14 @@ import { normalizeChangelogVersion } from "./changelog-runtime.js";
  */
 export const tboEntries: readonly ChangelogEntry[] = [
   {
+    version: "0.16.3",
+    date: "2026-11-27",
+    highlights: [
+      "TBO AI offers only its four levels, and a new chat starts on Medium. Pick Simple, Hard or Very hard when the question needs it.",
+      "Every level takes pictures, such as screenshots.",
+    ],
+  },
+  {
     version: "0.16.2",
     date: "2026-11-26",
     highlights: [

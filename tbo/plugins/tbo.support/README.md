@@ -14,7 +14,8 @@ Design: [`docs/tbo/tbo-support-plugin.md`](../../../docs/tbo/tbo-support-plugin.
 1. **Sign in.** TBO Copilot opens the TBO Support panel when nobody is signed in (or press `Cmd/Ctrl+K` and run
    **TBO Support: Sign in**). Press **Sign in with Microsoft**. Your browser opens TBO Support: log in with your
    Microsoft work account, check that the page shows the same code as the panel, and press **Allow**.
-2. **Use TBO AI.** Pick **TBO AI** as the model. Its key comes from the sign-in; you never see or type it.
+2. **Use TBO AI.** A new chat starts on **TBO AI · Medium**; pick **Simple**, **Hard** or **Very hard** when the question
+   needs it. Every level takes pictures. Its key comes from the sign-in; you never see or type it.
 3. **Ask the agent**, in Agent or Plan mode. For example:
    - "Summarise TBO Support ticket 1234 and show its fix brief."
    - "List my open TBO Support tickets."

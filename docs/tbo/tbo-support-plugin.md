@@ -211,14 +211,19 @@ their role allows.
      failure half way leaves no key rather than a mixed pair.
    - The app accepts the address only on a host in the plugin's `net.domains` (the gateway,
      `copilot-gateway.tbocloud.in`, is listed for that and is never accepted as a TBO Support address).
-   - The model picker refreshes as soon as the key is set. The row offers the gateway's model names:
-     - `tbo-default` (**TBO AI**);
-     - the four levels `tbo-simple`, `tbo-medium`, `tbo-hard` and `tbo-very-hard` (**TBO AI · Simple** …
-       **Very hard**, text only).
+   - The model picker refreshes as soon as the key is set. The row offers only the four levels, which are gateway
+     model names: `tbo-medium`, `tbo-simple`, `tbo-hard` and `tbo-very-hard` (**TBO AI · Medium**, **Simple**,
+     **Hard**, **Very hard**). Medium comes first, so it is the model of a new chat unless the person chose another
+     default in Settings. Every level takes pictures.
 
-     TBO Support's AI models page chooses each level's model and backup and writes them into the gateway. It also
+     TBO Support's AI models page chooses each level's model and backup and writes them into the gateway. Because
+     every level takes pictures, each level's model and backup must read pictures (the owner, 27 Nov 2026). It also
      adds the level's name to TBO Desktop Settings → Models, which decides which names a person's key may use; a
      change there reaches the keys of everyone signed in at once.
+   - Since plugin 0.7.0 (app 0.16.3) the plain **TBO AI** row (`tbo-default`, the gateway's own GPT-5.6 Luna) is no
+     longer offered. The gateway and TBO Desktop Settings keep `tbo-default`, so older versions of the app and chats
+     started on it keep working. A person who chose **TBO AI** as their default model in Settings picks a level
+     there once.
    - The row holds one site's key: changing the site address clears it at once, and the new site's sign-in (if
      any) sets it again. At start the plugin first asks the app to clear the row (a key from an earlier run belongs to no
      known sign-in), then the renewal sets it; if that renewal fails, the next panel read, check or tool call
