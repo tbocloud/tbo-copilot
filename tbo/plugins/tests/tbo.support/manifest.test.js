@@ -14,20 +14,24 @@ test("the manifest's three tools match the code's tools exactly", () => {
   assert.deepEqual(manifest.contributes.agentTools.map(pick), [pick(TOOL), pick(CHANGE_TOOL), pick(AWS_TOOL)]);
 });
 
-test("TBO AI's models: TBO AI and the four levels set on TBO Support's AI models page", () => {
+test("TBO AI's models: only the four levels set on TBO Support's AI models page, Medium first", () => {
   const ai = manifest.contributes.providers.find((p) => p.id === "tbo-ai");
   assert.deepEqual(
     ai.models.map((m) => [m.id, m.name]),
     [
-      ["tbo-default", "TBO AI"],
-      ["tbo-simple", "TBO AI · Simple"],
       ["tbo-medium", "TBO AI · Medium"],
+      ["tbo-simple", "TBO AI · Simple"],
       ["tbo-hard", "TBO AI · Hard"],
       ["tbo-very-hard", "TBO AI · Very hard"],
     ],
   );
-  // a level's model is chosen on TBO Support and may not read pictures: pictures go with TBO AI
-  for (const m of ai.models.slice(2)) assert.equal(m.supportsImages, false, m.id);
+  // every level takes pictures, so each level's model and backup must read them (the owner, 27 Nov 2026)
+  for (const m of ai.models) assert.equal(m.supportsImages, true, m.id);
+});
+
+test("TBO AI no longer offers the plain TBO AI row (tbo-default): only the levels (the owner, 27 Nov 2026)", () => {
+  const [provider] = manifest.contributes.providers;
+  assert.equal(provider.models.find((m) => m.id === "tbo-default"), undefined);
 });
 
 test("every skill exists with a name and a short description", () => {
@@ -87,7 +91,8 @@ test("TBO AI is declared without an address: the sign-in sets it", () => {
   assert.equal(provider.id, "tbo-ai");
   assert.equal(provider.baseUrl, undefined);
   assert.equal(provider.authKind, "api_key");
-  assert.equal(provider.models[0].id, "tbo-default");
+  // the first model is the app's default for a new chat (host-core takes the declared order)
+  assert.equal(provider.models[0].id, "tbo-medium");
 });
 
 test("TBO AI no longer offers tbo-deepseek: Bedrock is off (the owner, 26 Nov 2026)", () => {
